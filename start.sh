@@ -1,7 +1,11 @@
 #!/bin/bash
 echo "[Stadia X] Initializing Bluetooth..."
 mkdir -p /dev/input/
-
+# This will load the modules if they are modular, 
+# and ignore them if they are already built-in.
+modprobe joydev 2>/dev/null
+modprobe hid-generic 2>/dev/null
+modprobe uhid 2>/dev/null
 # Load all needed modules — fail silently if already built into kernel
 modprobe vhci-hcd    2>/dev/null || true
 modprobe uhid        2>/dev/null || true
