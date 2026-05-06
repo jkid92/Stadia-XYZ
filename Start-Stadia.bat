@@ -23,16 +23,16 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-REM ---- Check if we need to deploy the custom kernel ----
+REM ---- Check if we even need the custom kernel ----
 set "NEED_KERNEL=0"
-wsl bash -c "modprobe vhci-hcd 2>/dev/null; lsmod 2>/dev/null | grep -q vhci_hcd" >nul 2>&1
+wsl bash -c "modprobe vhci-hcd 2>/dev/null; lsmod | grep -q vhci_hcd" >nul 2>&1
 if %errorlevel% neq 0 set "NEED_KERNEL=1"
 
 if "%NEED_KERNEL%"=="1" (
     if not exist "%USERPROFILE%\wsl_kernel" (
-        echo [Setup] WSL kernel missing USB/HID support. Deploying custom kernel...
+        echo [Setup] Deploying custom WSL kernel for USB/HID support...
         copy "%SCRIPT_DIR%\build\wsl_kernel" "%USERPROFILE%\wsl_kernel" >nul
-        echo [wsl2] > "%USERPROFILE%\.wslconfig"
+        echo[wsl2] > "%USERPROFILE%\.wslconfig"
         echo kernel=C:\\Users\\%USERNAME%\\wsl_kernel >> "%USERPROFILE%\.wslconfig"
         echo memory=800MB >> "%USERPROFILE%\.wslconfig"
         echo processors=2 >> "%USERPROFILE%\.wslconfig"
@@ -42,7 +42,7 @@ if "%NEED_KERNEL%"=="1" (
         timeout /t 3 /nobreak >nul
     )
 ) else (
-    echo [Setup] WSL kernel already supports USB/HID. Skipping custom kernel.
+    echo [Setup] WSL kernel already supports USB HID. Skipping custom kernel.
 )
 
 wsl -d Ubuntu echo ok >nul 2>&1
@@ -58,13 +58,12 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-REM ---- Only shut down WSL if a leftover session is running ----
-tasklist /FI "IMAGENAME eq stadia_receiver.exe" 2>nul | find /i "stadia_receiver.exe" >nul
-if %errorlevel% equ 0 (
-    echo [Cleanup] Killing leftover session...
+REM Only shutdown WSL if receiver is running from old session
+tasklist /FI "IMAGENAME eq stadia_receiver.exe" 2>NUL | find /I /N "stadia_receiver.exe">NUL
+if "%ERRORLEVEL%"=="0" (
     taskkill /F /IM stadia_receiver.exe >nul 2>&1
     wsl --shutdown >nul 2>&1
-    timeout /t 3 /nobreak >nul
+    timeout /t 2 /nobreak >nul
 )
 
 echo [1/4] Starting WSL...
@@ -80,8 +79,7 @@ if %errorlevel% neq 0 (
 echo WSL network ready.
 
 echo.
-echo [2/4] Attaching Bluetooth Hardware...
-
+echo[2/4] Attaching Bluetooth Hardware...
 set "BT_BUSID="
 echo Auto-detecting Bluetooth adapter...
 
@@ -93,7 +91,6 @@ for /f "tokens=1" %%a in ('usbipd list ^| findstr /i /c:"bluetooth" /c:"intel wi
 :BT_FOUND
 if "%BT_BUSID%"=="" (
     echo WARNING: Could not auto-detect Bluetooth adapter by name.
-    echo Available devices:
     usbipd list
     echo.
     set /p "BT_BUSID=Enter the BUSID of your Bluetooth adapter (e.g. 1-13): "
@@ -108,36 +105,28 @@ if "%BT_BUSID%"=="" (
 echo Success: Target Bluetooth adapter found on BUSID %BT_BUSID%
 echo %BT_BUSID%> "%SCRIPT_DIR%\bt_busid.txt"
 
+set ATTACH_TRIES=3
+:ATTACH_LOOP
 usbipd bind --busid %BT_BUSID% --force >nul 2>&1
+usbipd attach --wsl --busid %BT_BUSID%
+if %errorlevel% equ 0 goto :ATTACH_SUCCESS
 
-REM Attach with up to 3 retries
-set ATTACH_OK=0
-for /l %%r in (1,1,3) do (
-    if "!ATTACH_OK!"=="0" (
-        echo Attach attempt %%r of 3...
-        usbipd attach --wsl --busid %BT_BUSID%
-        if !errorlevel! equ 0 (
-            set ATTACH_OK=1
-        ) else (
-            echo Retrying in 4 seconds...
-            timeout /t 4 /nobreak >nul
-        )
-    )
+set /a ATTACH_TRIES-=1
+if %ATTACH_TRIES% gtr 0 (
+    echo WARNING: Attach failed. Retrying in 4 seconds...
+    timeout /t 4 /nobreak >nul
+    goto :ATTACH_LOOP
 )
 
-if "%ATTACH_OK%"=="0" (
-    echo ERROR: Could not attach Bluetooth to WSL after 3 attempts.
-    echo.
-    echo Common fixes:
-    echo   1. Run this script as Administrator
-    echo   2. Open Device Manager, find "USBIP Shared Device" under
-    echo      Universal Serial Bus Controllers, right-click and Uninstall,
-    echo      then run this script again.
-    pause
-    exit /b 1
-)
+echo ERROR: Could not attach Bluetooth to WSL. Check usbipd and firewall.
+echo Common fixes:
+echo   1. Run this script as Administrator
+echo   2. Check Windows Firewall is not blocking usbipd
+echo   3. Try unplugging and re-plugging a USB Bluetooth dongle
+pause
+exit /b 1
 
-REM Wait for adapter to settle before bluetoothd starts
+:ATTACH_SUCCESS
 echo Waiting for Bluetooth adapter to settle in WSL...
 timeout /t 5 /nobreak >nul
 
@@ -155,35 +144,27 @@ echo [4/4] Starting Services...
 
 start /MIN "Stadia X - Linux Core" wsl -u root bash -c "/opt/stadia-x/start.sh"
 
-REM Get WSL IP via temp file
 timeout /t 8 /nobreak >nul
-set "IPFILE=%TEMP%\wsl_ip.txt"
-wsl bash -c "ip route show default | grep -oP 'via \K[\d.]+'" > "%IPFILE%" 2>nul
-set /p WSL_IP=<"%IPFILE%"
-del "%IPFILE%" >nul 2>&1
 
-REM Validate IP
-echo %WSL_IP% | findstr /r "^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo WARNING: IP detection returned "%WSL_IP%", using known fallback.
-    set WSL_IP=172.25.112.1
+REM --- Get the WSL IP address (Linux IP) so the Windows Receiver can send rumble to it ---
+wsl bash -c "hostname -I" > "%TEMP%\wsl_ip.txt"
+set "WSL_IP="
+for /f "tokens=1" %%a in ('type "%TEMP%\wsl_ip.txt"') do set "WSL_IP=%%a"
+
+if "%WSL_IP%"=="" (
+    echo WARNING: Could not detect WSL IP. Rumble may not work.
+    set "WSL_IP=127.0.0.1"
 )
+
 echo Detected WSL IP: %WSL_IP%
 
 echo.
 echo =====================================================================
-echo   GAME ON!  WSL IP: %WSL_IP%
-echo   Close the "Stadia Receiver" window when done playing.
+echo   GAME ON %WSL_IP%
+echo   Leave this window open while you play.
+echo   Close the Receiver window when done.
 echo =====================================================================
-echo.
 
-REM Use PowerShell to wait for the receiver and then call Stop-Stadia.
-REM This avoids the "Terminate batch job (Y/N)?" prompt that appears
-REM when using start /WAIT and the user closes the child window.
-powershell -NoProfile -WindowStyle Hidden -Command ^
-    "Start-Process -FilePath '%SCRIPT_DIR%\stadia_receiver.exe' -ArgumentList '%WSL_IP%' -WorkingDirectory '%SCRIPT_DIR%' -Wait" 
-
-REM Receiver has exited — run teardown quietly
-call "%SCRIPT_DIR%\Stop-Stadia.bat"
-
+set "PS_CMD=Start-Process -FilePath '%SCRIPT_DIR%\stadia_receiver.exe' -ArgumentList '%WSL_IP%' -WorkingDirectory '%SCRIPT_DIR%' -Wait; Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"\"%SCRIPT_DIR%\Stop-Stadia.bat\"\"' -WindowStyle Hidden"
+powershell -Command "%PS_CMD%"
 exit
