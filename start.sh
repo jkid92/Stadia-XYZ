@@ -1,7 +1,15 @@
 #!/bin/bash
 echo "[Stadia X] Initializing Bluetooth..."
 mkdir -p /dev/input/
-# This will load the modules if they are modular, 
+
+# ✅ FIX: Ensure bluez is installed (handles fresh Ubuntu WSL installs)
+if ! command -v bluetoothctl &>/dev/null; then
+    echo "[Stadia X] bluetoothctl not found. Installing bluez..."
+    apt-get update -qq && apt-get install -y bluez >/dev/null 2>&1
+    echo "[Stadia X] bluez installed."
+fi
+
+# This will load the modules if they are modular,
 # and ignore them if they are already built-in.
 modprobe joydev 2>/dev/null
 modprobe hid-generic 2>/dev/null
