@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Version = $env:GITHUB_REF_NAME,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\dist"),
+    [string]$OutputDirectory,
     [switch]$AllowMissingBinaries
 )
 
@@ -9,6 +9,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $repoRoot "dist"
+}
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "local-" + (Get-Date -Format "yyyyMMdd-HHmmss")
 }
@@ -34,6 +37,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 $requiredFiles = @(
     "Start-GUI.bat",
+    "VERSION.txt",
     "Install-StadiaX.bat",
     "Install-StadiaX.ps1",
     "StadiaX-GUI.ps1",

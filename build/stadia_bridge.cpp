@@ -46,6 +46,20 @@ struct RumbleState {
     uint8_t motor_left;
     uint8_t motor_right;
 };
+struct InputPacket {
+    uint8_t magic;
+    uint8_t version;
+    uint8_t controller_index;
+    uint8_t reserved;
+    ControllerState state;
+};
+struct RumblePacket {
+    uint8_t magic;
+    uint8_t version;
+    uint8_t controller_index;
+    uint8_t reserved;
+    RumbleState rumble;
+};
 #pragma pack(pop)
 
 enum ButtonBit : uint16_t {
@@ -78,6 +92,9 @@ static constexpr uint16_t PORT_INPUT  = 45493;
 static constexpr uint16_t PORT_RUMBLE = 45494;
 static constexpr uint16_t PORT_C2     = 45495;
 static constexpr uint16_t PORT_MACRO  = 45499;
+static constexpr uint8_t PACKET_MAGIC = 0x53; // 'S'
+static constexpr uint8_t PACKET_VERSION = 1;
+static constexpr int MAX_CONTROLLERS = 2;
 
 static std::atomic<bool> g_running{true};
 static std::atomic<int>  g_evdev_fd{-1};
@@ -96,6 +113,23 @@ static std::string       g_controller_name;
 static std::atomic<bool> g_controller_connected{false};
 static std::mutex              g_wake_mtx;
 static std::condition_variable g_wake_cv;
+
+struct ControllerRuntime {
+    std::atomic<int> evdev_fd{-1};
+    std::mutex state_mtx;
+    std::mutex meta_mtx;
+    ControllerState state{};
+    std::string path;
+    std::string name;
+    std::atomic<bool> connected{false};
+};
+
+struct StadiaDeviceInfo {
+    std::string path;
+    std::string name;
+};
+
+static std::array<ControllerRuntime, MAX_CONTROLLERS> g_controllers;
 
 static std::string shell_exec(const std::string& cmd) {
     std::string result; FILE* pipe = popen(cmd.c_str(), "r");
@@ -185,6 +219,35 @@ static std::string find_stadia_evdev() {
     return {};
 }
 
+static std::vector<StadiaDeviceInfo> find_stadia_evdevs() {
+    namespace fs = std::filesystem;
+    std::vector<StadiaDeviceInfo> devices;
+    if (!fs::exists("/dev/input/")) return devices;
+
+    for (auto& entry : fs::directory_iterator("/dev/input/")) {
+        std::string path = entry.path().string();
+        if (path.find("event") == std::string::npos) continue;
+
+        int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+
+        struct input_id id{};
+        if (ioctl(fd, EVIOCGID, &id) == 0) {
+            if (id.vendor == STADIA_VID && id.product == STADIA_PID) {
+                char name[256] = {};
+                ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+                devices.push_back({path, name[0] ? name : "Stadia Controller"});
+            }
+        }
+        close(fd);
+    }
+
+    std::sort(devices.begin(), devices.end(), [](const StadiaDeviceInfo& a, const StadiaDeviceInfo& b) {
+        return a.path < b.path;
+    });
+    return devices;
+}
+
 static int ff_effect_id = -1;
 static int rumble_hid_fd = -1;
 static void ensure_rumble_hid_fd() {
@@ -237,90 +300,220 @@ static void send_udp_code(const char* win_ip, const char* msg) {
     close(sock);
 }
 
-static void input_sender_thread() {
-    int udp_fd = create_udp_socket(); if (udp_fd < 0) return;
-    struct sockaddr_in dest{}; dest.sin_family = AF_INET; dest.sin_port = htons(PORT_INPUT);
+static bool controller_path_active(const std::string& path) {
+    for (auto& controller : g_controllers) {
+        if (!controller.connected.load()) continue;
+        std::lock_guard<std::mutex> lk(controller.meta_mtx);
+        if (controller.path == path) return true;
+    }
+    return false;
+}
+
+static int find_free_controller_slot() {
+    for (int i = 0; i < MAX_CONTROLLERS; ++i) {
+        if (!g_controllers[i].connected.load()) return i;
+    }
+    return -1;
+}
+
+static void mirror_primary_state(const ControllerState& raw_state) {
+    {
+        std::lock_guard<std::mutex> lk(g_state_mtx);
+        g_state = raw_state;
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_raw_state_mtx);
+        g_raw_state = raw_state;
+    }
+}
+
+static ControllerState build_output_state(int controller_index, const ControllerState& raw_state) {
+    ControllerState send_state = raw_state;
+    if (controller_index == 0 && (g_assistant_held.load() || g_capture_held.load())) {
+        send_state.buttons &= ~CHORD_SUPPRESS_MASK;
+        send_state.trigger_left = 0;
+        send_state.trigger_right = 0;
+    }
+    return send_state;
+}
+
+static void send_controller_packet(int udp_fd, const struct sockaddr_in& dest, int controller_index, const ControllerState& send_state) {
+    InputPacket packet{};
+    packet.magic = PACKET_MAGIC;
+    packet.version = PACKET_VERSION;
+    packet.controller_index = static_cast<uint8_t>(controller_index);
+    packet.state = send_state;
+    sendto(udp_fd, &packet, sizeof(packet), 0, (const struct sockaddr*)&dest, sizeof(dest));
+}
+
+static void controller_worker(int controller_index, std::string evpath, std::string name) {
+    int udp_fd = create_udp_socket();
+    if (udp_fd < 0) return;
+
+    struct sockaddr_in dest{};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(PORT_INPUT);
     inet_pton(AF_INET, g_target_ip.c_str(), &dest.sin_addr);
 
-    while (g_running) {
-        std::string evpath;
+    int ev_fd = open(evpath.c_str(), O_RDWR | O_NONBLOCK);
+    if (ev_fd < 0) {
+        g_controllers[controller_index].connected.store(false);
+        close(udp_fd);
+        return;
+    }
+
+    ControllerRuntime& slot = g_controllers[controller_index];
+    ioctl(ev_fd, EVIOCGRAB, 1);
+    {
+        std::lock_guard<std::mutex> lk(slot.meta_mtx);
+        slot.path = evpath;
+        slot.name = name;
+    }
+    {
+        std::lock_guard<std::mutex> lk(slot.state_mtx);
+        std::memset(&slot.state, 0, sizeof(slot.state));
+    }
+    slot.evdev_fd.store(ev_fd);
+    slot.connected.store(true);
+
+    if (controller_index == 0) {
         {
-            std::unique_lock<std::mutex> lk(g_wake_mtx);
-            while (g_running) {
-                evpath = find_stadia_evdev(); if (!evpath.empty()) break;
-                g_wake_cv.wait_for(lk, std::chrono::seconds(3));
+            std::lock_guard<std::mutex> lk(g_controller_mtx);
+            g_controller_path = evpath;
+            g_controller_name = name;
+        }
+        g_evdev_fd.store(ev_fd);
+        g_controller_connected.store(true);
+        ff_effect_id = -1;
+        mirror_primary_state(ControllerState{});
+    }
+
+    log_info("Controller %d connected: %s [%s]", controller_index + 1, name.c_str(), evpath.c_str());
+
+    struct pollfd pfd{};
+    pfd.fd = ev_fd;
+    pfd.events = POLLIN;
+    bool connected = true;
+
+    while (g_running && connected) {
+        int ret = poll(&pfd, 1, 500);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (ret == 0) continue;
+
+        struct input_event events[64];
+        ssize_t rd = read(ev_fd, events, sizeof(events));
+        if (rd <= 0) {
+            connected = false;
+            break;
+        }
+
+        size_t count = static_cast<size_t>(rd) / sizeof(struct input_event);
+        bool changed = false;
+
+        {
+            std::lock_guard<std::mutex> lk(slot.state_mtx);
+            for (size_t i = 0; i < count; ++i) {
+                if (events[i].type == EV_SYN) {
+                    if (changed) {
+                        ControllerState raw_state = slot.state;
+                        if (controller_index == 0) mirror_primary_state(raw_state);
+                        send_controller_packet(udp_fd, dest, controller_index, build_output_state(controller_index, raw_state));
+                        changed = false;
+                    }
+                } else {
+                    apply_event(events[i], slot.state);
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                ControllerState raw_state = slot.state;
+                if (controller_index == 0) mirror_primary_state(raw_state);
+                send_controller_packet(udp_fd, dest, controller_index, build_output_state(controller_index, raw_state));
             }
         }
-        if (!g_running) break;
+    }
 
-        int ev_fd = open(evpath.c_str(), O_RDWR | O_NONBLOCK);
-        if (ev_fd < 0) { std::this_thread::sleep_for(std::chrono::seconds(2)); continue; }
+    log_info("Controller %d disconnected: %s", controller_index + 1, evpath.c_str());
+    slot.connected.store(false);
+    slot.evdev_fd.store(-1);
+    {
+        std::lock_guard<std::mutex> lk(slot.meta_mtx);
+        slot.path.clear();
+        slot.name.clear();
+    }
 
-        ioctl(ev_fd, EVIOCGRAB, 1);
-        { std::lock_guard<std::mutex> lk(g_controller_mtx); g_controller_path = evpath; }
-        g_evdev_fd.store(ev_fd); g_controller_connected.store(true); ff_effect_id = -1;
+    if (controller_index == 0) {
+        g_controller_connected.store(false);
+        g_evdev_fd.store(-1);
+        {
+            std::lock_guard<std::mutex> lk(g_controller_mtx);
+            g_controller_path.clear();
+            g_controller_name.clear();
+        }
+    }
 
-        { std::lock_guard<std::mutex> lk(g_state_mtx); std::memset(&g_state, 0, sizeof(g_state)); }
+    ff_stop(ev_fd);
+    ioctl(ev_fd, EVIOCGRAB, 0);
+    close(ev_fd);
+    close(udp_fd);
+}
 
-        struct pollfd pfd{}; pfd.fd = ev_fd; pfd.events = POLLIN;
-        bool connected = true;
+static void input_sender_thread() {
+    while (g_running) {
+        auto devices = find_stadia_evdevs();
+        for (const auto& device : devices) {
+            if (controller_path_active(device.path)) continue;
 
-        while (g_running && connected) {
-            int ret = poll(&pfd, 1, 500);
-            if (ret < 0) { if (errno == EINTR) continue; break; }
-            if (ret == 0) continue;
-
-            struct input_event events[64];
-            ssize_t rd = read(ev_fd, events, sizeof(events));
-            if (rd <= 0) { connected = false; break; }
-
-            size_t count = static_cast<size_t>(rd) / sizeof(struct input_event);
-            bool changed = false;
+            int slot = find_free_controller_slot();
+            if (slot < 0) {
+                log_info("Extra Stadia controller ignored because both slots are already active: %s", device.path.c_str());
+                break;
+            }
 
             {
-                std::lock_guard<std::mutex> lk(g_state_mtx);
-                for (size_t i = 0; i < count; ++i) {
-                    if (events[i].type == EV_SYN) {
-                        if (changed) {
-                            ControllerState send_state = g_state;
-                            if (g_assistant_held.load() || g_capture_held.load()) {
-                                send_state.buttons &= ~CHORD_SUPPRESS_MASK;
-                                send_state.trigger_left = 0;
-                                send_state.trigger_right = 0;
-                            }
-                            { std::lock_guard<std::mutex> rlk(g_raw_state_mtx); g_raw_state = g_state; }
-                            sendto(udp_fd, &send_state, sizeof(send_state), 0, (struct sockaddr*)&dest, sizeof(dest));
-                            changed = false;
-                        }
-                    } else {
-                        apply_event(events[i], g_state); changed = true;
-                    }
-                }
-                if (changed) {
-                    ControllerState send_state = g_state;
-                    if (g_assistant_held.load() || g_capture_held.load()) {
-                        send_state.buttons &= ~CHORD_SUPPRESS_MASK;
-                        send_state.trigger_left = 0;
-                        send_state.trigger_right = 0;
-                    }
-                    { std::lock_guard<std::mutex> rlk(g_raw_state_mtx); g_raw_state = g_state; }
-                    sendto(udp_fd, &send_state, sizeof(send_state), 0, (struct sockaddr*)&dest, sizeof(dest));
-                }
+                ControllerRuntime& reserved = g_controllers[slot];
+                std::lock_guard<std::mutex> lk(reserved.meta_mtx);
+                reserved.path = device.path;
+                reserved.name = device.name;
+                reserved.connected.store(true);
             }
+            std::thread(controller_worker, slot, device.path, device.name).detach();
         }
-        g_controller_connected.store(false); g_evdev_fd.store(-1);
-        { std::lock_guard<std::mutex> lk(g_controller_mtx); g_controller_path.clear(); }
-        ff_stop(ev_fd); ioctl(ev_fd, EVIOCGRAB, 0); close(ev_fd);
+
+        std::unique_lock<std::mutex> lk(g_wake_mtx);
+        g_wake_cv.wait_for(lk, std::chrono::seconds(3));
     }
-    close(udp_fd);
 }
 
 static void rumble_receiver_thread() {
     int udp_fd = create_udp_recv_socket(PORT_RUMBLE); if (udp_fd < 0) return;
     struct timeval tv{}; tv.tv_sec = 1; tv.tv_usec = 0; setsockopt(udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     while (g_running) {
-        RumbleState rs{}; ssize_t n = recv(udp_fd, &rs, sizeof(rs), 0);
-        if (n == sizeof(rs)) { int fd = g_evdev_fd.load(); if (fd >= 0) ff_upload_and_play(fd, rs.motor_left, rs.motor_right); }
+        char buf[64] = {};
+        RumbleState rs{};
+        uint8_t controller_index = 0;
+        ssize_t n = recv(udp_fd, buf, sizeof(buf), 0);
+        if (n == sizeof(RumbleState)) {
+            std::memcpy(&rs, buf, sizeof(rs));
+        } else if (n == sizeof(RumblePacket)) {
+            RumblePacket packet{};
+            std::memcpy(&packet, buf, sizeof(packet));
+            if (packet.magic != PACKET_MAGIC || packet.version != PACKET_VERSION || packet.controller_index >= MAX_CONTROLLERS) {
+                continue;
+            }
+            controller_index = packet.controller_index;
+            rs = packet.rumble;
+        } else {
+            continue;
+        }
+
+        int fd = g_controllers[controller_index].evdev_fd.load();
+        if (fd < 0 && controller_index == 0) fd = g_evdev_fd.load();
+        if (fd >= 0) ff_upload_and_play(fd, rs.motor_left, rs.motor_right);
     }
     close(udp_fd);
 }

@@ -2,7 +2,7 @@
 param(
     [string]$Version = $env:GITHUB_REF_NAME,
     [string]$PackageDirectory,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\dist"),
+    [string]$OutputDirectory,
     [string]$InnoSetupCompiler
 )
 
@@ -10,6 +10,9 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $OutputDirectory = Join-Path $repoRoot "dist"
+}
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "local-" + (Get-Date -Format "yyyyMMdd-HHmmss")
 }
@@ -58,6 +61,7 @@ $iscc = Find-InnoSetupCompiler $InnoSetupCompiler
 
 $requiredFiles = @(
     "Start-GUI.bat",
+    "VERSION.txt",
     "StadiaX-GUI.ps1",
     "Start-Stadia.bat",
     "Stop-Stadia.bat",

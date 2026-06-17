@@ -17,6 +17,9 @@ $Script:LinuxStatusLogPath = Join-Path $Script:LogDir "linux-status.log"
 $Script:LinuxLogPath = Join-Path $Script:LogDir "linux.log"
 $Script:BluetoothDiagPath = Join-Path $Script:LogDir "bluetooth-diagnostics.txt"
 $Script:ControllerStatePath = Join-Path $Script:LogDir "controller-state.json"
+$Script:VersionPath = Join-Path $Script:Root "VERSION.txt"
+$Script:ReleasesUrl = "https://github.com/jkid92/Stadia-X/releases"
+$Script:LatestReleaseApiUrl = "https://api.github.com/repos/jkid92/Stadia-X/releases/latest"
 $Script:ButtonIndicators = @{}
 $Script:WizardList = $null
 $Script:WizardSummaryLabel = $null
@@ -25,10 +28,16 @@ $Script:SetupList = $null
 $Script:LiveStatusList = $null
 $Script:LiveSummaryLabel = $null
 $Script:LinuxLogBox = $null
+$Script:HumanTimelineList = $null
 $Script:TelemetryLabel = $null
 $Script:LeftTriggerBar = $null
 $Script:RightTriggerBar = $null
 $Script:AxesLabel = $null
+$Script:ControllerSelector = $null
+$Script:ControllerStatsLabel = $null
+$Script:ControllerDeadzoneLabel = $null
+$Script:ControllerRawBox = $null
+$Script:UpdateStatusLabel = $null
 $Script:DeviceList = $null
 $Script:SelectedBusIdText = $null
 $Script:DeviceDetailsBox = $null
@@ -247,6 +256,65 @@ function Get-LatestStatusSummary {
     return "$($last.Source): $($last.Message)"
 }
 
+function Convert-StatusToHuman {
+    param([object]$Event)
+
+    $code = [string]$Event.Code
+    $message = [string]$Event.Message
+    switch ($code) {
+        "START_REQUESTED" { return "Avvio richiesto: preparo Windows, WSL e Bluetooth." }
+        "LINUX_INIT" { return "Linux si sta preparando e inizializza i servizi Bluetooth." }
+        "BLUEZ_MISSING" { return "BlueZ non e presente: provo a installare gli strumenti Bluetooth." }
+        "BLUEZ_INSTALLED" { return "BlueZ installato correttamente." }
+        "BLUEZ_INSTALL_FAILED" { return "Installazione BlueZ fallita: serve controllare rete o permessi in WSL." }
+        "BLUEZ_OK" { return "Gli strumenti Bluetooth Linux sono disponibili." }
+        "KERNEL_MODULES_CHECKED" { return "Moduli Bluetooth/HID controllati in WSL." }
+        "HID_MISSING" { return "WSL non espone il sottosistema HID: aggiorna WSL prima di riprovare." }
+        "HID_OK" { return "Il sottosistema HID Linux e disponibile." }
+        "DBUS_START" { return "Avvio D-Bus, necessario per bluetoothd." }
+        "DBUS_OK" { return "D-Bus e gia attivo." }
+        "BLUETOOTHD_START" { return "Avvio bluetoothd dentro Linux." }
+        "ADAPTER_POWERED" { return "Bluetooth acceso in Linux: l'adattatore e stato passato correttamente." }
+        "ADAPTER_POWER_FAILED" { return "Linux vede l'adattatore, ma non riesce ad accenderlo." }
+        "BT_DIAG_WRITTEN" { return "Diagnostica Bluetooth aggiornata." }
+        "SCAN_START" { return "Ricerca controller Stadia in corso." }
+        "PAIR_WAIT" { return "Controller non ancora trovato: mettilo in pairing con Stadia + Y." }
+        "CONTROLLER_SEEN" { return "Controller rilevato: provo a usarlo." }
+        "CONNECT_START" { return "Tentativo di connessione al controller." }
+        "CONNECT_COMMAND_OK" { return "Comando di connessione accettato, verifico se il controller risponde." }
+        "CONNECT_COMMAND_FAILED" { return "Linux vede il controller ma il comando di connessione fallisce." }
+        "CONTROLLER_CONNECTED" { return "Controller connesso via Bluetooth." }
+        "CONTROLLER_NOT_CONNECTED" { return "Controller rilevato, ma non risulta connesso." }
+        "CONTROLLER_NOT_FOUND" { return "Nessun controller Stadia trovato durante la scansione." }
+        "CONTROLLERS_READY" { return "Controller pronti: almeno un pad Stadia e connesso." }
+        "INPUT_WAIT" { return "Bluetooth connesso: aspetto il device input Linux." }
+        "INPUT_READY" { return "Input Linux pronto: i pulsanti possono essere inoltrati a Windows." }
+        "INPUT_TIMEOUT" { return "Controller connesso ma nessun device input e apparso." }
+        "HOST_IP_MISSING" { return "Non riesco a trovare l'IP Windows da Linux." }
+        "HOST_IP_READY" { return "IP Windows rilevato: il ponte UDP puo partire." }
+        "BRIDGE_START" { return "Avvio del core nativo Linux." }
+        "BRIDGE_EXIT" { return "Il core Linux si e chiuso." }
+        default {
+            if ([string]::IsNullOrWhiteSpace($message)) {
+                return "$($Event.Source): $code"
+            }
+            return "$($Event.Source): $message"
+        }
+    }
+}
+
+function Get-HumanStatusEvents {
+    $events = @(Get-StatusEvents)
+    return @($events | Select-Object -Last 80 | ForEach-Object {
+        [pscustomobject]@{
+            Time = $_.Time
+            Source = $_.Source
+            Event = $_.Code
+            Human = Convert-StatusToHuman $_
+        }
+    })
+}
+
 function Refresh-LiveStatus {
     if (-not $Script:LiveStatusList) {
         return
@@ -256,6 +324,29 @@ function Refresh-LiveStatus {
     $Script:LiveStatusList.Items.Clear()
     foreach ($event in $events) {
         Add-ListRow $Script:LiveStatusList $event.Source $event.Code $event.Message
+    }
+
+    if ($Script:HumanTimelineList) {
+        $Script:HumanTimelineList.Items.Clear()
+        foreach ($event in @(Get-HumanStatusEvents)) {
+            $item = New-Object System.Windows.Forms.ListViewItem($(if ($event.Time) { $event.Time } else { "-" }))
+            [void]$item.SubItems.Add($event.Source)
+            [void]$item.SubItems.Add($event.Human)
+            switch ($event.Event) {
+                { $_ -match "FAILED|MISSING|TIMEOUT|NOT_FOUND|NOT_CONNECTED|POWER_FAILED" } {
+                    $item.ForeColor = [System.Drawing.Color]::FromArgb(180, 45, 45)
+                    break
+                }
+                { $_ -match "CONNECTED|READY|OK|POWERED|INSTALLED" } {
+                    $item.ForeColor = [System.Drawing.Color]::FromArgb(34, 120, 72)
+                    break
+                }
+                default {
+                    $item.ForeColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+                }
+            }
+            [void]$Script:HumanTimelineList.Items.Add($item)
+        }
     }
 
     if ($events.Count -gt 0) {
@@ -302,6 +393,13 @@ function Refresh-FirstRunWizard {
     $releaseOk = ($runtimeMissing.Count -eq 0)
     Add-WizardRow "Release files" ($(if ($releaseOk) { "OK" } else { "MISSING" })) ($(if ($releaseOk) { "Runtime package is complete" } else { "Missing: $($runtimeMissing -join ', ')" }))
 
+    $localVersion = Get-LocalVersion
+    Add-WizardRow "Version" "INFO" $localVersion
+    if ($Script:UpdateStatusLabel -and -not [string]::IsNullOrWhiteSpace($Script:UpdateStatusLabel.Text)) {
+        $updateState = if ($Script:UpdateStatusLabel.Text -match "Update available") { "WARN" } elseif ($Script:UpdateStatusLabel.Text -match "Up to date") { "OK" } else { "INFO" }
+        Add-WizardRow "Updates" $updateState $Script:UpdateStatusLabel.Text
+    }
+
     $installerPresent = (Test-Path (Join-Path $Script:Root "Install-StadiaX.ps1"))
     Add-WizardRow "Installer" ($(if ($installerPresent) { "OK" } else { "WARN" })) ($(if ($installerPresent) { "Portable installer is available" } else { "Installer script not found" }))
 
@@ -343,7 +441,7 @@ function Refresh-FirstRunWizard {
         $Script:WizardSummaryLabel.Text = "Ready: start the bridge, pair the controller, then open Controller Test."
     }
 
-    $Script:WizardDetailBox.Text = "Install folder: $Script:Root`r`nSelected BUSID: $(if ($selectedBusId) { $selectedBusId } else { 'none' })`r`nLatest status: $latest"
+    $Script:WizardDetailBox.Text = "Install folder: $Script:Root`r`nVersion: $localVersion`r`nSelected BUSID: $(if ($selectedBusId) { $selectedBusId } else { 'none' })`r`nLatest status: $latest"
 }
 
 function Run-SetupAudit {
@@ -651,6 +749,9 @@ function Reset-ControllerIndicators {
     if ($Script:LeftTriggerBar) { $Script:LeftTriggerBar.Value = 0 }
     if ($Script:RightTriggerBar) { $Script:RightTriggerBar.Value = 0 }
     if ($Script:AxesLabel) { $Script:AxesLabel.Text = "Sticks: waiting for telemetry" }
+    if ($Script:ControllerStatsLabel) { $Script:ControllerStatsLabel.Text = "Packets: -    Rate: -    Last seen: -" }
+    if ($Script:ControllerDeadzoneLabel) { $Script:ControllerDeadzoneLabel.Text = "Deadzone: waiting for stick data" }
+    if ($Script:ControllerRawBox) { $Script:ControllerRawBox.Text = "" }
 }
 
 function Refresh-ControllerTelemetry {
@@ -672,32 +773,136 @@ function Refresh-ControllerTelemetry {
     }
 
     $age = (Get-Date) - (Get-Item $Script:ControllerStatePath).LastWriteTime
-    $Script:TelemetryLabel.Text = "Telemetry live: updated $([math]::Round($age.TotalSeconds, 1)) seconds ago"
 
-    $buttons = $state.buttons
-    Set-ButtonIndicator "a" ([bool]$buttons.a)
-    Set-ButtonIndicator "b" ([bool]$buttons.b)
-    Set-ButtonIndicator "x" ([bool]$buttons.x)
-    Set-ButtonIndicator "y" ([bool]$buttons.y)
-    Set-ButtonIndicator "lb" ([bool]$buttons.lb)
-    Set-ButtonIndicator "rb" ([bool]$buttons.rb)
-    Set-ButtonIndicator "select" ([bool]$buttons.select)
-    Set-ButtonIndicator "start" ([bool]$buttons.start)
-    Set-ButtonIndicator "stadia" ([bool]$buttons.stadia)
-    Set-ButtonIndicator "assistant" ([bool]$buttons.assistant)
-    Set-ButtonIndicator "l3" ([bool]$buttons.l3)
-    Set-ButtonIndicator "r3" ([bool]$buttons.r3)
-    Set-ButtonIndicator "dpad_up" ([bool]$buttons.dpad_up)
-    Set-ButtonIndicator "dpad_down" ([bool]$buttons.dpad_down)
-    Set-ButtonIndicator "dpad_left" ([bool]$buttons.dpad_left)
-    Set-ButtonIndicator "dpad_right" ([bool]$buttons.dpad_right)
+    $controllers = @()
+    if ($state.PSObject.Properties["controllers"]) {
+        $controllers = @($state.controllers)
+    }
+    if ($controllers.Count -eq 0) {
+        $controllers = @([pscustomobject]@{
+            index = 0
+            active = $true
+            packets = 0
+            pps = 0
+            last_seen_age_ms = [int]($age.TotalMilliseconds)
+            buttons = $state.buttons
+            axes = $state.axes
+        })
+    }
 
-    $axes = $state.axes
-    $lt = [Math]::Max(0, [Math]::Min(255, [int]$axes.trigger_left))
-    $rt = [Math]::Max(0, [Math]::Min(255, [int]$axes.trigger_right))
+    $selectedIndex = 0
+    if ($state.PSObject.Properties["active_controller"]) {
+        $selectedIndex = [int]$state.active_controller
+    }
+    if ($Script:ControllerSelector) {
+        $previous = $Script:ControllerSelector.SelectedIndex
+        $Script:ControllerSelector.Items.Clear()
+        foreach ($controller in $controllers) {
+            $displayIndex = if ($controller.PSObject.Properties["index"]) { [int]$controller.index } else { $Script:ControllerSelector.Items.Count }
+            $label = "Controller $($displayIndex + 1)"
+            if ($controller.PSObject.Properties["active"] -and [bool]$controller.active) {
+                $label += " (active)"
+            }
+            [void]$Script:ControllerSelector.Items.Add($label)
+        }
+        if ($previous -ge 0 -and $previous -lt $Script:ControllerSelector.Items.Count) {
+            $selectedIndex = $previous
+        }
+        if ($Script:ControllerSelector.Items.Count -gt 0) {
+            $Script:ControllerSelector.SelectedIndex = [Math]::Min([Math]::Max(0, $selectedIndex), $Script:ControllerSelector.Items.Count - 1)
+            $selectedIndex = $Script:ControllerSelector.SelectedIndex
+        }
+    }
+
+    $selected = @($controllers | Where-Object {
+        $_.PSObject.Properties["index"] -and [int]$_.index -eq $selectedIndex
+    } | Select-Object -First 1)
+    if ($selected.Count -eq 0) {
+        $selected = @($controllers | Select-Object -First 1)
+    }
+    if ($selected.Count -eq 0) {
+        Reset-ControllerIndicators
+        return
+    }
+
+    $controller = $selected[0]
+    $controllerNumber = if ($controller.PSObject.Properties["index"]) { [int]$controller.index + 1 } else { $selectedIndex + 1 }
+    $isActive = if ($controller.PSObject.Properties["active"]) { [bool]$controller.active } else { $true }
+    $buttons = $controller.buttons
+    $axes = $controller.axes
+
+    $getBool = {
+        param($Object, [string]$Name)
+        if ($Object -and $Object.PSObject.Properties[$Name]) { return [bool]$Object.$Name }
+        return $false
+    }
+    $getInt = {
+        param($Object, [string]$Name, [int]$Default = 0)
+        if ($Object -and $Object.PSObject.Properties[$Name]) { return [int]$Object.$Name }
+        return $Default
+    }
+
+    $Script:TelemetryLabel.Text = "Controller $controllerNumber telemetry: updated $([math]::Round($age.TotalSeconds, 1)) seconds ago"
+
+    Set-ButtonIndicator "a" (& $getBool $buttons "a")
+    Set-ButtonIndicator "b" (& $getBool $buttons "b")
+    Set-ButtonIndicator "x" (& $getBool $buttons "x")
+    Set-ButtonIndicator "y" (& $getBool $buttons "y")
+    Set-ButtonIndicator "lb" (& $getBool $buttons "lb")
+    Set-ButtonIndicator "rb" (& $getBool $buttons "rb")
+    Set-ButtonIndicator "select" (& $getBool $buttons "select")
+    Set-ButtonIndicator "start" (& $getBool $buttons "start")
+    Set-ButtonIndicator "stadia" (& $getBool $buttons "stadia")
+    Set-ButtonIndicator "assistant" (& $getBool $buttons "assistant")
+    Set-ButtonIndicator "l3" (& $getBool $buttons "l3")
+    Set-ButtonIndicator "r3" (& $getBool $buttons "r3")
+    Set-ButtonIndicator "dpad_up" (& $getBool $buttons "dpad_up")
+    Set-ButtonIndicator "dpad_down" (& $getBool $buttons "dpad_down")
+    Set-ButtonIndicator "dpad_left" (& $getBool $buttons "dpad_left")
+    Set-ButtonIndicator "dpad_right" (& $getBool $buttons "dpad_right")
+
+    $lt = [Math]::Max(0, [Math]::Min(255, (& $getInt $axes "trigger_left" 0)))
+    $rt = [Math]::Max(0, [Math]::Min(255, (& $getInt $axes "trigger_right" 0)))
+    $lx = & $getInt $axes "stick_lx" 0
+    $ly = & $getInt $axes "stick_ly" 0
+    $rx = & $getInt $axes "stick_rx" 0
+    $ry = & $getInt $axes "stick_ry" 0
+
     $Script:LeftTriggerBar.Value = $lt
     $Script:RightTriggerBar.Value = $rt
-    $Script:AxesLabel.Text = "LX $($axes.stick_lx)  LY $($axes.stick_ly)    RX $($axes.stick_rx)  RY $($axes.stick_ry)"
+    $Script:AxesLabel.Text = "LX $lx  LY $ly`r`nRX $rx  RY $ry`r`nLT $lt  RT $rt"
+
+    $packets = if ($controller.PSObject.Properties["packets"]) { [int64]$controller.packets } else { 0 }
+    $pps = if ($controller.PSObject.Properties["pps"]) { [double]$controller.pps } else { 0.0 }
+    $lastSeenMs = if ($controller.PSObject.Properties["last_seen_age_ms"]) { [int64]$controller.last_seen_age_ms } else { [int64]$age.TotalMilliseconds }
+    if ($Script:ControllerStatsLabel) {
+        $Script:ControllerStatsLabel.Text = "Active: $isActive    Packets: $packets    Rate: $([math]::Round($pps, 1))/s    Last seen: $([math]::Round($lastSeenMs / 1000, 1))s"
+    }
+
+    $deadzone = 2500
+    $centered = ([Math]::Abs($lx) -le $deadzone -and [Math]::Abs($ly) -le $deadzone -and [Math]::Abs($rx) -le $deadzone -and [Math]::Abs($ry) -le $deadzone)
+    if ($Script:ControllerDeadzoneLabel) {
+        $Script:ControllerDeadzoneLabel.Text = if ($centered) { "Deadzone: centered within +/-$deadzone" } else { "Deadzone: movement outside +/-$deadzone" }
+        $Script:ControllerDeadzoneLabel.ForeColor = if ($centered) { [System.Drawing.Color]::FromArgb(34, 120, 72) } else { [System.Drawing.Color]::FromArgb(170, 104, 0) }
+    }
+
+    if ($Script:ControllerRawBox) {
+        $pressed = @()
+        foreach ($name in @("a","b","x","y","lb","rb","select","start","stadia","assistant","l3","r3","dpad_up","dpad_down","dpad_left","dpad_right")) {
+            if (& $getBool $buttons $name) { $pressed += $name }
+        }
+        if ($pressed.Count -eq 0) { $pressed = @("none") }
+        $Script:ControllerRawBox.Text = @(
+            "Controller: $controllerNumber"
+            "Active: $isActive"
+            "Pressed: $($pressed -join ', ')"
+            "Left stick:  $lx, $ly"
+            "Right stick: $rx, $ry"
+            "Triggers:    LT $lt / RT $rt"
+            "Packets:     $packets"
+            "Rate:        $([math]::Round($pps, 2)) packets/sec"
+        ) -join "`r`n"
+    }
 }
 
 function Get-UsbipdDevices {
@@ -1041,6 +1246,116 @@ function Start-StadiaInstaller {
     }
 }
 
+function Get-LocalVersion {
+    if (Test-Path $Script:VersionPath) {
+        $version = (Get-Content -Raw -Path $Script:VersionPath -ErrorAction SilentlyContinue).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($version)) {
+            return $version
+        }
+    }
+    return "local"
+}
+
+function ConvertTo-StadiaVersion {
+    param([string]$Tag)
+    if ([string]::IsNullOrWhiteSpace($Tag)) {
+        return $null
+    }
+
+    $clean = $Tag.Trim()
+    if ($clean.StartsWith("v")) {
+        $clean = $clean.Substring(1)
+    }
+    if ($clean -match "^(\d+)\.(\d+)\.(\d+)") {
+        try {
+            return [version]"$($Matches[1]).$($Matches[2]).$($Matches[3])"
+        } catch {
+            return $null
+        }
+    }
+    return $null
+}
+
+function Test-StadiaUpdateAvailable {
+    param(
+        [string]$Local,
+        [string]$Latest
+    )
+
+    $localVersion = ConvertTo-StadiaVersion $Local
+    $latestVersion = ConvertTo-StadiaVersion $Latest
+    if ($localVersion -and $latestVersion) {
+        return ($latestVersion -gt $localVersion)
+    }
+    return ($Local -ne $Latest -and $Latest -notmatch "(?i)local|dev")
+}
+
+function Check-StadiaUpdate {
+    $local = Get-LocalVersion
+    if ($Script:UpdateStatusLabel) {
+        $Script:UpdateStatusLabel.Text = "Checking latest release..."
+    }
+
+    try {
+        $headers = @{ "User-Agent" = "StadiaX-GUI" }
+        $release = Invoke-RestMethod -Uri $Script:LatestReleaseApiUrl -Headers $headers -TimeoutSec 10
+        $latest = [string]$release.tag_name
+        $setupAsset = @($release.assets | Where-Object { $_.name -like "*Setup.exe" } | Select-Object -First 1)
+        $downloadUrl = if ($setupAsset.Count -gt 0) { [string]$setupAsset[0].browser_download_url } else { [string]$release.html_url }
+        $needsUpdate = Test-StadiaUpdateAvailable -Local $local -Latest $latest
+
+        if ($needsUpdate) {
+            $message = "Update available: $latest (installed $local)"
+            if ($Script:UpdateStatusLabel) { $Script:UpdateStatusLabel.Text = "$message - open Releases to download." }
+            Add-Log "$message. Download: $downloadUrl"
+            return [pscustomobject]@{ Local = $local; Latest = $latest; NeedsUpdate = $true; Url = $downloadUrl }
+        }
+
+        $message = "Up to date: $local"
+        if ($Script:UpdateStatusLabel) { $Script:UpdateStatusLabel.Text = $message }
+        Add-Log "Update check completed. $message"
+        return [pscustomobject]@{ Local = $local; Latest = $latest; NeedsUpdate = $false; Url = [string]$release.html_url }
+    } catch {
+        $message = "Update check failed: $($_.Exception.Message)"
+        if ($Script:UpdateStatusLabel) { $Script:UpdateStatusLabel.Text = $message }
+        Add-Log $message
+        return $null
+    }
+}
+
+function Open-StadiaReleases {
+    Start-Process $Script:ReleasesUrl
+}
+
+function Get-SelectedControllerIndex {
+    if ($Script:ControllerSelector -and $Script:ControllerSelector.SelectedIndex -ge 0) {
+        return [Math]::Max(0, $Script:ControllerSelector.SelectedIndex)
+    }
+    return 0
+}
+
+function Send-TestRumble {
+    $controllerIndex = Get-SelectedControllerIndex
+    $wslIp = Get-WslIp
+    if ([string]::IsNullOrWhiteSpace($wslIp)) {
+        [System.Windows.Forms.MessageBox]::Show("WSL IP not detected. Start the bridge before testing rumble.", "Rumble test", "OK", "Warning") | Out-Null
+        return
+    }
+
+    try {
+        $client = New-Object System.Net.Sockets.UdpClient
+        $bytes = [byte[]](0x53, 0x01, [byte]$controllerIndex, 0x00, 180, 120)
+        [void]$client.Send($bytes, $bytes.Length, $wslIp, 45494)
+        Start-Sleep -Milliseconds 280
+        $stop = [byte[]](0x53, 0x01, [byte]$controllerIndex, 0x00, 0, 0)
+        [void]$client.Send($stop, $stop.Length, $wslIp, 45494)
+        $client.Close()
+        Add-Log "Sent rumble test to controller $($controllerIndex + 1) through $wslIp:45494."
+    } catch {
+        Add-Log "Rumble test failed: $($_.Exception.Message)"
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Stadia X Control Center"
 $form.StartPosition = "CenterScreen"
@@ -1127,7 +1442,7 @@ $logPage.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
 
 $firstRunTop = New-Object System.Windows.Forms.Panel
 $firstRunTop.Dock = "Top"
-$firstRunTop.Height = 72
+$firstRunTop.Height = 104
 $firstRunTop.Padding = New-Object System.Windows.Forms.Padding(14, 12, 14, 8)
 $firstRunPage.Controls.Add($firstRunTop)
 
@@ -1136,14 +1451,23 @@ $Script:WizardSummaryLabel.Text = "Run the checklist to prepare Stadia X."
 $Script:WizardSummaryLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $Script:WizardSummaryLabel.ForeColor = [System.Drawing.Color]::FromArgb(28, 38, 54)
 $Script:WizardSummaryLabel.AutoSize = $false
-$Script:WizardSummaryLabel.Size = New-Object System.Drawing.Size(640, 24)
+$Script:WizardSummaryLabel.Size = New-Object System.Drawing.Size(780, 24)
 $Script:WizardSummaryLabel.Location = New-Object System.Drawing.Point(14, 10)
 $firstRunTop.Controls.Add($Script:WizardSummaryLabel)
+
+$Script:UpdateStatusLabel = New-Object System.Windows.Forms.Label
+$Script:UpdateStatusLabel.Text = "Installed version: $(Get-LocalVersion)"
+$Script:UpdateStatusLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$Script:UpdateStatusLabel.ForeColor = [System.Drawing.Color]::FromArgb(70, 80, 95)
+$Script:UpdateStatusLabel.AutoSize = $false
+$Script:UpdateStatusLabel.Size = New-Object System.Drawing.Size(780, 22)
+$Script:UpdateStatusLabel.Location = New-Object System.Drawing.Point(14, 38)
+$firstRunTop.Controls.Add($Script:UpdateStatusLabel)
 
 $runWizardButton = New-Object System.Windows.Forms.Button
 $runWizardButton.Text = "Run checklist"
 $runWizardButton.Size = New-Object System.Drawing.Size(110, 30)
-$runWizardButton.Location = New-Object System.Drawing.Point(14, 38)
+$runWizardButton.Location = New-Object System.Drawing.Point(14, 68)
 $runWizardButton.Add_Click({
     Refresh-BluetoothList
     Refresh-FirstRunWizard
@@ -1153,37 +1477,54 @@ $firstRunTop.Controls.Add($runWizardButton)
 $installerButton = New-Object System.Windows.Forms.Button
 $installerButton.Text = "Install"
 $installerButton.Size = New-Object System.Drawing.Size(90, 30)
-$installerButton.Location = New-Object System.Drawing.Point(132, 38)
+$installerButton.Location = New-Object System.Drawing.Point(132, 68)
 $installerButton.Add_Click({ Start-StadiaInstaller })
 $firstRunTop.Controls.Add($installerButton)
 
 $firstRunStartButton = New-Object System.Windows.Forms.Button
 $firstRunStartButton.Text = "Start"
 $firstRunStartButton.Size = New-Object System.Drawing.Size(90, 30)
-$firstRunStartButton.Location = New-Object System.Drawing.Point(230, 38)
+$firstRunStartButton.Location = New-Object System.Drawing.Point(230, 68)
 $firstRunStartButton.Add_Click({ Start-StadiaBridge })
 $firstRunTop.Controls.Add($firstRunStartButton)
 
 $firstRunSetupButton = New-Object System.Windows.Forms.Button
 $firstRunSetupButton.Text = "Setup"
 $firstRunSetupButton.Size = New-Object System.Drawing.Size(90, 30)
-$firstRunSetupButton.Location = New-Object System.Drawing.Point(328, 38)
+$firstRunSetupButton.Location = New-Object System.Drawing.Point(328, 68)
 $firstRunSetupButton.Add_Click({ $tabs.SelectedTab = $setupPage })
 $firstRunTop.Controls.Add($firstRunSetupButton)
 
 $firstRunBluetoothButton = New-Object System.Windows.Forms.Button
 $firstRunBluetoothButton.Text = "Bluetooth"
 $firstRunBluetoothButton.Size = New-Object System.Drawing.Size(90, 30)
-$firstRunBluetoothButton.Location = New-Object System.Drawing.Point(426, 38)
+$firstRunBluetoothButton.Location = New-Object System.Drawing.Point(426, 68)
 $firstRunBluetoothButton.Add_Click({ $tabs.SelectedTab = $bluetoothPage })
 $firstRunTop.Controls.Add($firstRunBluetoothButton)
 
 $firstRunTestButton = New-Object System.Windows.Forms.Button
 $firstRunTestButton.Text = "Test"
 $firstRunTestButton.Size = New-Object System.Drawing.Size(90, 30)
-$firstRunTestButton.Location = New-Object System.Drawing.Point(524, 38)
+$firstRunTestButton.Location = New-Object System.Drawing.Point(524, 68)
 $firstRunTestButton.Add_Click({ $tabs.SelectedTab = $controllerPage })
 $firstRunTop.Controls.Add($firstRunTestButton)
+
+$checkUpdateButton = New-Object System.Windows.Forms.Button
+$checkUpdateButton.Text = "Check updates"
+$checkUpdateButton.Size = New-Object System.Drawing.Size(118, 30)
+$checkUpdateButton.Location = New-Object System.Drawing.Point(622, 68)
+$checkUpdateButton.Add_Click({
+    Check-StadiaUpdate | Out-Null
+    Refresh-FirstRunWizard
+})
+$firstRunTop.Controls.Add($checkUpdateButton)
+
+$openReleasesButton = New-Object System.Windows.Forms.Button
+$openReleasesButton.Text = "Releases"
+$openReleasesButton.Size = New-Object System.Drawing.Size(90, 30)
+$openReleasesButton.Location = New-Object System.Drawing.Point(748, 68)
+$openReleasesButton.Add_Click({ Open-StadiaReleases })
+$firstRunTop.Controls.Add($openReleasesButton)
 
 $firstRunSplit = New-Object System.Windows.Forms.SplitContainer
 $firstRunSplit.Dock = "Fill"
@@ -1646,11 +1987,35 @@ $liveSplit.Panel2.Padding = New-Object System.Windows.Forms.Padding(14, 6, 14, 1
 $livePage.Controls.Add($liveSplit)
 $liveTop.BringToFront()
 
+$liveEventLayout = New-Object System.Windows.Forms.TableLayoutPanel
+$liveEventLayout.Dock = "Fill"
+$liveEventLayout.ColumnCount = 2
+$liveEventLayout.RowCount = 1
+$liveEventLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 48))) | Out-Null
+$liveEventLayout.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 52))) | Out-Null
+$liveSplit.Panel1.Controls.Add($liveEventLayout)
+
+$humanTimelineGroup = New-Object System.Windows.Forms.GroupBox
+$humanTimelineGroup.Text = "Human timeline"
+$humanTimelineGroup.Dock = "Fill"
+$humanTimelineGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$liveEventLayout.Controls.Add($humanTimelineGroup, 0, 0)
+
+$Script:HumanTimelineList = New-Object System.Windows.Forms.ListView
+$Script:HumanTimelineList.View = "Details"
+$Script:HumanTimelineList.FullRowSelect = $true
+$Script:HumanTimelineList.GridLines = $true
+$Script:HumanTimelineList.Dock = "Fill"
+[void]$Script:HumanTimelineList.Columns.Add("Time", 130)
+[void]$Script:HumanTimelineList.Columns.Add("Side", 70)
+[void]$Script:HumanTimelineList.Columns.Add("What is happening", 360)
+$humanTimelineGroup.Controls.Add($Script:HumanTimelineList)
+
 $liveEventsGroup = New-Object System.Windows.Forms.GroupBox
 $liveEventsGroup.Text = "Structured status events"
 $liveEventsGroup.Dock = "Fill"
 $liveEventsGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
-$liveSplit.Panel1.Controls.Add($liveEventsGroup)
+$liveEventLayout.Controls.Add($liveEventsGroup, 1, 0)
 
 $Script:LiveStatusList = New-Object System.Windows.Forms.ListView
 $Script:LiveStatusList.View = "Details"
@@ -1680,7 +2045,7 @@ $linuxLogGroup.Controls.Add($Script:LinuxLogBox)
 
 $controllerTop = New-Object System.Windows.Forms.Panel
 $controllerTop.Dock = "Top"
-$controllerTop.Height = 58
+$controllerTop.Height = 88
 $controllerTop.Padding = New-Object System.Windows.Forms.Padding(14, 12, 14, 8)
 $controllerPage.Controls.Add($controllerTop)
 
@@ -1689,17 +2054,46 @@ $Script:TelemetryLabel.Text = "No controller telemetry yet."
 $Script:TelemetryLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
 $Script:TelemetryLabel.ForeColor = [System.Drawing.Color]::FromArgb(28, 38, 54)
 $Script:TelemetryLabel.AutoSize = $false
-$Script:TelemetryLabel.Size = New-Object System.Drawing.Size(680, 30)
+$Script:TelemetryLabel.Size = New-Object System.Drawing.Size(520, 30)
 $Script:TelemetryLabel.Location = New-Object System.Drawing.Point(14, 16)
 $controllerTop.Controls.Add($Script:TelemetryLabel)
+
+$controllerSelectLabel = New-Object System.Windows.Forms.Label
+$controllerSelectLabel.Text = "Pad"
+$controllerSelectLabel.AutoSize = $true
+$controllerSelectLabel.Location = New-Object System.Drawing.Point(548, 20)
+$controllerTop.Controls.Add($controllerSelectLabel)
+
+$Script:ControllerSelector = New-Object System.Windows.Forms.ComboBox
+$Script:ControllerSelector.DropDownStyle = "DropDownList"
+$Script:ControllerSelector.Size = New-Object System.Drawing.Size(132, 28)
+$Script:ControllerSelector.Location = New-Object System.Drawing.Point(584, 16)
+$Script:ControllerSelector.Add_SelectedIndexChanged({ Reset-ControllerIndicators })
+$controllerTop.Controls.Add($Script:ControllerSelector)
+
+$rumbleButton = New-Object System.Windows.Forms.Button
+$rumbleButton.Text = "Rumble test"
+$rumbleButton.Size = New-Object System.Drawing.Size(100, 30)
+$rumbleButton.Location = New-Object System.Drawing.Point(724, 14)
+$rumbleButton.Add_Click({ Send-TestRumble })
+$controllerTop.Controls.Add($rumbleButton)
 
 $refreshControllerButton = New-Object System.Windows.Forms.Button
 $refreshControllerButton.Text = "Refresh"
 $refreshControllerButton.Size = New-Object System.Drawing.Size(90, 30)
 $refreshControllerButton.Anchor = "Top,Right"
-$refreshControllerButton.Location = New-Object System.Drawing.Point(820, 14)
+$refreshControllerButton.Location = New-Object System.Drawing.Point(832, 14)
 $refreshControllerButton.Add_Click({ Refresh-ControllerTelemetry })
 $controllerTop.Controls.Add($refreshControllerButton)
+
+$Script:ControllerStatsLabel = New-Object System.Windows.Forms.Label
+$Script:ControllerStatsLabel.Text = "Packets: -    Rate: -    Last seen: -"
+$Script:ControllerStatsLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
+$Script:ControllerStatsLabel.ForeColor = [System.Drawing.Color]::FromArgb(70, 80, 95)
+$Script:ControllerStatsLabel.AutoSize = $false
+$Script:ControllerStatsLabel.Size = New-Object System.Drawing.Size(760, 22)
+$Script:ControllerStatsLabel.Location = New-Object System.Drawing.Point(14, 52)
+$controllerTop.Controls.Add($Script:ControllerStatsLabel)
 
 $controllerBody = New-Object System.Windows.Forms.TableLayoutPanel
 $controllerBody.Dock = "Fill"
@@ -1773,9 +2167,25 @@ $Script:AxesLabel = New-Object System.Windows.Forms.Label
 $Script:AxesLabel.Text = "Sticks: waiting for telemetry"
 $Script:AxesLabel.Font = New-Object System.Drawing.Font("Consolas", 10)
 $Script:AxesLabel.AutoSize = $false
-$Script:AxesLabel.Size = New-Object System.Drawing.Size(350, 80)
-$Script:AxesLabel.Location = New-Object System.Drawing.Point(18, 164)
+$Script:AxesLabel.Size = New-Object System.Drawing.Size(350, 70)
+$Script:AxesLabel.Location = New-Object System.Drawing.Point(18, 158)
 $axesPanel.Controls.Add($Script:AxesLabel)
+
+$Script:ControllerDeadzoneLabel = New-Object System.Windows.Forms.Label
+$Script:ControllerDeadzoneLabel.Text = "Deadzone: waiting for stick data"
+$Script:ControllerDeadzoneLabel.AutoSize = $false
+$Script:ControllerDeadzoneLabel.Size = New-Object System.Drawing.Size(350, 22)
+$Script:ControllerDeadzoneLabel.Location = New-Object System.Drawing.Point(18, 232)
+$axesPanel.Controls.Add($Script:ControllerDeadzoneLabel)
+
+$Script:ControllerRawBox = New-Object System.Windows.Forms.TextBox
+$Script:ControllerRawBox.Multiline = $true
+$Script:ControllerRawBox.ReadOnly = $true
+$Script:ControllerRawBox.ScrollBars = "Vertical"
+$Script:ControllerRawBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$Script:ControllerRawBox.Size = New-Object System.Drawing.Size(350, 100)
+$Script:ControllerRawBox.Location = New-Object System.Drawing.Point(18, 260)
+$axesPanel.Controls.Add($Script:ControllerRawBox)
 
 $telemetryNote = New-Object System.Windows.Forms.TextBox
 $telemetryNote.Multiline = $true
@@ -1783,9 +2193,9 @@ $telemetryNote.ReadOnly = $true
 $telemetryNote.BorderStyle = "None"
 $telemetryNote.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
 $telemetryNote.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-$telemetryNote.Text = "This screen reads logs\controller-state.json. The source code now writes that file, but the existing binary must be rebuilt before live button visualization can work."
-$telemetryNote.Size = New-Object System.Drawing.Size(350, 86)
-$telemetryNote.Location = New-Object System.Drawing.Point(18, 250)
+$telemetryNote.Text = "This screen reads logs\controller-state.json. With the v0.3 receiver it can show up to two Stadia controllers, packet rate, deadzone, and rumble routing."
+$telemetryNote.Size = New-Object System.Drawing.Size(350, 70)
+$telemetryNote.Location = New-Object System.Drawing.Point(18, 370)
 $axesPanel.Controls.Add($telemetryNote)
 
 $macroTop = New-Object System.Windows.Forms.Panel

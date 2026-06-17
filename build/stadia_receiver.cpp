@@ -17,6 +17,7 @@
 #include <ViGEm/Client.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdarg>
@@ -279,6 +280,20 @@ struct ControllerState {
     int16_t stick_lx; int16_t stick_ly; int16_t stick_rx; int16_t stick_ry;
 };
 struct RumbleState { uint8_t motor_left; uint8_t motor_right; };
+struct InputPacket {
+    uint8_t magic;
+    uint8_t version;
+    uint8_t controller_index;
+    uint8_t reserved;
+    ControllerState state;
+};
+struct RumblePacket {
+    uint8_t magic;
+    uint8_t version;
+    uint8_t controller_index;
+    uint8_t reserved;
+    RumbleState rumble;
+};
 #pragma pack(pop)
 
 enum ButtonBit : uint16_t {
@@ -288,14 +303,72 @@ enum ButtonBit : uint16_t {
     BTN_BIT_DPAD_UP=1<<12,BTN_BIT_DPAD_DOWN=1<<13,BTN_BIT_DPAD_LEFT=1<<14,BTN_BIT_DPAD_RIGHT=1<<15,
 };
 
-static void write_controller_telemetry(const ControllerState& cs) {
-    static std::mutex telemetry_mtx;
+static constexpr size_t MAX_CONTROLLERS = 2;
+static constexpr uint8_t PACKET_MAGIC = 0x53; // 'S'
+static constexpr uint8_t PACKET_VERSION = 1;
+
+struct ControllerTelemetry {
+    ControllerState state{};
+    uint64_t packets = 0;
+    uint64_t first_seen_ms = 0;
+    uint64_t last_seen_ms = 0;
+};
+
+static std::mutex g_telemetry_mtx;
+static std::array<ControllerTelemetry, MAX_CONTROLLERS> g_telemetry{};
+
+static void write_buttons_json(FILE* f, const ControllerState& cs, const char* indent, bool trailing_comma) {
+    auto bit = [&](uint16_t flag) { return (cs.buttons & flag) ? "true" : "false"; };
+    fprintf(f,
+        "%s\"buttons\": {\n"
+        "%s  \"a\": %s, \"b\": %s, \"x\": %s, \"y\": %s,\n"
+        "%s  \"lb\": %s, \"rb\": %s, \"select\": %s, \"start\": %s,\n"
+        "%s  \"stadia\": %s, \"l3\": %s, \"r3\": %s, \"assistant\": %s,\n"
+        "%s  \"dpad_up\": %s, \"dpad_down\": %s, \"dpad_left\": %s, \"dpad_right\": %s\n"
+        "%s}%s\n",
+        indent,
+        indent, bit(BTN_BIT_A), bit(BTN_BIT_B), bit(BTN_BIT_X), bit(BTN_BIT_Y),
+        indent, bit(BTN_BIT_LB), bit(BTN_BIT_RB), bit(BTN_BIT_SELECT), bit(BTN_BIT_START),
+        indent, bit(BTN_BIT_STADIA), bit(BTN_BIT_L3), bit(BTN_BIT_R3), bit(BTN_BIT_ASSISTANT),
+        indent, bit(BTN_BIT_DPAD_UP), bit(BTN_BIT_DPAD_DOWN), bit(BTN_BIT_DPAD_LEFT), bit(BTN_BIT_DPAD_RIGHT),
+        indent, trailing_comma ? "," : "");
+}
+
+static void write_axes_json(FILE* f, const ControllerState& cs, const char* indent, bool trailing_comma) {
+    fprintf(f,
+        "%s\"axes\": {\n"
+        "%s  \"trigger_left\": %u, \"trigger_right\": %u,\n"
+        "%s  \"stick_lx\": %d, \"stick_ly\": %d,\n"
+        "%s  \"stick_rx\": %d, \"stick_ry\": %d\n"
+        "%s}%s\n",
+        indent,
+        indent, static_cast<unsigned>(cs.trigger_left), static_cast<unsigned>(cs.trigger_right),
+        indent, static_cast<int>(cs.stick_lx), static_cast<int>(cs.stick_ly),
+        indent, static_cast<int>(cs.stick_rx), static_cast<int>(cs.stick_ry),
+        indent, trailing_comma ? "," : "");
+}
+
+static void write_controller_telemetry(uint8_t controller_index, const ControllerState& cs) {
+    static std::mutex write_mtx;
     static auto last_write = std::chrono::steady_clock::time_point{};
 
+    if (controller_index >= MAX_CONTROLLERS) return;
+
     auto now = std::chrono::steady_clock::now();
+    uint64_t now_ms = GetTickCount64();
+
+    {
+        std::lock_guard<std::mutex> lk(g_telemetry_mtx);
+        ControllerTelemetry& telemetry = g_telemetry[controller_index];
+        telemetry.state = cs;
+        telemetry.packets++;
+        if (telemetry.first_seen_ms == 0) telemetry.first_seen_ms = now_ms;
+        telemetry.last_seen_ms = now_ms;
+    }
+
     if (now - last_write < std::chrono::milliseconds(33)) return;
 
-    std::lock_guard<std::mutex> lk(telemetry_mtx);
+    std::lock_guard<std::mutex> lk(write_mtx);
     last_write = now;
 
     CreateDirectoryA("logs", nullptr);
@@ -305,30 +378,52 @@ static void write_controller_telemetry(const ControllerState& cs) {
     FILE* f = fopen(tmp_path, "w");
     if (!f) return;
 
-    auto bit = [&](uint16_t flag) { return (cs.buttons & flag) ? "true" : "false"; };
+    std::array<ControllerTelemetry, MAX_CONTROLLERS> snapshot{};
+    {
+        std::lock_guard<std::mutex> tlk(g_telemetry_mtx);
+        snapshot = g_telemetry;
+    }
+
     fprintf(f,
         "{\n"
         "  \"timestamp\": %llu,\n"
-        "  \"buttons\": {\n"
-        "    \"a\": %s, \"b\": %s, \"x\": %s, \"y\": %s,\n"
-        "    \"lb\": %s, \"rb\": %s, \"select\": %s, \"start\": %s,\n"
-        "    \"stadia\": %s, \"l3\": %s, \"r3\": %s, \"assistant\": %s,\n"
-        "    \"dpad_up\": %s, \"dpad_down\": %s, \"dpad_left\": %s, \"dpad_right\": %s\n"
-        "  },\n"
-        "  \"axes\": {\n"
-        "    \"trigger_left\": %u, \"trigger_right\": %u,\n"
-        "    \"stick_lx\": %d, \"stick_ly\": %d,\n"
-        "    \"stick_rx\": %d, \"stick_ry\": %d\n"
-        "  }\n"
-        "}\n",
-        static_cast<unsigned long long>(GetTickCount64()),
-        bit(BTN_BIT_A), bit(BTN_BIT_B), bit(BTN_BIT_X), bit(BTN_BIT_Y),
-        bit(BTN_BIT_LB), bit(BTN_BIT_RB), bit(BTN_BIT_SELECT), bit(BTN_BIT_START),
-        bit(BTN_BIT_STADIA), bit(BTN_BIT_L3), bit(BTN_BIT_R3), bit(BTN_BIT_ASSISTANT),
-        bit(BTN_BIT_DPAD_UP), bit(BTN_BIT_DPAD_DOWN), bit(BTN_BIT_DPAD_LEFT), bit(BTN_BIT_DPAD_RIGHT),
-        static_cast<unsigned>(cs.trigger_left), static_cast<unsigned>(cs.trigger_right),
-        static_cast<int>(cs.stick_lx), static_cast<int>(cs.stick_ly),
-        static_cast<int>(cs.stick_rx), static_cast<int>(cs.stick_ry));
+        "  \"active_controller\": %u,\n",
+        static_cast<unsigned long long>(now_ms),
+        static_cast<unsigned>(controller_index));
+
+    write_buttons_json(f, cs, "  ", true);
+    write_axes_json(f, cs, "  ", true);
+
+    fprintf(f, "  \"controllers\": [\n");
+    for (size_t i = 0; i < MAX_CONTROLLERS; ++i) {
+        const ControllerTelemetry& telemetry = snapshot[i];
+        bool active = telemetry.last_seen_ms > 0 && (now_ms - telemetry.last_seen_ms) < 5000;
+        uint64_t age_ms = telemetry.last_seen_ms > 0 ? (now_ms - telemetry.last_seen_ms) : 0;
+        double elapsed_s = 0.0;
+        if (telemetry.first_seen_ms > 0 && telemetry.last_seen_ms >= telemetry.first_seen_ms) {
+            elapsed_s = static_cast<double>(telemetry.last_seen_ms - telemetry.first_seen_ms) / 1000.0;
+        }
+        double pps = elapsed_s > 0.0 ? static_cast<double>(telemetry.packets) / elapsed_s : 0.0;
+
+        fprintf(f,
+            "    {\n"
+            "      \"index\": %u,\n"
+            "      \"active\": %s,\n"
+            "      \"last_seen_ms\": %llu,\n"
+            "      \"last_seen_age_ms\": %llu,\n"
+            "      \"packets\": %llu,\n"
+            "      \"pps\": %.2f,\n",
+            static_cast<unsigned>(i),
+            active ? "true" : "false",
+            static_cast<unsigned long long>(telemetry.last_seen_ms),
+            static_cast<unsigned long long>(age_ms),
+            static_cast<unsigned long long>(telemetry.packets),
+            pps);
+        write_buttons_json(f, telemetry.state, "      ", true);
+        write_axes_json(f, telemetry.state, "      ", false);
+        fprintf(f, "    }%s\n", (i + 1 < MAX_CONTROLLERS) ? "," : "");
+    }
+    fprintf(f, "  ]\n}\n");
 
     fclose(f);
     MoveFileExA(tmp_path, out_path, MOVEFILE_REPLACE_EXISTING);
@@ -336,6 +431,27 @@ static void write_controller_telemetry(const ControllerState& cs) {
 
 static constexpr uint16_t PORT_INPUT  = 45493;
 static constexpr uint16_t PORT_RUMBLE = 45494;
+
+static bool parse_input_packet(const char* data, int size, uint8_t& controller_index, ControllerState& cs) {
+    if (size == sizeof(ControllerState)) {
+        controller_index = 0;
+        std::memcpy(&cs, data, sizeof(cs));
+        return true;
+    }
+
+    if (size == sizeof(InputPacket)) {
+        InputPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        if (packet.magic != PACKET_MAGIC || packet.version != PACKET_VERSION || packet.controller_index >= MAX_CONTROLLERS) {
+            return false;
+        }
+        controller_index = packet.controller_index;
+        cs = packet.state;
+        return true;
+    }
+
+    return false;
+}
 
 static XUSB_REPORT map_to_xusb(const ControllerState& cs) {
     XUSB_REPORT report; XUSB_REPORT_INIT(&report);
@@ -365,24 +481,33 @@ static XUSB_REPORT map_to_xusb(const ControllerState& cs) {
     return report;
 }
 
-static VOID CALLBACK vigem_rumble_callback(PVIGEM_CLIENT,PVIGEM_TARGET,UCHAR l,UCHAR s,UCHAR,LPVOID) {
-    RumbleState rs; rs.motor_left=l; rs.motor_right=s;
+static VOID CALLBACK vigem_rumble_callback(PVIGEM_CLIENT,PVIGEM_TARGET,UCHAR l,UCHAR s,UCHAR,LPVOID user) {
+    uint8_t controller_index = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(user));
+    RumblePacket packet{};
+    packet.magic = PACKET_MAGIC;
+    packet.version = PACKET_VERSION;
+    packet.controller_index = controller_index;
+    packet.rumble.motor_left = l;
+    packet.rumble.motor_right = s;
     if (g_rumble_sock!=INVALID_SOCKET)
-        sendto(g_rumble_sock,(const char*)&rs,sizeof(rs),0,(const sockaddr*)&g_rumble_dest,sizeof(g_rumble_dest));
+        sendto(g_rumble_sock,(const char*)&packet,sizeof(packet),0,(const sockaddr*)&g_rumble_dest,sizeof(g_rumble_dest));
 }
 
-static void input_receiver_thread(PVIGEM_CLIENT client, PVIGEM_TARGET pad) {
+static void input_receiver_thread(PVIGEM_CLIENT client, std::array<PVIGEM_TARGET, MAX_CONTROLLERS>* pads) {
     SOCKET sock = socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
     DWORD to=1000; setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(const char*)&to,sizeof(to));
     sockaddr_in bind_addr{}; bind_addr.sin_family=AF_INET; bind_addr.sin_addr.s_addr=INADDR_ANY; bind_addr.sin_port=htons(PORT_INPUT);
     bind(sock,(sockaddr*)&bind_addr,sizeof(bind_addr));
 
     while (g_running) {
+        char buf[64] = {};
         ControllerState cs{};
-        int n = recv(sock,(char*)&cs,sizeof(cs),0);
-        if (n==sizeof(cs)) {
+        uint8_t controller_index = 0;
+        int n = recv(sock, buf, sizeof(buf), 0);
+        if (parse_input_packet(buf, n, controller_index, cs)) {
+            PVIGEM_TARGET pad = (*pads)[controller_index];
             vigem_target_x360_update(client,pad,map_to_xusb(cs));
-            write_controller_telemetry(cs);
+            write_controller_telemetry(controller_index, cs);
         }
     }
     closesocket(sock);
@@ -409,23 +534,34 @@ int main(int argc, char* argv[]) {
         log_err("ViGEmBus init failed — is the driver installed?");
         return 1;
     }
-    PVIGEM_TARGET pad = vigem_target_x360_alloc();
-    vigem_target_add(client, pad);
-    vigem_target_x360_register_notification(client, pad, vigem_rumble_callback, nullptr);
+    std::array<PVIGEM_TARGET, MAX_CONTROLLERS> pads{};
+    for (size_t i = 0; i < MAX_CONTROLLERS; ++i) {
+        pads[i] = vigem_target_x360_alloc();
+        const VIGEM_ERROR err = vigem_target_add(client, pads[i]);
+        if (!VIGEM_SUCCESS(err)) {
+            log_err("ViGEm virtual pad %u init failed: 0x%08X", static_cast<unsigned>(i + 1), err);
+            return 1;
+        }
+        vigem_target_x360_register_notification(client, pads[i], vigem_rumble_callback, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(i)));
+        log_info("Virtual Xbox 360 pad %u ready", static_cast<unsigned>(i + 1));
+    }
 
     g_rumble_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     g_rumble_dest.sin_family=AF_INET; g_rumble_dest.sin_port=htons(PORT_RUMBLE);
     inet_pton(AF_INET, g_bridge_ip.c_str(), &g_rumble_dest.sin_addr);
 
-    std::thread t_input(input_receiver_thread, client, pad);
+    std::thread t_input(input_receiver_thread, client, &pads);
     std::thread t_macro(macro_listener_thread);
 
     log_info("Receiver running. Press Ctrl+C to exit.");
     if (t_input.joinable()) t_input.join();
     if (t_macro.joinable()) t_macro.join();
 
-    vigem_target_x360_unregister_notification(pad);
-    vigem_target_remove(client,pad); vigem_target_free(pad);
+    for (size_t i = 0; i < MAX_CONTROLLERS; ++i) {
+        if (!pads[i]) continue;
+        vigem_target_x360_unregister_notification(pads[i]);
+        vigem_target_remove(client,pads[i]); vigem_target_free(pads[i]);
+    }
     vigem_disconnect(client); vigem_free(client);
     closesocket(g_rumble_sock); WSACleanup();
     return 0;

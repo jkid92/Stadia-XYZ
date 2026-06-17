@@ -7,6 +7,7 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 ## ✨ Features
 * **Automated Setup:** The script installs everything it needs on first run.
 * **Full Rumble Support:** Force feedback works flawlessly.
+* **Dual Controller Bridge:** Two Stadia controllers can be forwarded as two virtual Xbox 360 pads.
 * **Universal Game Compatibility:** Emulates a standard Xbox 360 controller via ViGEmBus.
 * **Ultimate Macro Pad:** Hold the Assistant or Capture buttons to turn the rest of your controller into a media remote or keyboard shortcut machine!
 * **Alternate Layouts:** Three ready-made shortcut profiles included — PC, Gaming, and Utils. Just swap the `.ini` file to change your whole layout instantly.
@@ -33,8 +34,8 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
    * **Note:** You will likely be prompted to **Restart your PC** during the first run. Please restart, and then run `Start-Stadia.bat` again.
 5. **First Pairing:**
    * Once the script boots Linux, it will look for your controller.
-   * Turn on your Stadia Controller, then hold **Stadia + Y** until the light flashes orange to enter pairing mode.
-   * It will connect automatically. Next time you play, you just need to turn the controller on!
+   * Turn on one or two Stadia Controllers, then hold **Stadia + Y** until the light flashes orange to enter pairing mode.
+   * They will connect automatically. Next time you play, you just need to turn the controller on!
 6. **Game On!** Leave the black console window open while you play. When you are done, simply close the window and `Stop-Stadia` will automatically run to give your Bluetooth back to Windows.
 
 ---
@@ -45,6 +46,7 @@ Run `Start-GUI.bat` to open the Stadia X Control Center.
 
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
+* Check the installed version against the latest GitHub Release and open the download page.
 * Check required tools and runtime files before starting.
 * Run a pre-start setup audit and a post-start health audit.
 * Inspect all USB/IP devices with BUSID, VID:PID, name, state, and Bluetooth detection hint.
@@ -52,11 +54,11 @@ The GUI lets you:
 * Inspect Windows Bluetooth status, adapters, service state, known devices, and active/OK devices.
 * Enable or disable the selected Bluetooth adapter from the GUI when troubleshooting.
 * Start the bridge with Administrator elevation when needed.
-* Watch live Windows/Linux status events while the bridge starts.
+* Watch live Windows/Linux status events while the bridge starts, including a human-readable timeline of what is happening.
 * See whether Linux is scanning, has found the controller, is connecting, or is waiting for an input device.
 * Stop Stadia X and restore the Bluetooth adapter.
 * Read the controller battery level when the controller is connected.
-* Test controller buttons, triggers, and sticks once the updated receiver binary is built.
+* Test controller buttons, triggers, sticks, packet rate, deadzone, and rumble routing for controller 1 or controller 2.
 * Edit and save `stadia_buttons.ini` with automatic timestamped backups.
 
 > Developer note: the source branch must contain or build `stadia_receiver.exe`, `ViGEmClient.dll`, and `stadia_bridge` before the Start button can complete successfully. The GUI reports those missing runtime files clearly instead of failing later in the startup script.
@@ -74,7 +76,7 @@ Runtime logs are written under `logs/`:
 * `linux-status.log` records structured Linux bridge states such as scanning, connecting, and input-device detection.
 * `linux.log` keeps the raw Linux core output.
 * `bluetooth-diagnostics.txt` captures Linux/BlueZ adapter, controller, module, and kernel hints after the Linux core starts.
-* `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen.
+* `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen. In v0.3+ it contains a `controllers` array for up to two pads, plus packet counters and per-pad activity.
 
 If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `Start-Stadia.bat` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.
 

@@ -139,55 +139,74 @@ sleep 3
 
 log "Scanning for Stadia controller..."
 
-STADIA_MAC=$(bluetoothctl devices | grep -i "Stadia" | head -n 1 | awk '{print $2}')
+discover_stadia_macs() {
+    bluetoothctl devices | grep -i "Stadia" | awk '{print $2}' | head -n 2
+}
+
+connect_stadia_controller() {
+    local mac="$1"
+    local label="$2"
+
+    if [ -z "$STADIA_MAC" ]; then
+        STADIA_MAC="$mac"
+    fi
+
+    status "CONTROLLER_SEEN" "Found $label controller $mac"
+    log "Found $label controller: $mac"
+    bluetoothctl trust "$mac" >/dev/null 2>&1
+
+    if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+        status "CONTROLLER_CONNECTED" "Controller $mac already connected"
+        log "Controller $mac already connected."
+        return 0
+    fi
+
+    status "CONNECT_START" "Connecting to controller $mac"
+    log "Connecting to $mac..."
+    if bluetoothctl connect "$mac" >/dev/null 2>&1; then
+        status "CONNECT_COMMAND_OK" "Connect command completed for $mac"
+    else
+        status "CONNECT_COMMAND_FAILED" "Connect command failed for $mac"
+    fi
+
+    sleep 3
+    if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+        status "CONTROLLER_CONNECTED" "Controller $mac connected"
+        return 0
+    fi
+
+    status "CONTROLLER_NOT_CONNECTED" "Controller $mac was seen but did not connect"
+    return 1
+}
+
+mapfile -t STADIA_MACS < <(discover_stadia_macs)
 write_bt_diagnostics "after initial scan"
 
-if [ -n "$STADIA_MAC" ]; then
-    status "CONTROLLER_SEEN" "Found previously paired controller $STADIA_MAC"
-    log "Found previously paired controller: $STADIA_MAC"
-    bluetoothctl trust "$STADIA_MAC" >/dev/null 2>&1
-
-    if bluetoothctl info "$STADIA_MAC" 2>/dev/null | grep -q "Connected: yes"; then
-        status "CONTROLLER_CONNECTED" "Controller already connected"
-        log "Controller already connected."
-    else
-        status "CONNECT_START" "Connecting to controller $STADIA_MAC"
-        log "Connecting to $STADIA_MAC..."
-        if bluetoothctl connect "$STADIA_MAC" >/dev/null 2>&1; then
-            status "CONNECT_COMMAND_OK" "Connect command completed for $STADIA_MAC"
-        else
-            status "CONNECT_COMMAND_FAILED" "Connect command failed for $STADIA_MAC"
+CONNECTED_COUNT=0
+if [ ${#STADIA_MACS[@]} -gt 0 ]; then
+    status "CONTROLLER_SEEN" "Found ${#STADIA_MACS[@]} known Stadia controller(s)"
+    index=1
+    for mac in "${STADIA_MACS[@]}"; do
+        if connect_stadia_controller "$mac" "known #$index"; then
+            CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
         fi
-        sleep 3
-        if bluetoothctl info "$STADIA_MAC" 2>/dev/null | grep -q "Connected: yes"; then
-            status "CONTROLLER_CONNECTED" "Controller connected"
-        else
-            status "CONTROLLER_NOT_CONNECTED" "Controller was seen but did not connect"
-        fi
-    fi
+        index=$((index + 1))
+    done
 else
     status "PAIR_WAIT" "No known Stadia controller found; waiting for pairing"
     log "No previously paired Stadia found. Waiting for pairing..."
-    log "Hold the Stadia button + Y on your controller for pairing mode."
+    log "Hold Stadia + Y on one or two controllers for pairing mode."
     for i in $(seq 1 30); do
         sleep 2
-        STADIA_MAC=$(bluetoothctl devices | grep -i "Stadia" | head -n 1 | awk '{print $2}')
-        if [ -n "$STADIA_MAC" ]; then
-            status "CONTROLLER_SEEN" "Found controller $STADIA_MAC"
-            log "Found controller: $STADIA_MAC"
-            bluetoothctl trust "$STADIA_MAC" >/dev/null 2>&1
-            status "CONNECT_START" "Connecting to controller $STADIA_MAC"
-            if bluetoothctl connect "$STADIA_MAC" >/dev/null 2>&1; then
-                status "CONNECT_COMMAND_OK" "Connect command completed for $STADIA_MAC"
-            else
-                status "CONNECT_COMMAND_FAILED" "Connect command failed for $STADIA_MAC"
-            fi
-            sleep 3
-            if bluetoothctl info "$STADIA_MAC" 2>/dev/null | grep -q "Connected: yes"; then
-                status "CONTROLLER_CONNECTED" "Controller connected"
-            else
-                status "CONTROLLER_NOT_CONNECTED" "Controller was seen but did not connect"
-            fi
+        mapfile -t STADIA_MACS < <(discover_stadia_macs)
+        if [ ${#STADIA_MACS[@]} -gt 0 ]; then
+            index=1
+            for mac in "${STADIA_MACS[@]}"; do
+                if connect_stadia_controller "$mac" "pairing #$index"; then
+                    CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
+                fi
+                index=$((index + 1))
+            done
             break
         fi
         if [ $((i % 5)) -eq 0 ]; then
@@ -200,12 +219,14 @@ kill $SCAN_PID 2>/dev/null || true
 bluetoothctl scan off >/dev/null 2>&1
 write_bt_diagnostics "after controller connect attempt"
 
-if [ -z "$STADIA_MAC" ]; then
-    status "CONTROLLER_NOT_FOUND" "No Stadia controller found"
-    echo "[ERROR] No Stadia controller found. Exiting."
+if [ "$CONNECTED_COUNT" -eq 0 ]; then
+    status "CONTROLLER_NOT_FOUND" "No connected Stadia controller found"
+    echo "[ERROR] No connected Stadia controller found. Exiting."
     read -p "Press Enter to exit..."
     exit 1
 fi
+
+status "CONTROLLERS_READY" "$CONNECTED_COUNT Stadia controller(s) connected"
 
 # Wait for input device to appear
 status "INPUT_WAIT" "Waiting for Linux input device"
@@ -214,8 +235,9 @@ TIMEOUT=15
 while [ $TIMEOUT -gt 0 ]; do
     if ls /dev/input/event* 2>/dev/null | grep -q event; then
         INPUT_EVENTS=$(ls /dev/input/event* | tr '\n' ' ')
-        status "INPUT_READY" "Input device confirmed: $INPUT_EVENTS"
-        log "Input device confirmed: $INPUT_EVENTS"
+        INPUT_COUNT=$(echo "$INPUT_EVENTS" | wc -w)
+        status "INPUT_READY" "Input device(s) confirmed ($INPUT_COUNT): $INPUT_EVENTS"
+        log "Input device(s) confirmed ($INPUT_COUNT): $INPUT_EVENTS"
         break
     fi
     sleep 1
