@@ -1,0 +1,118 @@
+name: Build and package Stadia X
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional release/package version"
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-bridge:
+    name: Build Linux bridge
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y g++
+
+      - name: Build stadia_bridge
+        run: |
+          mkdir -p artifacts/linux
+          bash build/build-linux-bridge.sh "$PWD/artifacts/linux/stadia_bridge"
+
+      - name: Upload Linux bridge artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bridge
+          path: artifacts/linux/stadia_bridge
+          if-no-files-found: error
+
+  build-windows-receiver:
+    name: Build Windows receiver
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build stadia_receiver.exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
+          ./build/Build-WindowsReceiver.ps1 -OutputDirectory artifacts/windows
+
+      - name: Upload Windows receiver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-receiver
+          path: |
+            artifacts/windows/stadia_receiver.exe
+            artifacts/windows/ViGEmClient.dll
+          if-no-files-found: error
+
+  package:
+    name: Package release ZIP
+    runs-on: windows-latest
+    needs:
+      - build-linux-bridge
+      - build-windows-receiver
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage runtime binaries
+        shell: pwsh
+        run: |
+          Copy-Item -Force artifacts/windows-receiver/stadia_receiver.exe .
+          Copy-Item -Force artifacts/windows-receiver/ViGEmClient.dll .
+          Copy-Item -Force artifacts/linux-bridge/stadia_bridge .
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "${{ github.ref_name }}"
+          }
+          ./build/Package-Release.ps1 -Version $version
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stadia-X-package
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256

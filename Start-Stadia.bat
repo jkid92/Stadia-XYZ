@@ -7,12 +7,51 @@ echo =========================================
 echo.
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "REQUESTED_BT_BUSID=%~1"
+if defined STADIA_X_BT_BUSID set "REQUESTED_BT_BUSID=%STADIA_X_BT_BUSID%"
+set "LOG_DIR=%SCRIPT_DIR%\logs"
+set "START_LOG=%LOG_DIR%\start.log"
+set "STATUS_FILE=%LOG_DIR%\status.log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+> "%START_LOG%" echo [%DATE% %TIME%] Stadia X startup requested
+> "%STATUS_FILE%" echo [%DATE% %TIME%] STATUS:START_REQUESTED^|Start requested
 
 echo [System Check] Verifying environment...
+call :STATUS CHECK_START "Checking Windows and runtime requirements"
+
+set "MISSING_RUNTIME=0"
+if not exist "%SCRIPT_DIR%\start.sh" (
+    echo ERROR: Missing required file: start.sh
+    call :STATUS MISSING_RUNTIME "Missing start.sh"
+    set "MISSING_RUNTIME=1"
+)
+if not exist "%SCRIPT_DIR%\stadia_bridge" (
+    echo ERROR: Missing required file: stadia_bridge
+    call :STATUS MISSING_RUNTIME "Missing stadia_bridge"
+    set "MISSING_RUNTIME=1"
+)
+if not exist "%SCRIPT_DIR%\stadia_receiver.exe" (
+    echo ERROR: Missing required file: stadia_receiver.exe
+    call :STATUS MISSING_RUNTIME "Missing stadia_receiver.exe"
+    set "MISSING_RUNTIME=1"
+)
+if not exist "%SCRIPT_DIR%\ViGEmClient.dll" (
+    echo ERROR: Missing required file: ViGEmClient.dll
+    call :STATUS MISSING_RUNTIME "Missing ViGEmClient.dll"
+    set "MISSING_RUNTIME=1"
+)
+if "%MISSING_RUNTIME%"=="1" (
+    echo.
+    echo The runtime files are not present in this folder.
+    echo Build or copy the release artifacts before starting Stadia X.
+    pause
+    exit /b 1
+)
 
 usbipd --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [Setup] USBIPD not found. Installing...
+    call :STATUS USBIPD_MISSING "usbipd was not found; launching winget install"
     winget install usbipd
     echo.
     echo ==========================================================
@@ -25,13 +64,29 @@ if %errorlevel% neq 0 (
 
 REM ---- Check if we even need the custom kernel ----
 set "NEED_KERNEL=0"
+call :STATUS WSL_KERNEL_CHECK "Checking WSL USB/HID kernel support"
 wsl bash -c "modprobe vhci-hcd 2>/dev/null; lsmod | grep -q vhci_hcd" >nul 2>&1
 if %errorlevel% neq 0 set "NEED_KERNEL=1"
 
 if "%NEED_KERNEL%"=="1" (
     if not exist "%USERPROFILE%\wsl_kernel" (
+        if not exist "%SCRIPT_DIR%\build\wsl_kernel" (
+            echo ERROR: WSL USB/HID support needs a custom kernel, but build\wsl_kernel is missing.
+            echo Add the kernel release artifact or update WSL with "wsl --update" and try again.
+            call :STATUS WSL_KERNEL_MISSING "Custom WSL kernel is required but build\wsl_kernel is missing"
+            pause
+            exit /b 1
+        )
         echo [Setup] Deploying custom WSL kernel for USB/HID support...
+        call :STATUS WSL_KERNEL_DEPLOY "Deploying custom WSL kernel"
         copy "%SCRIPT_DIR%\build\wsl_kernel" "%USERPROFILE%\wsl_kernel" >nul
+        if exist "%USERPROFILE%\.wslconfig" (
+            if not exist "%USERPROFILE%\.wslconfig.stadia-x.bak" (
+                copy "%USERPROFILE%\.wslconfig" "%USERPROFILE%\.wslconfig.stadia-x.bak" >nul
+                echo [Setup] Existing .wslconfig backed up to .wslconfig.stadia-x.bak
+                call :STATUS WSL_CONFIG_BACKUP "Backed up existing .wslconfig"
+            )
+        )
         echo[wsl2] > "%USERPROFILE%\.wslconfig"
         echo kernel=C:\\Users\\%USERNAME%\\wsl_kernel >> "%USERPROFILE%\.wslconfig"
         echo memory=800MB >> "%USERPROFILE%\.wslconfig"
@@ -43,11 +98,13 @@ if "%NEED_KERNEL%"=="1" (
     )
 ) else (
     echo [Setup] WSL kernel already supports USB HID. Skipping custom kernel.
+    call :STATUS WSL_KERNEL_OK "WSL kernel already supports USB HID"
 )
 
 wsl -d Ubuntu echo ok >nul 2>&1
 if %errorlevel% neq 0 (
     echo [Setup] Installing Ubuntu WSL userland...
+    call :STATUS UBUNTU_MISSING "Ubuntu WSL distro missing; launching WSL install"
     wsl --install -d Ubuntu
     echo.
     echo ==========================================================
@@ -61,27 +118,46 @@ if %errorlevel% neq 0 (
 REM Only shutdown WSL if receiver is running from old session
 tasklist /FI "IMAGENAME eq stadia_receiver.exe" 2>NUL | find /I /N "stadia_receiver.exe">NUL
 if "%ERRORLEVEL%"=="0" (
+    call :STATUS CLEANUP_OLD_SESSION "Stopping existing receiver and WSL session"
     taskkill /F /IM stadia_receiver.exe >nul 2>&1
     wsl --shutdown >nul 2>&1
     timeout /t 2 /nobreak >nul
 )
 
 echo [1/4] Starting WSL...
+call :STATUS WSL_START "Starting WSL"
 wsl echo "WSL Booted" >nul 2>&1
 
 echo Waiting for WSL network to initialize...
+set /a WSL_WAIT_TRIES=30
 :WSL_WAIT
 wsl bash -c "ip addr show eth0 2>/dev/null | grep -q 'inet '" >nul 2>&1
 if %errorlevel% neq 0 (
+    set /a WSL_WAIT_TRIES-=1
+    if !WSL_WAIT_TRIES! leq 0 (
+        echo ERROR: Timed out waiting for WSL networking.
+        echo Try running "wsl --shutdown", then start Stadia X again.
+        call :STATUS WSL_NETWORK_TIMEOUT "Timed out waiting for WSL network"
+        pause
+        exit /b 1
+    )
     timeout /t 2 /nobreak >nul
     goto :WSL_WAIT
 )
 echo WSL network ready.
+call :STATUS WSL_NETWORK_READY "WSL network is ready"
 
 echo.
 echo[2/4] Attaching Bluetooth Hardware...
 set "BT_BUSID="
 echo Auto-detecting Bluetooth adapter...
+call :STATUS BT_DETECT "Detecting Bluetooth adapter"
+
+if not "%REQUESTED_BT_BUSID%"=="" (
+    set "BT_BUSID=%REQUESTED_BT_BUSID%"
+    echo Using Bluetooth BUSID from launcher: %BT_BUSID%
+    goto :BT_FOUND
+)
 
 for /f "tokens=1" %%a in ('usbipd list ^| findstr /i /c:"bluetooth" /c:"intel wireless" /c:"intel(r) wireless" /c:"realtek" /c:"mediatek" /c:"qualcomm"') do (
     set "BT_BUSID=%%a"
@@ -98,15 +174,41 @@ if "%BT_BUSID%"=="" (
 
 if "%BT_BUSID%"=="" (
     echo ERROR: No Bluetooth adapter provided. Cannot continue.
+    call :STATUS BT_MISSING "No Bluetooth BUSID was selected or detected"
+    pause
+    exit /b 1
+)
+
+echo(%BT_BUSID%| findstr /R "^[0-9][0-9]*-[0-9][0-9]*$" >nul
+if %errorlevel% neq 0 (
+    echo ERROR: Invalid Bluetooth BUSID: %BT_BUSID%
+    echo Expected format looks like 1-13.
+    call :STATUS BT_INVALID "Invalid Bluetooth BUSID: %BT_BUSID%"
+    pause
+    exit /b 1
+)
+
+set "BT_DEVICE_LINE="
+for /f "delims=" %%l in ('usbipd list ^| findstr /R /C:"^[ ]*%BT_BUSID%[ ]"') do (
+    if not defined BT_DEVICE_LINE set "BT_DEVICE_LINE=%%l"
+)
+if not defined BT_DEVICE_LINE (
+    echo ERROR: BUSID %BT_BUSID% was not found in usbipd list.
+    echo Refresh adapters in the GUI or run "usbipd list" and select the correct BUSID.
+    call :STATUS BT_NOT_FOUND_IN_USBIPD "Selected BUSID %BT_BUSID% was not found in usbipd list"
     pause
     exit /b 1
 )
 
 echo Success: Target Bluetooth adapter found on BUSID %BT_BUSID%
+echo Selected USB/IP device:
+echo(!BT_DEVICE_LINE!
+call :STATUS BT_SELECTED "Using Bluetooth BUSID %BT_BUSID%"
 echo %BT_BUSID%> "%SCRIPT_DIR%\bt_busid.txt"
 
 set ATTACH_TRIES=3
 :ATTACH_LOOP
+call :STATUS BT_ATTACH_START "Attaching Bluetooth adapter to WSL"
 usbipd bind --busid %BT_BUSID% --force >nul 2>&1
 usbipd attach --wsl --busid %BT_BUSID%
 if %errorlevel% equ 0 goto :ATTACH_SUCCESS
@@ -114,11 +216,13 @@ if %errorlevel% equ 0 goto :ATTACH_SUCCESS
 set /a ATTACH_TRIES-=1
 if %ATTACH_TRIES% gtr 0 (
     echo WARNING: Attach failed. Retrying in 4 seconds...
+    call :STATUS BT_ATTACH_RETRY "Attach failed; retrying"
     timeout /t 4 /nobreak >nul
     goto :ATTACH_LOOP
 )
 
 echo ERROR: Could not attach Bluetooth to WSL. Check usbipd and firewall.
+call :STATUS BT_ATTACH_FAILED "Could not attach Bluetooth adapter to WSL"
 echo Common fixes:
 echo   1. Run this script as Administrator
 echo   2. Check Windows Firewall is not blocking usbipd
@@ -127,22 +231,33 @@ pause
 exit /b 1
 
 :ATTACH_SUCCESS
+call :STATUS BT_ATTACH_OK "Bluetooth adapter attached to WSL"
+usbipd list | findstr /R /C:"^[ ]*%BT_BUSID%[ ]" | findstr /i "Attached" >nul 2>&1
+if %errorlevel% equ 0 (
+    call :STATUS BT_ATTACH_VERIFY_OK "usbipd reports BUSID %BT_BUSID% as attached"
+) else (
+    call :STATUS BT_ATTACH_VERIFY_WARN "Attach command succeeded, but usbipd list did not report BUSID %BT_BUSID% as Attached"
+)
 echo Waiting for Bluetooth adapter to settle in WSL...
 timeout /t 5 /nobreak >nul
 
 echo.
 echo [3/4] Deploying to Linux...
+call :STATUS DEPLOY_START "Deploying Linux bridge files"
 for /f "delims=" %%i in ('wsl wslpath -u "%SCRIPT_DIR%"') do set WSL_PATH=%%i
+for /f "delims=" %%i in ('wsl wslpath -u "%LOG_DIR%"') do set WSL_LOG_DIR=%%i
 wsl -u root mkdir -p /opt/stadia-x
 wsl -u root cp "%WSL_PATH%/start.sh" /opt/stadia-x/start.sh
 wsl -u root cp "%WSL_PATH%/stadia_bridge" /opt/stadia-x/stadia_bridge
 wsl -u root sed -i "s/\r//g" /opt/stadia-x/start.sh
 wsl -u root chmod +x /opt/stadia-x/start.sh
+call :STATUS DEPLOY_OK "Linux bridge files deployed"
 
 echo.
 echo [4/4] Starting Services...
+call :STATUS LINUX_START "Starting Linux core"
 
-start /MIN "Stadia X - Linux Core" wsl -u root bash -c "/opt/stadia-x/start.sh"
+start /MIN "Stadia X - Linux Core" wsl -u root bash -lc "STADIA_X_STATUS_LOG='%WSL_LOG_DIR%/linux-status.log' STADIA_X_LINUX_LOG='%WSL_LOG_DIR%/linux.log' /opt/stadia-x/start.sh 2>&1 | tee -a '%WSL_LOG_DIR%/linux.log'"
 
 timeout /t 8 /nobreak >nul
 
@@ -154,9 +269,11 @@ for /f "tokens=1" %%a in ('type "%TEMP%\wsl_ip.txt"') do set "WSL_IP=%%a"
 if "%WSL_IP%"=="" (
     echo WARNING: Could not detect WSL IP. Rumble may not work.
     set "WSL_IP=127.0.0.1"
+    call :STATUS WSL_IP_FALLBACK "Could not detect WSL IP; using 127.0.0.1"
 )
 
 echo Detected WSL IP: %WSL_IP%
+call :STATUS WSL_IP_READY "Detected WSL IP %WSL_IP%"
 
 echo.
 echo =====================================================================
@@ -165,6 +282,13 @@ echo   Leave this window open while you play.
 echo   Close the Receiver window when done.
 echo =====================================================================
 
+call :STATUS RECEIVER_START "Starting Windows receiver"
 set "PS_CMD=Start-Process -FilePath '%SCRIPT_DIR%\stadia_receiver.exe' -ArgumentList '%WSL_IP%' -WorkingDirectory '%SCRIPT_DIR%' -Wait; Start-Process -FilePath 'cmd.exe' -ArgumentList '/c \"\"%SCRIPT_DIR%\Stop-Stadia.bat\"\"' -WindowStyle Hidden"
 powershell -Command "%PS_CMD%"
 exit
+
+:STATUS
+echo STATUS:%~1^|%~2
+>> "%START_LOG%" echo [%DATE% %TIME%] STATUS:%~1^|%~2
+>> "%STATUS_FILE%" echo [%DATE% %TIME%] STATUS:%~1^|%~2
+exit /b 0

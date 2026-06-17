@@ -287,6 +287,52 @@ enum ButtonBit : uint16_t {
     BTN_BIT_DPAD_UP=1<<12,BTN_BIT_DPAD_DOWN=1<<13,BTN_BIT_DPAD_LEFT=1<<14,BTN_BIT_DPAD_RIGHT=1<<15,
 };
 
+static void write_controller_telemetry(const ControllerState& cs) {
+    static std::mutex telemetry_mtx;
+    static auto last_write = std::chrono::steady_clock::time_point{};
+
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_write < std::chrono::milliseconds(33)) return;
+
+    std::lock_guard<std::mutex> lk(telemetry_mtx);
+    last_write = now;
+
+    CreateDirectoryA("logs", nullptr);
+
+    const char* tmp_path = "logs\\controller-state.json.tmp";
+    const char* out_path = "logs\\controller-state.json";
+    FILE* f = fopen(tmp_path, "w");
+    if (!f) return;
+
+    auto bit = [&](uint16_t flag) { return (cs.buttons & flag) ? "true" : "false"; };
+    fprintf(f,
+        "{\n"
+        "  \"timestamp\": %llu,\n"
+        "  \"buttons\": {\n"
+        "    \"a\": %s, \"b\": %s, \"x\": %s, \"y\": %s,\n"
+        "    \"lb\": %s, \"rb\": %s, \"select\": %s, \"start\": %s,\n"
+        "    \"stadia\": %s, \"l3\": %s, \"r3\": %s, \"assistant\": %s,\n"
+        "    \"dpad_up\": %s, \"dpad_down\": %s, \"dpad_left\": %s, \"dpad_right\": %s\n"
+        "  },\n"
+        "  \"axes\": {\n"
+        "    \"trigger_left\": %u, \"trigger_right\": %u,\n"
+        "    \"stick_lx\": %d, \"stick_ly\": %d,\n"
+        "    \"stick_rx\": %d, \"stick_ry\": %d\n"
+        "  }\n"
+        "}\n",
+        static_cast<unsigned long long>(GetTickCount64()),
+        bit(BTN_BIT_A), bit(BTN_BIT_B), bit(BTN_BIT_X), bit(BTN_BIT_Y),
+        bit(BTN_BIT_LB), bit(BTN_BIT_RB), bit(BTN_BIT_SELECT), bit(BTN_BIT_START),
+        bit(BTN_BIT_STADIA), bit(BTN_BIT_L3), bit(BTN_BIT_R3), bit(BTN_BIT_ASSISTANT),
+        bit(BTN_BIT_DPAD_UP), bit(BTN_BIT_DPAD_DOWN), bit(BTN_BIT_DPAD_LEFT), bit(BTN_BIT_DPAD_RIGHT),
+        static_cast<unsigned>(cs.trigger_left), static_cast<unsigned>(cs.trigger_right),
+        static_cast<int>(cs.stick_lx), static_cast<int>(cs.stick_ly),
+        static_cast<int>(cs.stick_rx), static_cast<int>(cs.stick_ry));
+
+    fclose(f);
+    MoveFileExA(tmp_path, out_path, MOVEFILE_REPLACE_EXISTING);
+}
+
 static constexpr uint16_t PORT_INPUT  = 45493;
 static constexpr uint16_t PORT_RUMBLE = 45494;
 
@@ -333,7 +379,10 @@ static void input_receiver_thread(PVIGEM_CLIENT client, PVIGEM_TARGET pad) {
     while (g_running) {
         ControllerState cs{};
         int n = recv(sock,(char*)&cs,sizeof(cs),0);
-        if (n==sizeof(cs)) vigem_target_x360_update(client,pad,map_to_xusb(cs));
+        if (n==sizeof(cs)) {
+            vigem_target_x360_update(client,pad,map_to_xusb(cs));
+            write_controller_telemetry(cs);
+        }
     }
     closesocket(sock);
 }

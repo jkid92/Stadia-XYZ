@@ -1,0 +1,14 @@
+bt_busid.txt
+*.bak
+*.log
+*.ilk
+*.obj
+*.pdb
+/logs/
+/.deps/
+/artifacts/
+/dist/
+/stadia_bridge
+/stadia_receiver.exe
+/ViGEmClient.dll
+/wsl_kernel

@@ -7,6 +7,12 @@ echo =========================================
 echo.
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "LOG_DIR=%SCRIPT_DIR%\logs"
+set "STOP_LOG=%LOG_DIR%\teardown.log"
+set "STATUS_FILE=%LOG_DIR%\status.log"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+>> "%STOP_LOG%" echo [%DATE% %TIME%] Stadia X teardown requested
+call :STATUS STOP_START "Stopping Stadia X and restoring Bluetooth"
 
 echo [1/4] Terminating processes...
 taskkill /F /IM stadia_receiver.exe >nul 2>&1
@@ -45,11 +51,13 @@ if "!BT_BUSID!"=="" (
 
 if "!BT_BUSID!"=="" (
     echo    WARNING: No Bluetooth adapter found to detach.
+    call :STATUS BT_RESTORE_UNKNOWN "No Bluetooth BUSID found for detach"
     echo    If Bluetooth is missing from Windows: open Device Manager,
     echo    find "USBIP Shared Device" under Universal Serial Bus Controllers,
     echo    right-click and Uninstall Device, then Action - Scan for hardware changes.
 ) else (
     echo    Releasing Bus ID: !BT_BUSID!
+    call :STATUS BT_RESTORE_START "Releasing Bluetooth BUSID !BT_BUSID!"
     usbipd detach --busid !BT_BUSID! >nul 2>&1
     timeout /t 1 /nobreak >nul
     usbipd unbind  --busid !BT_BUSID! >nul 2>&1
@@ -58,9 +66,11 @@ if "!BT_BUSID!"=="" (
     usbipd list 2>nul | findstr /i "!BT_BUSID!" | findstr /i "Attached" >nul 2>&1
     if !errorlevel! equ 0 (
         echo    Still attached, forcing unbind...
+        call :STATUS BT_RESTORE_RETRY "Adapter still attached; forcing unbind"
         usbipd unbind --busid !BT_BUSID! --force >nul 2>&1
     ) else (
         echo    Bluetooth adapter returned to Windows successfully.
+        call :STATUS BT_RESTORE_OK "Bluetooth adapter returned to Windows"
     )
     if exist "%SCRIPT_DIR%\bt_busid.txt" del "%SCRIPT_DIR%\bt_busid.txt"
 )
@@ -77,4 +87,12 @@ echo.
 echo   If Bluetooth is still missing: open Device Manager,
 echo   Action menu - Scan for hardware changes.
 echo.
+call :STATUS STOP_DONE "Teardown complete"
 timeout /t 5
+exit /b 0
+
+:STATUS
+echo STATUS:%~1^|%~2
+>> "%STOP_LOG%" echo [%DATE% %TIME%] STATUS:%~1^|%~2
+>> "%STATUS_FILE%" echo [%DATE% %TIME%] STATUS:%~1^|%~2
+exit /b 0

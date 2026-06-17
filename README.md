@@ -19,13 +19,14 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 1. **Windows 10 or Windows 11**
 2. **Hardware Virtualization Enabled:** Ensure VT-x (Intel) or SVM (AMD) is enabled in your motherboard's BIOS (required for WSL2).
 3. **Bluetooth Adapter:** Either a built-in motherboard Wi-Fi/BT card or a USB Bluetooth dongle.
+4. **ViGEmBus Driver:** Required for Xbox 360 controller emulation on Windows.
 
 ---
 
 ## 🚀 Installation & First Run
 
-1. Extract the `Stadia X` folder to a permanent location (e.g., your Desktop or `C:\Program Files\Stadia X`). **Do not run it from inside the ZIP file.**
-2. Double-click `Start-Stadia.bat`.
+1. Download the latest release ZIP from GitHub, then extract the `Stadia X` folder to a permanent location (e.g., your Desktop or `C:\Program Files\Stadia X`). **Do not run it from inside the ZIP file.**
+2. Double-click `Start-GUI.bat` for the graphical control panel, or double-click `Start-Stadia.bat` for the classic console flow.
 3. **The Setup Phase:**
    * The script will automatically install `usbipd` and `Ubuntu` for WSL.
    * **Note:** You will likely be prompted to **Restart your PC** during the first run. Please restart, and then run `Start-Stadia.bat` again.
@@ -34,6 +35,46 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
    * Turn on your Stadia Controller, then hold **Stadia + Y** until the light flashes orange to enter pairing mode.
    * It will connect automatically. Next time you play, you just need to turn the controller on!
 5. **Game On!** Leave the black console window open while you play. When you are done, simply close the window and `Stop-Stadia` will automatically run to give your Bluetooth back to Windows.
+
+---
+
+## 🖥️ Graphical Control Panel
+
+Run `Start-GUI.bat` to open the Stadia X Control Center.
+
+The GUI lets you:
+* Check required tools and runtime files before starting.
+* Run a pre-start setup audit and a post-start health audit.
+* Inspect all USB/IP devices with BUSID, VID:PID, name, state, and Bluetooth detection hint.
+* Manually choose or type the exact Bluetooth USB/IP BUSID that should be handed fully to Linux.
+* Inspect Windows Bluetooth status, adapters, service state, known devices, and active/OK devices.
+* Enable or disable the selected Bluetooth adapter from the GUI when troubleshooting.
+* Start the bridge with Administrator elevation when needed.
+* Watch live Windows/Linux status events while the bridge starts.
+* See whether Linux is scanning, has found the controller, is connecting, or is waiting for an input device.
+* Stop Stadia X and restore the Bluetooth adapter.
+* Read the controller battery level when the controller is connected.
+* Test controller buttons, triggers, and sticks once the updated receiver binary is built.
+* Edit and save `stadia_buttons.ini` with automatic timestamped backups.
+
+> Developer note: the source branch must contain or build `stadia_receiver.exe`, `ViGEmClient.dll`, and `stadia_bridge` before the Start button can complete successfully. The GUI reports those missing runtime files clearly instead of failing later in the startup script.
+
+Release ZIPs are built automatically by GitHub Actions and include the GUI plus the native runtime files:
+* `stadia_receiver.exe`
+* `ViGEmClient.dll`
+* `stadia_bridge`
+
+For local builds or release maintenance, see `BUILD.md`.
+
+Runtime logs are written under `logs/`:
+* `status.log` records Windows startup and teardown events.
+* `linux-status.log` records structured Linux bridge states such as scanning, connecting, and input-device detection.
+* `linux.log` keeps the raw Linux core output.
+* `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen.
+
+If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `Start-Stadia.bat` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.
+
+The `Bluetooth` tab focuses on the Windows side before USB/IP handoff. It shows whether Windows sees a Bluetooth adapter, whether the Bluetooth service is running, how many non-adapter Bluetooth devices Windows currently reports as active/OK, and all known Bluetooth PnP devices. Windows does not reliably expose the Bluetooth radio specification version or a maximum device count through standard local APIs, so the GUI reports driver information and explains that the practical connection limit depends on adapter, driver, and profile mix.
 
 ---
 
