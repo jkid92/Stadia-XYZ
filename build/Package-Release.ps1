@@ -34,6 +34,8 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 $requiredFiles = @(
     "Start-GUI.bat",
+    "Install-StadiaX.bat",
+    "Install-StadiaX.ps1",
     "StadiaX-GUI.ps1",
     "Start-Stadia.bat",
     "Stop-Stadia.bat",

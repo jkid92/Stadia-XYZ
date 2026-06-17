@@ -1,7 +1,8 @@
 #!/bin/bash
 STATUS_LOG="${STADIA_X_STATUS_LOG:-/opt/stadia-x/linux-status.log}"
 LINUX_LOG="${STADIA_X_LINUX_LOG:-/opt/stadia-x/linux.log}"
-mkdir -p "$(dirname "$STATUS_LOG")" "$(dirname "$LINUX_LOG")" /dev/input/
+BT_DIAG_LOG="${STADIA_X_BT_DIAG_LOG:-/opt/stadia-x/bluetooth-diagnostics.txt}"
+mkdir -p "$(dirname "$STATUS_LOG")" "$(dirname "$LINUX_LOG")" "$(dirname "$BT_DIAG_LOG")" /dev/input/
 
 status() {
     local code="$1"
@@ -14,6 +15,49 @@ status() {
 
 log() {
     echo "[Stadia X] $1"
+}
+
+write_bt_diagnostics() {
+    local phase="$1"
+    {
+        echo "Stadia X Bluetooth diagnostics"
+        echo "Phase: $phase"
+        echo "Timestamp: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo
+        echo "== bluetoothctl list =="
+        bluetoothctl list 2>&1 || true
+        echo
+        echo "== bluetoothctl show =="
+        bluetoothctl show 2>&1 || true
+        echo
+        echo "== bluetoothctl devices =="
+        bluetoothctl devices 2>&1 || true
+        if [ -n "$STADIA_MAC" ]; then
+            echo
+            echo "== bluetoothctl info $STADIA_MAC =="
+            bluetoothctl info "$STADIA_MAC" 2>&1 || true
+        fi
+        echo
+        echo "== hciconfig -a =="
+        if command -v hciconfig >/dev/null 2>&1; then hciconfig -a 2>&1 || true; else echo "hciconfig not installed"; fi
+        echo
+        echo "== btmgmt info =="
+        if command -v btmgmt >/dev/null 2>&1; then btmgmt info 2>&1 || true; else echo "btmgmt not installed"; fi
+        echo
+        echo "== rfkill =="
+        if command -v rfkill >/dev/null 2>&1; then rfkill list 2>&1 || true; else echo "rfkill not installed"; fi
+        echo
+        echo "== lsusb bluetooth hints =="
+        if command -v lsusb >/dev/null 2>&1; then lsusb 2>&1 | grep -iE "bluetooth|wireless|intel|realtek|mediatek|qualcomm|broadcom" || true; else echo "lsusb not installed"; fi
+        echo
+        echo "== kernel modules =="
+        lsmod 2>/dev/null | grep -E "btusb|bluetooth|vhci|hid|uhid|joydev" || true
+        echo
+        echo "== dmesg bluetooth tail =="
+        dmesg 2>/dev/null | grep -iE "bluetooth|btusb|hci|usbip|vhci|hid" | tail -n 80 || true
+    } > "$BT_DIAG_LOG.tmp"
+    mv "$BT_DIAG_LOG.tmp" "$BT_DIAG_LOG"
+    status "BT_DIAG_WRITTEN" "Bluetooth diagnostics written to $BT_DIAG_LOG"
 }
 
 status "LINUX_INIT" "Initializing Bluetooth services"
@@ -84,6 +128,8 @@ if bluetoothctl power on >/dev/null 2>&1; then
 else
     status "ADAPTER_POWER_FAILED" "Could not power on Bluetooth adapter"
 fi
+STADIA_MAC=""
+write_bt_diagnostics "adapter powered"
 
 # Start scan in background
 status "SCAN_START" "Scanning for Stadia controller"
@@ -94,6 +140,7 @@ sleep 3
 log "Scanning for Stadia controller..."
 
 STADIA_MAC=$(bluetoothctl devices | grep -i "Stadia" | head -n 1 | awk '{print $2}')
+write_bt_diagnostics "after initial scan"
 
 if [ -n "$STADIA_MAC" ]; then
     status "CONTROLLER_SEEN" "Found previously paired controller $STADIA_MAC"
@@ -151,6 +198,7 @@ fi
 
 kill $SCAN_PID 2>/dev/null || true
 bluetoothctl scan off >/dev/null 2>&1
+write_bt_diagnostics "after controller connect attempt"
 
 if [ -z "$STADIA_MAC" ]; then
     status "CONTROLLER_NOT_FOUND" "No Stadia controller found"

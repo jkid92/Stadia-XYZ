@@ -6,6 +6,7 @@ This project ships as a portable folder plus two native runtime binaries:
 * `stadia_bridge` runs inside Ubuntu/WSL and forwards Stadia Bluetooth input and rumble packets.
 
 The GUI, batch files, configuration file, runtime binaries, and documentation are packaged into a single ZIP by the release workflow.
+The ZIP also includes `Install-StadiaX.bat`, a lightweight installer that copies the folder to a stable install path and creates shortcuts.
 
 ## GitHub Actions release flow
 

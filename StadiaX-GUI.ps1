@@ -15,8 +15,12 @@ $Script:LogDir = Join-Path $Script:Root "logs"
 $Script:StatusLogPath = Join-Path $Script:LogDir "status.log"
 $Script:LinuxStatusLogPath = Join-Path $Script:LogDir "linux-status.log"
 $Script:LinuxLogPath = Join-Path $Script:LogDir "linux.log"
+$Script:BluetoothDiagPath = Join-Path $Script:LogDir "bluetooth-diagnostics.txt"
 $Script:ControllerStatePath = Join-Path $Script:LogDir "controller-state.json"
 $Script:ButtonIndicators = @{}
+$Script:WizardList = $null
+$Script:WizardSummaryLabel = $null
+$Script:WizardDetailBox = $null
 $Script:SetupList = $null
 $Script:LiveStatusList = $null
 $Script:LiveSummaryLabel = $null
@@ -43,6 +47,23 @@ function Test-IsAdmin {
 function Test-CommandAvailable {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Test-ViGEmBusInstalled {
+    try {
+        $service = Get-Service -Name "ViGEmBus" -ErrorAction SilentlyContinue
+        if ($service) {
+            return $true
+        }
+    } catch {}
+
+    try {
+        $devices = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
+            Where-Object { $_.Name -match "ViGEm|Virtual Gamepad Emulation" }
+        return [bool]($devices | Select-Object -First 1)
+    } catch {
+        return $false
+    }
 }
 
 function Ensure-LogDir {
@@ -254,6 +275,77 @@ function Refresh-LiveStatus {
     }
 }
 
+function Add-WizardRow {
+    param(
+        [string]$Name,
+        [string]$State,
+        [string]$Details
+    )
+
+    Add-ListRow $Script:WizardList $Name $State $Details
+}
+
+function Refresh-FirstRunWizard {
+    if (-not $Script:WizardList) {
+        return
+    }
+
+    $Script:WizardList.Items.Clear()
+
+    $runtimeMissing = @()
+    if (-not (Test-Path $Script:ReceiverPath)) { $runtimeMissing += "stadia_receiver.exe" }
+    if (-not (Test-Path $Script:ViGEmClientPath)) { $runtimeMissing += "ViGEmClient.dll" }
+    if (-not (Test-Path $Script:BridgePath)) { $runtimeMissing += "stadia_bridge" }
+    if (-not (Test-Path $Script:StartShPath)) { $runtimeMissing += "start.sh" }
+    if (-not (Test-Path $Script:ConfigPath)) { $runtimeMissing += "stadia_buttons.ini" }
+
+    $releaseOk = ($runtimeMissing.Count -eq 0)
+    Add-WizardRow "Release files" ($(if ($releaseOk) { "OK" } else { "MISSING" })) ($(if ($releaseOk) { "Runtime package is complete" } else { "Missing: $($runtimeMissing -join ', ')" }))
+
+    $installerPresent = (Test-Path (Join-Path $Script:Root "Install-StadiaX.ps1"))
+    Add-WizardRow "Installer" ($(if ($installerPresent) { "OK" } else { "WARN" })) ($(if ($installerPresent) { "Portable installer is available" } else { "Installer script not found" }))
+
+    $vigemOk = Test-ViGEmBusInstalled
+    Add-WizardRow "ViGEmBus driver" ($(if ($vigemOk) { "OK" } else { "MISSING" })) ($(if ($vigemOk) { "Virtual Xbox bus is installed" } else { "Install ViGEmBus before playing" }))
+
+    $usbipdOk = Test-CommandAvailable "usbipd"
+    Add-WizardRow "usbipd" ($(if ($usbipdOk) { "OK" } else { "MISSING" })) ($(if ($usbipdOk) { "USB/IP command is available" } else { "Start flow can install it with winget" }))
+
+    $wslOk = Test-CommandAvailable "wsl"
+    Add-WizardRow "WSL" ($(if ($wslOk) { "OK" } else { "MISSING" })) ($(if ($wslOk) { "wsl.exe is available" } else { "Windows Subsystem for Linux is missing" }))
+
+    $ubuntuOk = if ($wslOk) { Test-UbuntuAvailable } else { $false }
+    Add-WizardRow "Ubuntu distro" ($(if ($ubuntuOk) { "OK" } else { "WARN" })) ($(if ($ubuntuOk) { "Ubuntu distro responds" } else { "Start flow can install Ubuntu" }))
+
+    $devices = @(Get-UsbipdDevices)
+    $btDevices = @($devices | Where-Object { $_.IsBluetooth })
+    $selectedBusId = Get-SelectedBusId
+    $selectedKnown = $false
+    if ($selectedBusId) {
+        $selectedKnown = [bool]($devices | Where-Object { $_.BusId -eq $selectedBusId } | Select-Object -First 1)
+    }
+    Add-WizardRow "Bluetooth adapter" ($(if ($btDevices.Count -gt 0) { "OK" } else { "WARN" })) "$($btDevices.Count) likely adapter(s) detected by usbipd"
+    Add-WizardRow "Selected BUSID" ($(if ($selectedBusId -and $selectedKnown) { "OK" } elseif ($selectedBusId) { "WARN" } else { "MISSING" })) ($(if ($selectedBusId) { $selectedBusId } else { "Select one in Setup" }))
+
+    $latest = Get-LatestStatusSummary
+    Add-WizardRow "Startup timeline" ($(if ($latest -ne "No live status yet.") { "LIVE" } else { "INFO" })) $latest
+
+    $receiverRunning = [bool](Get-Process -Name "stadia_receiver" -ErrorAction SilentlyContinue)
+    Add-WizardRow "Receiver process" ($(if ($receiverRunning) { "OK" } else { "INFO" })) ($(if ($receiverRunning) { "stadia_receiver.exe is running" } else { "Not running" }))
+
+    $telemetryOk = Test-Path $Script:ControllerStatePath
+    Add-WizardRow "Controller test data" ($(if ($telemetryOk) { "OK" } else { "INFO" })) ($(if ($telemetryOk) { "Telemetry file exists" } else { "Created after bridge receives input" }))
+
+    $problem = $Script:WizardList.Items | Where-Object { $_.SubItems[1].Text -in @("MISSING", "WARN") } | Select-Object -First 1
+    if ($problem) {
+        $Script:WizardSummaryLabel.Text = "Next: $($problem.Text) - $($problem.SubItems[2].Text)"
+    } else {
+        $Script:WizardSummaryLabel.Text = "Ready: start the bridge, pair the controller, then open Controller Test."
+    }
+
+    $Script:WizardDetailBox.Text = "Install folder: $Script:Root`r`nSelected BUSID: $(if ($selectedBusId) { $selectedBusId } else { 'none' })`r`nLatest status: $latest"
+}
+
 function Run-SetupAudit {
     Ensure-LogDir
     $Script:SetupList.Items.Clear()
@@ -261,6 +353,7 @@ function Run-SetupAudit {
     Add-ListRow $Script:SetupList "PowerShell elevation" ($(if (Test-IsAdmin) { "OK" } else { "WARN" })) ($(if (Test-IsAdmin) { "Running as Administrator" } else { "Start/Stop will request UAC elevation" }))
     Add-ListRow $Script:SetupList "usbipd" ($(if (Test-CommandAvailable "usbipd") { "OK" } else { "MISSING" })) "Required for Bluetooth pass-through"
     Add-ListRow $Script:SetupList "wsl" ($(if (Test-CommandAvailable "wsl") { "OK" } else { "MISSING" })) "Required for Linux bridge"
+    Add-ListRow $Script:SetupList "ViGEmBus driver" ($(if (Test-ViGEmBusInstalled) { "OK" } else { "MISSING" })) "Required for virtual Xbox 360 controller"
     Add-ListRow $Script:SetupList "Ubuntu distro" ($(if (Test-UbuntuAvailable) { "OK" } else { "WARN" })) "Current scripts target distro name Ubuntu"
     Add-ListRow $Script:SetupList "Ubuntu WSL2" ($(if (Test-UbuntuWsl2) { "OK" } else { "WARN" })) "USB/IP requires WSL2"
     Add-ListRow $Script:SetupList "Runtime: receiver" ($(if (Test-Path $Script:ReceiverPath) { "OK" } else { "MISSING" })) "stadia_receiver.exe"
@@ -440,6 +533,7 @@ function Refresh-BluetoothPanel {
     Add-ListRow $Script:BluetoothStatusList "Known devices" ($(if ($snapshot.PairedOrKnown.Count -gt 0) { "OK" } else { "INFO" })) "$($snapshot.PairedOrKnown.Count) non-adapter Bluetooth device(s) known to Windows"
     Add-ListRow $Script:BluetoothStatusList "Bluetooth version" "INFO" "Windows does not reliably expose the Bluetooth spec version here; $($snapshot.DriverInfo)"
     Add-ListRow $Script:BluetoothStatusList "Device limit" "INFO" "Not reliably exposed; practical limit depends on adapter, profile mix, and driver."
+    Add-ListRow $Script:BluetoothStatusList "Linux diagnostics" ($(if (Test-Path $Script:BluetoothDiagPath) { "OK" } else { "INFO" })) ($(if (Test-Path $Script:BluetoothDiagPath) { $Script:BluetoothDiagPath } else { "Created after Linux core starts" }))
 
     foreach ($adapter in $snapshot.Adapters) {
         Add-BluetoothDeviceRow $Script:BluetoothAdapterList $adapter "Adapter"
@@ -456,7 +550,11 @@ function Refresh-BluetoothPanel {
         $Script:BluetoothSummaryLabel.Text = "No Bluetooth adapter detected by Windows."
     }
 
-    $Script:BluetoothInfoBox.Text = "Bluetooth version: Windows standard PnP APIs usually expose driver version, not the Bluetooth radio specification version.`r`n`r`nMax connected devices: not a fixed Windows value. It depends on the adapter chipset, driver, Bluetooth profile types, bandwidth, and whether devices use Classic Bluetooth or BLE.`r`n`r`nConnected count: this panel counts Bluetooth devices with PnP Status OK as active/available; some paired devices may still appear here differently depending on driver behavior."
+    $diagText = ""
+    if (Test-Path $Script:BluetoothDiagPath) {
+        $diagText = "`r`n`r`nLatest Linux / BlueZ diagnostics:`r`n" + ((Get-Content -Path $Script:BluetoothDiagPath -Tail 90 -ErrorAction SilentlyContinue) -join "`r`n")
+    }
+    $Script:BluetoothInfoBox.Text = "Bluetooth version: Windows standard PnP APIs usually expose driver version, not the Bluetooth radio specification version.`r`n`r`nMax connected devices: not a fixed Windows value. It depends on the adapter chipset, driver, Bluetooth profile types, bandwidth, and whether devices use Classic Bluetooth or BLE.`r`n`r`nConnected count: this panel counts Bluetooth devices with PnP Status OK as active/available; some paired devices may still appear here differently depending on driver behavior.$diagText"
 }
 
 function Get-SelectedBluetoothAdapterInstanceId {
@@ -763,6 +861,7 @@ function Refresh-Status {
     Add-CheckRow "PowerShell elevation" ($(if (Test-IsAdmin) { "OK" } else { "WARN" })) ($(if (Test-IsAdmin) { "Running as Administrator" } else { "Start/Stop will ask for UAC elevation" }))
     Add-CheckRow "usbipd" ($(if (Test-CommandAvailable "usbipd") { "OK" } else { "MISSING" })) "Required to attach the Bluetooth adapter to WSL"
     Add-CheckRow "wsl" ($(if (Test-CommandAvailable "wsl") { "OK" } else { "MISSING" })) "Required for the Linux bridge"
+    Add-CheckRow "ViGEmBus driver" ($(if (Test-ViGEmBusInstalled) { "OK" } else { "MISSING" })) "Required for Xbox 360 controller emulation"
 
     $ubuntuOk = $false
     if (Test-CommandAvailable "wsl") {
@@ -927,6 +1026,21 @@ function Open-ProjectFolder {
     Start-Process explorer.exe -ArgumentList ('"' + $Script:Root + '"')
 }
 
+function Start-StadiaInstaller {
+    $installer = Join-Path $Script:Root "Install-StadiaX.bat"
+    if (-not (Test-Path $installer)) {
+        [System.Windows.Forms.MessageBox]::Show("Install-StadiaX.bat was not found.", "Stadia X installer", "OK", "Warning") | Out-Null
+        return
+    }
+
+    try {
+        Start-Process -FilePath $installer -WorkingDirectory $Script:Root
+        Add-Log "Installer launched."
+    } catch {
+        Add-Log "Installer launch failed: $($_.Exception.Message)"
+    }
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Stadia X Control Center"
 $form.StartPosition = "CenterScreen"
@@ -971,6 +1085,11 @@ $tabs.Dock = "Fill"
 $tabs.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $form.Controls.Add($tabs)
 
+$firstRunPage = New-Object System.Windows.Forms.TabPage
+$firstRunPage.Text = "First Run"
+$firstRunPage.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
+[void]$tabs.TabPages.Add($firstRunPage)
+
 $setupPage = New-Object System.Windows.Forms.TabPage
 $setupPage.Text = "Setup"
 $setupPage.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
@@ -1005,6 +1124,109 @@ $logPage = New-Object System.Windows.Forms.TabPage
 $logPage.Text = "Log"
 $logPage.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
 [void]$tabs.TabPages.Add($logPage)
+
+$firstRunTop = New-Object System.Windows.Forms.Panel
+$firstRunTop.Dock = "Top"
+$firstRunTop.Height = 72
+$firstRunTop.Padding = New-Object System.Windows.Forms.Padding(14, 12, 14, 8)
+$firstRunPage.Controls.Add($firstRunTop)
+
+$Script:WizardSummaryLabel = New-Object System.Windows.Forms.Label
+$Script:WizardSummaryLabel.Text = "Run the checklist to prepare Stadia X."
+$Script:WizardSummaryLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$Script:WizardSummaryLabel.ForeColor = [System.Drawing.Color]::FromArgb(28, 38, 54)
+$Script:WizardSummaryLabel.AutoSize = $false
+$Script:WizardSummaryLabel.Size = New-Object System.Drawing.Size(640, 24)
+$Script:WizardSummaryLabel.Location = New-Object System.Drawing.Point(14, 10)
+$firstRunTop.Controls.Add($Script:WizardSummaryLabel)
+
+$runWizardButton = New-Object System.Windows.Forms.Button
+$runWizardButton.Text = "Run checklist"
+$runWizardButton.Size = New-Object System.Drawing.Size(110, 30)
+$runWizardButton.Location = New-Object System.Drawing.Point(14, 38)
+$runWizardButton.Add_Click({
+    Refresh-BluetoothList
+    Refresh-FirstRunWizard
+})
+$firstRunTop.Controls.Add($runWizardButton)
+
+$installerButton = New-Object System.Windows.Forms.Button
+$installerButton.Text = "Install"
+$installerButton.Size = New-Object System.Drawing.Size(90, 30)
+$installerButton.Location = New-Object System.Drawing.Point(132, 38)
+$installerButton.Add_Click({ Start-StadiaInstaller })
+$firstRunTop.Controls.Add($installerButton)
+
+$firstRunStartButton = New-Object System.Windows.Forms.Button
+$firstRunStartButton.Text = "Start"
+$firstRunStartButton.Size = New-Object System.Drawing.Size(90, 30)
+$firstRunStartButton.Location = New-Object System.Drawing.Point(230, 38)
+$firstRunStartButton.Add_Click({ Start-StadiaBridge })
+$firstRunTop.Controls.Add($firstRunStartButton)
+
+$firstRunSetupButton = New-Object System.Windows.Forms.Button
+$firstRunSetupButton.Text = "Setup"
+$firstRunSetupButton.Size = New-Object System.Drawing.Size(90, 30)
+$firstRunSetupButton.Location = New-Object System.Drawing.Point(328, 38)
+$firstRunSetupButton.Add_Click({ $tabs.SelectedTab = $setupPage })
+$firstRunTop.Controls.Add($firstRunSetupButton)
+
+$firstRunBluetoothButton = New-Object System.Windows.Forms.Button
+$firstRunBluetoothButton.Text = "Bluetooth"
+$firstRunBluetoothButton.Size = New-Object System.Drawing.Size(90, 30)
+$firstRunBluetoothButton.Location = New-Object System.Drawing.Point(426, 38)
+$firstRunBluetoothButton.Add_Click({ $tabs.SelectedTab = $bluetoothPage })
+$firstRunTop.Controls.Add($firstRunBluetoothButton)
+
+$firstRunTestButton = New-Object System.Windows.Forms.Button
+$firstRunTestButton.Text = "Test"
+$firstRunTestButton.Size = New-Object System.Drawing.Size(90, 30)
+$firstRunTestButton.Location = New-Object System.Drawing.Point(524, 38)
+$firstRunTestButton.Add_Click({ $tabs.SelectedTab = $controllerPage })
+$firstRunTop.Controls.Add($firstRunTestButton)
+
+$firstRunSplit = New-Object System.Windows.Forms.SplitContainer
+$firstRunSplit.Dock = "Fill"
+$firstRunSplit.Orientation = "Horizontal"
+$firstRunSplit.SplitterDistance = 360
+$firstRunSplit.Panel1.Padding = New-Object System.Windows.Forms.Padding(14, 10, 14, 6)
+$firstRunSplit.Panel2.Padding = New-Object System.Windows.Forms.Padding(14, 6, 14, 14)
+$firstRunPage.Controls.Add($firstRunSplit)
+$firstRunTop.BringToFront()
+
+$wizardGroup = New-Object System.Windows.Forms.GroupBox
+$wizardGroup.Text = "First-run checklist"
+$wizardGroup.Dock = "Fill"
+$wizardGroup.Padding = New-Object System.Windows.Forms.Padding(12)
+$wizardGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$firstRunSplit.Panel1.Controls.Add($wizardGroup)
+
+$Script:WizardList = New-Object System.Windows.Forms.ListView
+$Script:WizardList.View = "Details"
+$Script:WizardList.FullRowSelect = $true
+$Script:WizardList.GridLines = $true
+$Script:WizardList.Dock = "Fill"
+[void]$Script:WizardList.Columns.Add("Step", 190)
+[void]$Script:WizardList.Columns.Add("Status", 90)
+[void]$Script:WizardList.Columns.Add("Details", 650)
+$wizardGroup.Controls.Add($Script:WizardList)
+
+$wizardDetailGroup = New-Object System.Windows.Forms.GroupBox
+$wizardDetailGroup.Text = "Current context"
+$wizardDetailGroup.Dock = "Fill"
+$wizardDetailGroup.Padding = New-Object System.Windows.Forms.Padding(12)
+$wizardDetailGroup.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+$firstRunSplit.Panel2.Controls.Add($wizardDetailGroup)
+
+$Script:WizardDetailBox = New-Object System.Windows.Forms.TextBox
+$Script:WizardDetailBox.Multiline = $true
+$Script:WizardDetailBox.ReadOnly = $true
+$Script:WizardDetailBox.ScrollBars = "Vertical"
+$Script:WizardDetailBox.BorderStyle = "None"
+$Script:WizardDetailBox.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
+$Script:WizardDetailBox.Font = New-Object System.Drawing.Font("Consolas", 9)
+$Script:WizardDetailBox.Dock = "Fill"
+$wizardDetailGroup.Controls.Add($Script:WizardDetailBox)
 
 $setupTop = New-Object System.Windows.Forms.Panel
 $setupTop.Dock = "Top"
@@ -1625,6 +1847,9 @@ $refreshTimer.Add_Tick({
     if ($tabs.SelectedTab -eq $bluetoothPage) {
         Refresh-BluetoothPanel
     }
+    if ($tabs.SelectedTab -eq $firstRunPage) {
+        Refresh-FirstRunWizard
+    }
 })
 
 $form.Add_Shown({
@@ -1632,6 +1857,7 @@ $form.Add_Shown({
     Add-Log "Stadia X GUI loaded from $Script:Root"
     Refresh-BluetoothList
     Refresh-Status
+    Refresh-FirstRunWizard
     Run-SetupAudit
     Refresh-BluetoothPanel
     Refresh-LiveStatus

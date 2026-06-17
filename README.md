@@ -26,15 +26,16 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 ## 🚀 Installation & First Run
 
 1. Download the latest release ZIP from GitHub, then extract the `Stadia X` folder to a permanent location (e.g., your Desktop or `C:\Program Files\Stadia X`). **Do not run it from inside the ZIP file.**
-2. Double-click `Start-GUI.bat` for the graphical control panel, or double-click `Start-Stadia.bat` for the classic console flow.
-3. **The Setup Phase:**
+2. Double-click `Install-StadiaX.bat` to copy Stadia X to a stable folder and create shortcuts, or run `Start-GUI.bat` directly for portable mode.
+3. In the GUI, open `First Run` and follow the checklist from top to bottom.
+4. **The Setup Phase:**
    * The script will automatically install `usbipd` and `Ubuntu` for WSL.
    * **Note:** You will likely be prompted to **Restart your PC** during the first run. Please restart, and then run `Start-Stadia.bat` again.
-4. **First Pairing:**
+5. **First Pairing:**
    * Once the script boots Linux, it will look for your controller.
    * Turn on your Stadia Controller, then hold **Stadia + Y** until the light flashes orange to enter pairing mode.
    * It will connect automatically. Next time you play, you just need to turn the controller on!
-5. **Game On!** Leave the black console window open while you play. When you are done, simply close the window and `Stop-Stadia` will automatically run to give your Bluetooth back to Windows.
+6. **Game On!** Leave the black console window open while you play. When you are done, simply close the window and `Stop-Stadia` will automatically run to give your Bluetooth back to Windows.
 
 ---
 
@@ -43,6 +44,7 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 Run `Start-GUI.bat` to open the Stadia X Control Center.
 
 The GUI lets you:
+* Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
 * Check required tools and runtime files before starting.
 * Run a pre-start setup audit and a post-start health audit.
 * Inspect all USB/IP devices with BUSID, VID:PID, name, state, and Bluetooth detection hint.
@@ -60,6 +62,7 @@ The GUI lets you:
 > Developer note: the source branch must contain or build `stadia_receiver.exe`, `ViGEmClient.dll`, and `stadia_bridge` before the Start button can complete successfully. The GUI reports those missing runtime files clearly instead of failing later in the startup script.
 
 Release ZIPs are built automatically by GitHub Actions and include the GUI plus the native runtime files:
+* `Install-StadiaX.bat` and `Install-StadiaX.ps1`
 * `stadia_receiver.exe`
 * `ViGEmClient.dll`
 * `stadia_bridge`
@@ -70,6 +73,7 @@ Runtime logs are written under `logs/`:
 * `status.log` records Windows startup and teardown events.
 * `linux-status.log` records structured Linux bridge states such as scanning, connecting, and input-device detection.
 * `linux.log` keeps the raw Linux core output.
+* `bluetooth-diagnostics.txt` captures Linux/BlueZ adapter, controller, module, and kernel hints after the Linux core starts.
 * `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen.
 
 If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `Start-Stadia.bat` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.

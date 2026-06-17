@@ -12,6 +12,7 @@ if defined STADIA_X_BT_BUSID set "REQUESTED_BT_BUSID=%STADIA_X_BT_BUSID%"
 set "LOG_DIR=%SCRIPT_DIR%\logs"
 set "START_LOG=%LOG_DIR%\start.log"
 set "STATUS_FILE=%LOG_DIR%\status.log"
+set "BT_DIAG_FILE=%LOG_DIR%\bluetooth-diagnostics.txt"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 > "%START_LOG%" echo [%DATE% %TIME%] Stadia X startup requested
 > "%STATUS_FILE%" echo [%DATE% %TIME%] STATUS:START_REQUESTED^|Start requested
@@ -257,7 +258,7 @@ echo.
 echo [4/4] Starting Services...
 call :STATUS LINUX_START "Starting Linux core"
 
-start /MIN "Stadia X - Linux Core" wsl -u root bash -lc "STADIA_X_STATUS_LOG='%WSL_LOG_DIR%/linux-status.log' STADIA_X_LINUX_LOG='%WSL_LOG_DIR%/linux.log' /opt/stadia-x/start.sh 2>&1 | tee -a '%WSL_LOG_DIR%/linux.log'"
+start /MIN "Stadia X - Linux Core" wsl -u root bash -lc "STADIA_X_STATUS_LOG='%WSL_LOG_DIR%/linux-status.log' STADIA_X_LINUX_LOG='%WSL_LOG_DIR%/linux.log' STADIA_X_BT_DIAG_LOG='%WSL_LOG_DIR%/bluetooth-diagnostics.txt' /opt/stadia-x/start.sh 2>&1 | tee -a '%WSL_LOG_DIR%/linux.log'"
 
 timeout /t 8 /nobreak >nul
 

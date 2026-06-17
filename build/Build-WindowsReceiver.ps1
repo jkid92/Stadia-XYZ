@@ -26,6 +26,7 @@ $vigemDllOut = Join-Path $outDir.FullName "ViGEmClient.dll"
 
 $vigemBuildBase = "https://buildbot.nefarius.at/builds/ViGEmClient/master/1.16.106.0/bin/release/x64"
 $vigemHeaderUrl = "https://raw.githubusercontent.com/nefarius/ViGEmClient/master/include/ViGEm/Client.h"
+$vigemCommonHeaderUrl = "https://raw.githubusercontent.com/nefarius/ViGEmClient/master/include/ViGEm/Common.h"
 
 function Get-RequiredFile {
     param(
@@ -45,12 +46,14 @@ function Get-RequiredFile {
 
 if (-not $SkipDependencyDownload) {
     Get-RequiredFile -Url $vigemHeaderUrl -Destination (Join-Path $vigemInclude "ViGEm\Client.h")
+    Get-RequiredFile -Url $vigemCommonHeaderUrl -Destination (Join-Path $vigemInclude "ViGEm\Common.h")
     Get-RequiredFile -Url "$vigemBuildBase/ViGEmClient.lib" -Destination (Join-Path $vigemLibDir "ViGEmClient.lib")
     Get-RequiredFile -Url "$vigemBuildBase/ViGEmClient.dll" -Destination (Join-Path $vigemBinDir "ViGEmClient.dll")
 }
 
 $requiredDeps = @(
     (Join-Path $vigemInclude "ViGEm\Client.h"),
+    (Join-Path $vigemInclude "ViGEm\Common.h"),
     (Join-Path $vigemLibDir "ViGEmClient.lib"),
     (Join-Path $vigemBinDir "ViGEmClient.dll")
 )
