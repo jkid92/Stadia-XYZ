@@ -25,8 +25,8 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 ## 🚀 Installation & First Run
 
-1. Download the latest release ZIP from GitHub, then extract the `Stadia X` folder to a permanent location (e.g., your Desktop or `C:\Program Files\Stadia X`). **Do not run it from inside the ZIP file.**
-2. Double-click `Install-StadiaX.bat` to copy Stadia X to a stable folder and create shortcuts, or run `Start-GUI.bat` directly for portable mode.
+1. Download the latest `Stadia-X-<version>-Setup.exe` from GitHub Releases and run it. The installer copies Stadia X to your user profile and creates shortcuts.
+2. If you prefer portable mode, download the release ZIP, extract it, then run `Install-StadiaX.bat` or `Start-GUI.bat`. **Do not run Stadia X from inside the ZIP file.**
 3. In the GUI, open `First Run` and follow the checklist from top to bottom.
 4. **The Setup Phase:**
    * The script will automatically install `usbipd` and `Ubuntu` for WSL.
@@ -61,7 +61,7 @@ The GUI lets you:
 
 > Developer note: the source branch must contain or build `stadia_receiver.exe`, `ViGEmClient.dll`, and `stadia_bridge` before the Start button can complete successfully. The GUI reports those missing runtime files clearly instead of failing later in the startup script.
 
-Release ZIPs are built automatically by GitHub Actions and include the GUI plus the native runtime files:
+Release packages are built automatically by GitHub Actions. The preferred download is the installer EXE, while the ZIP remains available for portable use and troubleshooting. Both include:
 * `Install-StadiaX.bat` and `Install-StadiaX.ps1`
 * `stadia_receiver.exe`
 * `ViGEmClient.dll`
