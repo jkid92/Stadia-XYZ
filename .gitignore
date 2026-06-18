@@ -13,7 +13,10 @@ support-bundles/
 /.deps/
 /artifacts/
 /dist/
+**/bin/
+**/obj/
 /stadia_bridge
 /stadia_receiver.exe
 /ViGEmClient.dll
+/StadiaX.ControlCenter.exe
 /wsl_kernel

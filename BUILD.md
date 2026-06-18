@@ -8,6 +8,23 @@ This project ships as a portable folder plus two native runtime binaries:
 The GUI, WSL distro resolver, self-test script, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
 The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer that copies the folder to a stable install path and creates shortcuts.
 
+## C# control center migration
+
+The `codex/csharp-control-center` branch adds a side-by-side C# WinForms control center under `src/StadiaX.ControlCenter`. It is intentionally parallel to `StadiaX-GUI.ps1`: the C# app starts and stops the existing bridge scripts, reads the same logs, runs the same self-test, and checks GitHub Releases while the orchestration is migrated out of PowerShell incrementally.
+
+Run it from a source checkout with:
+
+```powershell
+.\Start-GUI-CSharp.bat
+```
+
+Build or publish it with:
+
+```powershell
+dotnet build .\src\StadiaX.ControlCenter\StadiaX.ControlCenter.csproj
+.\build\Build-CSharpControlCenter.ps1
+```
+
 ## GitHub Actions release flow
 
 The workflow in `.github/workflows/release.yml` does three things:
