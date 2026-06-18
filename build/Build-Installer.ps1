@@ -61,6 +61,7 @@ $iscc = Find-InnoSetupCompiler $InnoSetupCompiler
 
 $requiredFiles = @(
     "Start-GUI.bat",
+    "Start-GUI-CSharp.bat",
     "VERSION.txt",
     "StadiaX-GUI.ps1",
     "Start-Stadia.bat",

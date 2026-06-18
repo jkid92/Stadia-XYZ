@@ -37,6 +37,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 $requiredFiles = @(
     "Start-GUI.bat",
+    "Start-GUI-CSharp.bat",
     "VERSION.txt",
     "Install-StadiaX.bat",
     "Install-StadiaX.ps1",
@@ -82,6 +83,9 @@ foreach ($relativePath in $binaryFiles) {
 $sourceDir = Join-Path $packageRoot "source"
 New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot "build") -Destination $sourceDir -Recurse -Force
+if (Test-Path (Join-Path $repoRoot "src")) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot "src") -Destination $sourceDir -Recurse -Force
+}
 
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 $hash = Get-FileHash -Algorithm SHA256 -Path $zipPath

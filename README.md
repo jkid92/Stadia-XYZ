@@ -45,6 +45,8 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 Run `Start-GUI.bat` to open the Stadia X Control Center.
 
+On the `codex/csharp-control-center` migration branch there is also a side-by-side C# preview launcher, `Start-GUI-CSharp.bat`. It does not replace the PowerShell GUI yet; it starts the new WinForms control center that already handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing while the remaining PowerShell orchestration is migrated gradually.
+
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
 * Check the installed version against the latest GitHub Release and open the download page.
