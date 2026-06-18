@@ -16,11 +16,11 @@ The workflow in `.github/workflows/release.yml` does three things:
 2. Builds `stadia_receiver.exe` on `windows-latest` with MSVC and downloads the native ViGEmClient SDK files needed for linking.
 3. Creates `dist/Stadia-X-<version>.zip`, `dist/Stadia-X-<version>-Setup.exe`, and matching SHA256 files.
 
-Every push to `main` creates downloadable workflow artifacts. Pushing a tag like `v0.3.0` also creates a GitHub Release with the ZIP and installer EXE attached.
+Every push to `main` creates downloadable workflow artifacts. Pushing a tag like `v0.4.0` also creates a GitHub Release with the ZIP and installer EXE attached.
 
 ```powershell
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 ```
 
 You can also run the workflow manually from the GitHub Actions tab and optionally provide a package version.
