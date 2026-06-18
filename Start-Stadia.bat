@@ -8,7 +8,13 @@ echo.
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 set "REQUESTED_BT_BUSID=%~1"
+set "REQUESTED_CONTROLLER_MACS=%~2"
+set "REQUESTED_WSL_DISTRO=%~3"
 if defined STADIA_X_BT_BUSID set "REQUESTED_BT_BUSID=%STADIA_X_BT_BUSID%"
+if exist "%SCRIPT_DIR%\selected_controller_macs.txt" set /p REQUESTED_CONTROLLER_MACS=<"%SCRIPT_DIR%\selected_controller_macs.txt"
+if defined STADIA_X_CONTROLLER_MACS set "REQUESTED_CONTROLLER_MACS=%STADIA_X_CONTROLLER_MACS%"
+if exist "%SCRIPT_DIR%\selected_wsl_distro.txt" set /p REQUESTED_WSL_DISTRO=<"%SCRIPT_DIR%\selected_wsl_distro.txt"
+if defined STADIA_X_WSL_DISTRO set "REQUESTED_WSL_DISTRO=%STADIA_X_WSL_DISTRO%"
 set "LOG_DIR=%SCRIPT_DIR%\logs"
 set "START_LOG=%LOG_DIR%\start.log"
 set "STATUS_FILE=%LOG_DIR%\status.log"
@@ -16,6 +22,25 @@ set "BT_DIAG_FILE=%LOG_DIR%\bluetooth-diagnostics.txt"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
 > "%START_LOG%" echo [%DATE% %TIME%] Stadia X startup requested
 > "%STATUS_FILE%" echo [%DATE% %TIME%] STATUS:START_REQUESTED^|Start requested
+if defined REQUESTED_CONTROLLER_MACS (
+    echo(!REQUESTED_CONTROLLER_MACS!| findstr /R /C:"^[0-9A-Fa-f: ,;][0-9A-Fa-f: ,;]*$" >nul
+    if errorlevel 1 (
+        call :STATUS CONTROLLER_MANUAL_INVALID "Manual controller MAC selection ignored because it contains invalid characters"
+        set "REQUESTED_CONTROLLER_MACS="
+    )
+)
+if defined REQUESTED_CONTROLLER_MACS (
+    call :STATUS CONTROLLER_MANUAL_CONFIG "Manual controller MAC selection: !REQUESTED_CONTROLLER_MACS!"
+)
+if defined REQUESTED_WSL_DISTRO (
+    echo(!REQUESTED_WSL_DISTRO!| findstr /R /C:"^[A-Za-z0-9_.-][A-Za-z0-9_.-]*$" >nul
+    if errorlevel 1 (
+        call :STATUS WSL_DISTRO_INVALID "Requested WSL distro ignored because its name is invalid"
+        set "REQUESTED_WSL_DISTRO="
+    ) else (
+        call :STATUS WSL_DISTRO_REQUESTED "Requested WSL distro: !REQUESTED_WSL_DISTRO!"
+    )
+)
 
 echo [System Check] Verifying environment...
 call :STATUS CHECK_START "Checking Windows and runtime requirements"
@@ -24,6 +49,11 @@ set "MISSING_RUNTIME=0"
 if not exist "%SCRIPT_DIR%\start.sh" (
     echo ERROR: Missing required file: start.sh
     call :STATUS MISSING_RUNTIME "Missing start.sh"
+    set "MISSING_RUNTIME=1"
+)
+if not exist "%SCRIPT_DIR%\Resolve-WslDistro.ps1" (
+    echo ERROR: Missing required file: Resolve-WslDistro.ps1
+    call :STATUS MISSING_RUNTIME "Missing Resolve-WslDistro.ps1"
     set "MISSING_RUNTIME=1"
 )
 if not exist "%SCRIPT_DIR%\stadia_bridge" (
@@ -63,10 +93,40 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
+set "WSL_DISTRO="
+for /f "usebackq delims=" %%d in (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%\Resolve-WslDistro.ps1" -RequestedDistro "%REQUESTED_WSL_DISTRO%"`) do (
+    if not defined WSL_DISTRO set "WSL_DISTRO=%%d"
+)
+
+if not defined WSL_DISTRO (
+    echo [Setup] No usable WSL distro found. Installing Ubuntu WSL userland...
+    call :STATUS WSL_DISTRO_MISSING "No usable WSL distro found; launching Ubuntu install"
+    wsl --install -d Ubuntu
+    echo.
+    echo ==========================================================
+    echo SETUP REQUIREMENT: Ubuntu installed.
+    echo Please RESTART YOUR COMPUTER, then run this script again.
+    echo ==========================================================
+    pause
+    exit /b
+)
+
+wsl -d "!WSL_DISTRO!" echo ok >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: WSL distro "!WSL_DISTRO!" did not start correctly.
+    echo Try opening it once from the Start menu, then run Stadia X again.
+    call :STATUS WSL_DISTRO_START_FAILED "WSL distro !WSL_DISTRO! did not start correctly"
+    pause
+    exit /b 1
+)
+
+call :STATUS WSL_DISTRO_SELECTED "Using WSL distro !WSL_DISTRO!"
+echo Using WSL distro: !WSL_DISTRO!
+
 REM ---- Check if we even need the custom kernel ----
 set "NEED_KERNEL=0"
 call :STATUS WSL_KERNEL_CHECK "Checking WSL USB/HID kernel support"
-wsl bash -c "modprobe vhci-hcd 2>/dev/null; lsmod | grep -q vhci_hcd" >nul 2>&1
+wsl -d "!WSL_DISTRO!" -u root bash -lc "modprobe vhci-hcd 2>/dev/null; lsmod | grep -q vhci_hcd" >nul 2>&1
 if %errorlevel% neq 0 set "NEED_KERNEL=1"
 
 if "%NEED_KERNEL%"=="1" (
@@ -102,20 +162,6 @@ if "%NEED_KERNEL%"=="1" (
     call :STATUS WSL_KERNEL_OK "WSL kernel already supports USB HID"
 )
 
-wsl -d Ubuntu echo ok >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [Setup] Installing Ubuntu WSL userland...
-    call :STATUS UBUNTU_MISSING "Ubuntu WSL distro missing; launching WSL install"
-    wsl --install -d Ubuntu
-    echo.
-    echo ==========================================================
-    echo SETUP REQUIREMENT: Ubuntu installed.
-    echo Please RESTART YOUR COMPUTER, then run this script again.
-    echo ==========================================================
-    pause
-    exit /b
-)
-
 REM Only shutdown WSL if receiver is running from old session
 tasklist /FI "IMAGENAME eq stadia_receiver.exe" 2>NUL | find /I /N "stadia_receiver.exe">NUL
 if "%ERRORLEVEL%"=="0" (
@@ -126,13 +172,13 @@ if "%ERRORLEVEL%"=="0" (
 )
 
 echo [1/4] Starting WSL...
-call :STATUS WSL_START "Starting WSL"
-wsl echo "WSL Booted" >nul 2>&1
+call :STATUS WSL_START "Starting WSL distro !WSL_DISTRO!"
+wsl -d "!WSL_DISTRO!" echo "WSL Booted" >nul 2>&1
 
 echo Waiting for WSL network to initialize...
 set /a WSL_WAIT_TRIES=30
 :WSL_WAIT
-wsl bash -c "ip addr show eth0 2>/dev/null | grep -q 'inet '" >nul 2>&1
+wsl -d "!WSL_DISTRO!" bash -lc "ip addr show eth0 2>/dev/null | grep -q 'inet '" >nul 2>&1
 if %errorlevel% neq 0 (
     set /a WSL_WAIT_TRIES-=1
     if !WSL_WAIT_TRIES! leq 0 (
@@ -209,9 +255,19 @@ echo %BT_BUSID%> "%SCRIPT_DIR%\bt_busid.txt"
 
 set ATTACH_TRIES=3
 :ATTACH_LOOP
-call :STATUS BT_ATTACH_START "Attaching Bluetooth adapter to WSL"
+call :STATUS BT_ATTACH_START "Attaching Bluetooth adapter to WSL distro !WSL_DISTRO!"
 usbipd bind --busid %BT_BUSID% --force >nul 2>&1
-usbipd attach --wsl --busid %BT_BUSID%
+usbipd attach --help 2>nul | findstr /i "distribution" >nul 2>&1
+if %errorlevel% equ 0 (
+    usbipd attach --wsl --busid %BT_BUSID% --distribution "!WSL_DISTRO!"
+    if %errorlevel% neq 0 (
+        call :STATUS BT_ATTACH_DISTRO_FALLBACK "Attach with explicit distro failed; retrying default WSL attach"
+        usbipd attach --wsl --busid %BT_BUSID%
+    )
+) else (
+    call :STATUS BT_ATTACH_DISTRO_UNSUPPORTED "usbipd does not support explicit WSL distribution attach; using default attach"
+    usbipd attach --wsl --busid %BT_BUSID%
+)
 if %errorlevel% equ 0 goto :ATTACH_SUCCESS
 
 set /a ATTACH_TRIES-=1
@@ -245,25 +301,25 @@ timeout /t 5 /nobreak >nul
 echo.
 echo [3/4] Deploying to Linux...
 call :STATUS DEPLOY_START "Deploying Linux bridge files"
-for /f "delims=" %%i in ('wsl wslpath -u "%SCRIPT_DIR%"') do set WSL_PATH=%%i
-for /f "delims=" %%i in ('wsl wslpath -u "%LOG_DIR%"') do set WSL_LOG_DIR=%%i
-wsl -u root mkdir -p /opt/stadia-x
-wsl -u root cp "%WSL_PATH%/start.sh" /opt/stadia-x/start.sh
-wsl -u root cp "%WSL_PATH%/stadia_bridge" /opt/stadia-x/stadia_bridge
-wsl -u root sed -i "s/\r//g" /opt/stadia-x/start.sh
-wsl -u root chmod +x /opt/stadia-x/start.sh
+for /f "delims=" %%i in ('wsl -d "!WSL_DISTRO!" wslpath -u "%SCRIPT_DIR%"') do set WSL_PATH=%%i
+for /f "delims=" %%i in ('wsl -d "!WSL_DISTRO!" wslpath -u "%LOG_DIR%"') do set WSL_LOG_DIR=%%i
+wsl -d "!WSL_DISTRO!" -u root mkdir -p /opt/stadia-x
+wsl -d "!WSL_DISTRO!" -u root cp "%WSL_PATH%/start.sh" /opt/stadia-x/start.sh
+wsl -d "!WSL_DISTRO!" -u root cp "%WSL_PATH%/stadia_bridge" /opt/stadia-x/stadia_bridge
+wsl -d "!WSL_DISTRO!" -u root sed -i "s/\r//g" /opt/stadia-x/start.sh
+wsl -d "!WSL_DISTRO!" -u root chmod +x /opt/stadia-x/start.sh
 call :STATUS DEPLOY_OK "Linux bridge files deployed"
 
 echo.
 echo [4/4] Starting Services...
 call :STATUS LINUX_START "Starting Linux core"
 
-start /MIN "Stadia X - Linux Core" wsl -u root bash -lc "STADIA_X_STATUS_LOG='%WSL_LOG_DIR%/linux-status.log' STADIA_X_LINUX_LOG='%WSL_LOG_DIR%/linux.log' STADIA_X_BT_DIAG_LOG='%WSL_LOG_DIR%/bluetooth-diagnostics.txt' /opt/stadia-x/start.sh 2>&1 | tee -a '%WSL_LOG_DIR%/linux.log'"
+start /MIN "Stadia X - Linux Core" wsl -d "!WSL_DISTRO!" -u root bash -lc "STADIA_X_STATUS_LOG='%WSL_LOG_DIR%/linux-status.log' STADIA_X_LINUX_LOG='%WSL_LOG_DIR%/linux.log' STADIA_X_BT_DIAG_LOG='%WSL_LOG_DIR%/bluetooth-diagnostics.txt' STADIA_X_CONTROLLER_MACS='%REQUESTED_CONTROLLER_MACS%' /opt/stadia-x/start.sh 2>&1 | tee -a '%WSL_LOG_DIR%/linux.log'"
 
 timeout /t 8 /nobreak >nul
 
 REM --- Get the WSL IP address (Linux IP) so the Windows Receiver can send rumble to it ---
-wsl bash -c "hostname -I" > "%TEMP%\wsl_ip.txt"
+wsl -d "!WSL_DISTRO!" bash -lc "hostname -I" > "%TEMP%\wsl_ip.txt"
 set "WSL_IP="
 for /f "tokens=1" %%a in ('type "%TEMP%\wsl_ip.txt"') do set "WSL_IP=%%a"
 

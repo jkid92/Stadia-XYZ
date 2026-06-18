@@ -3,9 +3,9 @@
 This project ships as a portable folder plus two native runtime binaries:
 
 * `stadia_receiver.exe` runs on Windows and exposes the virtual Xbox 360 controller through ViGEmBus.
-* `stadia_bridge` runs inside Ubuntu/WSL and forwards Stadia Bluetooth input and rumble packets.
+* `stadia_bridge` runs inside the selected WSL distro and forwards Stadia Bluetooth input and rumble packets.
 
-The GUI, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
+The GUI, WSL distro resolver, self-test script, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
 The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer that copies the folder to a stable install path and creates shortcuts.
 
 ## GitHub Actions release flow
@@ -80,3 +80,11 @@ For a source-only packaging dry run, use:
 ```
 
 That mode is useful to validate the ZIP layout on a machine without MSVC or Linux build tools.
+
+After extracting a package or installing Stadia X, run:
+
+```powershell
+.\Test-StadiaX.ps1
+```
+
+The script writes `logs/self-test.txt` and exits non-zero only when required files, runtime binaries, or core dependencies are missing. For source-only dry runs, use `-AllowMissingBinaries`.

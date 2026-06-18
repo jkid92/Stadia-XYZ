@@ -1,4 +1,9 @@
 bt_busid.txt
+selected_controller_macs.txt
+controller_profiles.json
+controller_profiles.json.bad-*
+selected_wsl_distro.txt
+support-bundles/
 *.bak
 *.log
 *.ilk

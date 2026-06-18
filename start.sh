@@ -2,7 +2,30 @@
 STATUS_LOG="${STADIA_X_STATUS_LOG:-/opt/stadia-x/linux-status.log}"
 LINUX_LOG="${STADIA_X_LINUX_LOG:-/opt/stadia-x/linux.log}"
 BT_DIAG_LOG="${STADIA_X_BT_DIAG_LOG:-/opt/stadia-x/bluetooth-diagnostics.txt}"
+MAX_CONTROLLERS="${STADIA_X_MAX_CONTROLLERS:-4}"
+case "$MAX_CONTROLLERS" in
+    ''|*[!0-9]*) MAX_CONTROLLERS=4 ;;
+esac
+if [ "$MAX_CONTROLLERS" -lt 1 ]; then MAX_CONTROLLERS=1; fi
+if [ "$MAX_CONTROLLERS" -gt 4 ]; then MAX_CONTROLLERS=4; fi
 mkdir -p "$(dirname "$STATUS_LOG")" "$(dirname "$LINUX_LOG")" "$(dirname "$BT_DIAG_LOG")" /dev/input/
+SCAN_PID=""
+RECOVERY_PID=""
+
+cleanup_processes() {
+    if [ -n "${SCAN_PID:-}" ]; then
+        kill "$SCAN_PID" 2>/dev/null || true
+        SCAN_PID=""
+    fi
+    if [ -n "${RECOVERY_PID:-}" ]; then
+        kill "$RECOVERY_PID" 2>/dev/null || true
+        RECOVERY_PID=""
+    fi
+    bluetoothctl scan off >/dev/null 2>&1 || true
+}
+
+trap cleanup_processes EXIT
+trap 'cleanup_processes; exit 130' INT TERM
 
 status() {
     local code="$1"
@@ -32,10 +55,15 @@ write_bt_diagnostics() {
         echo
         echo "== bluetoothctl devices =="
         bluetoothctl devices 2>&1 || true
-        if [ -n "$STADIA_MAC" ]; then
+        DEVICE_MACS=$(bluetoothctl devices 2>/dev/null | awk '{print $2}' | grep -E '^[0-9A-Fa-f:]{17}$' | head -n 20 || true)
+        if [ -n "$DEVICE_MACS" ]; then
             echo
-            echo "== bluetoothctl info $STADIA_MAC =="
-            bluetoothctl info "$STADIA_MAC" 2>&1 || true
+            echo "== bluetoothctl info for known devices =="
+            while read -r device_mac; do
+                [ -z "$device_mac" ] && continue
+                echo "-- $device_mac --"
+                bluetoothctl info "$device_mac" 2>&1 || true
+            done <<< "$DEVICE_MACS"
         fi
         echo
         echo "== hciconfig -a =="
@@ -140,7 +168,18 @@ sleep 3
 log "Scanning for Stadia controller..."
 
 discover_stadia_macs() {
-    bluetoothctl devices | grep -i "Stadia" | awk '{print $2}' | head -n 2
+    bluetoothctl devices | grep -i "Stadia" | awk '{print $2}' | head -n "$MAX_CONTROLLERS"
+}
+
+read_manual_controller_macs() {
+    local input="${STADIA_X_CONTROLLER_MACS:-}"
+    echo "$input" | tr ',;' ' ' | awk '{
+        for (i = 1; i <= NF; i++) {
+            if ($i ~ /^[0-9A-Fa-f][0-9A-Fa-f](:[0-9A-Fa-f][0-9A-Fa-f]){5}$/) {
+                print toupper($i)
+            }
+        }
+    }' | head -n "$MAX_CONTROLLERS"
 }
 
 connect_stadia_controller() {
@@ -179,43 +218,79 @@ connect_stadia_controller() {
     return 1
 }
 
-mapfile -t STADIA_MACS < <(discover_stadia_macs)
+controller_recovery_loop() {
+    while true; do
+        sleep 10
+        for mac in "$@"; do
+            [ -z "$mac" ] && continue
+            if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+                status "RECOVERY_RECONNECT" "Controller $mac appears disconnected; reconnecting"
+                if bluetoothctl connect "$mac" >/dev/null 2>&1; then
+                    status "RECOVERY_RECONNECT_OK" "Controller $mac reconnected"
+                else
+                    status "RECOVERY_RECONNECT_FAILED" "Reconnect failed for controller $mac"
+                fi
+            fi
+        done
+    done
+}
+
+mapfile -t MANUAL_STADIA_MACS < <(read_manual_controller_macs)
 write_bt_diagnostics "after initial scan"
 
 CONNECTED_COUNT=0
-if [ ${#STADIA_MACS[@]} -gt 0 ]; then
-    status "CONTROLLER_SEEN" "Found ${#STADIA_MACS[@]} known Stadia controller(s)"
+RECOVERY_MACS=()
+if [ ${#MANUAL_STADIA_MACS[@]} -gt 0 ]; then
+    status "CONTROLLER_MANUAL_SELECTION" "Using selected controller MAC(s): ${MANUAL_STADIA_MACS[*]}"
+    RECOVERY_MACS=("${MANUAL_STADIA_MACS[@]}")
     index=1
-    for mac in "${STADIA_MACS[@]}"; do
-        if connect_stadia_controller "$mac" "known #$index"; then
+    for mac in "${MANUAL_STADIA_MACS[@]}"; do
+        if connect_stadia_controller "$mac" "manual #$index"; then
             CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
         fi
         index=$((index + 1))
     done
 else
-    status "PAIR_WAIT" "No known Stadia controller found; waiting for pairing"
-    log "No previously paired Stadia found. Waiting for pairing..."
-    log "Hold Stadia + Y on one or two controllers for pairing mode."
-    for i in $(seq 1 30); do
-        sleep 2
-        mapfile -t STADIA_MACS < <(discover_stadia_macs)
-        if [ ${#STADIA_MACS[@]} -gt 0 ]; then
-            index=1
-            for mac in "${STADIA_MACS[@]}"; do
-                if connect_stadia_controller "$mac" "pairing #$index"; then
-                    CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
-                fi
-                index=$((index + 1))
-            done
-            break
-        fi
-        if [ $((i % 5)) -eq 0 ]; then
-            status "PAIR_WAIT" "Still scanning for controller ($((i * 2)) seconds)"
-        fi
-    done
+    mapfile -t STADIA_MACS < <(discover_stadia_macs)
+    if [ ${#STADIA_MACS[@]} -gt 0 ]; then
+        RECOVERY_MACS=("${STADIA_MACS[@]}")
+        status "CONTROLLER_SEEN" "Found ${#STADIA_MACS[@]} known Stadia controller(s)"
+        index=1
+        for mac in "${STADIA_MACS[@]}"; do
+            if connect_stadia_controller "$mac" "known #$index"; then
+                CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
+            fi
+            index=$((index + 1))
+        done
+    else
+        status "PAIR_WAIT" "No known Stadia controller found; waiting for pairing"
+        log "No previously paired Stadia found. Waiting for pairing..."
+        log "Hold Stadia + Y on up to $MAX_CONTROLLERS controllers for pairing mode."
+        for i in $(seq 1 30); do
+            sleep 2
+            mapfile -t STADIA_MACS < <(discover_stadia_macs)
+            if [ ${#STADIA_MACS[@]} -gt 0 ]; then
+                RECOVERY_MACS=("${STADIA_MACS[@]}")
+                index=1
+                for mac in "${STADIA_MACS[@]}"; do
+                    if connect_stadia_controller "$mac" "pairing #$index"; then
+                        CONNECTED_COUNT=$((CONNECTED_COUNT + 1))
+                    fi
+                    index=$((index + 1))
+                done
+                break
+            fi
+            if [ $((i % 5)) -eq 0 ]; then
+                status "PAIR_WAIT" "Still scanning for controller ($((i * 2)) seconds)"
+            fi
+        done
+    fi
 fi
 
-kill $SCAN_PID 2>/dev/null || true
+if [ -n "$SCAN_PID" ]; then
+    kill "$SCAN_PID" 2>/dev/null || true
+    SCAN_PID=""
+fi
 bluetoothctl scan off >/dev/null 2>&1
 write_bt_diagnostics "after controller connect attempt"
 
@@ -271,8 +346,35 @@ status "BRIDGE_START" "Launching native bridge"
 log "Launching native bridge -> $WIN_IP"
 cd /opt/stadia-x
 chmod +x stadia_bridge
-./stadia_bridge "$WIN_IP"
-BRIDGE_EXIT=$?
+
+RECOVERY_PID=""
+if [ ${#RECOVERY_MACS[@]} -gt 0 ]; then
+    status "RECOVERY_START" "Bluetooth auto-recovery enabled for ${RECOVERY_MACS[*]}"
+    controller_recovery_loop "${RECOVERY_MACS[@]}" &
+    RECOVERY_PID=$!
+fi
+
+BRIDGE_EXIT=0
+BRIDGE_RESTARTS=0
+while true; do
+    ./stadia_bridge "$WIN_IP"
+    BRIDGE_EXIT=$?
+    if [ "$BRIDGE_EXIT" -eq 0 ]; then
+        break
+    fi
+    if [ "$BRIDGE_RESTARTS" -ge 3 ]; then
+        status "BRIDGE_RESTART_LIMIT" "Native bridge exited repeatedly; not restarting"
+        break
+    fi
+    BRIDGE_RESTARTS=$((BRIDGE_RESTARTS + 1))
+    status "BRIDGE_RESTART" "Native bridge exited with code $BRIDGE_EXIT; restarting attempt $BRIDGE_RESTARTS"
+    sleep 3
+done
+
+if [ -n "$RECOVERY_PID" ]; then
+    kill "$RECOVERY_PID" 2>/dev/null || true
+    RECOVERY_PID=""
+fi
 status "BRIDGE_EXIT" "Native bridge exited with code $BRIDGE_EXIT"
 
 read -p "Press Enter to exit..."

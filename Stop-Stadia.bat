@@ -49,6 +49,15 @@ if "!BT_BUSID!"=="" (
     )
 )
 
+if not "!BT_BUSID!"=="" (
+    echo(!BT_BUSID!| findstr /R /C:"^[0-9][0-9]*-[0-9][0-9]*$" >nul
+    if errorlevel 1 (
+        echo    WARNING: Ignoring invalid Bluetooth Bus ID: !BT_BUSID!
+        call :STATUS BT_RESTORE_INVALID "Invalid Bluetooth BUSID ignored during restore"
+        set "BT_BUSID="
+    )
+)
+
 if "!BT_BUSID!"=="" (
     echo    WARNING: No Bluetooth adapter found to detach.
     call :STATUS BT_RESTORE_UNKNOWN "No Bluetooth BUSID found for detach"

@@ -44,6 +44,8 @@ $requiredFiles = @(
     "Start-Stadia.bat",
     "Stop-Stadia.bat",
     "Check-Battery.bat",
+    "Resolve-WslDistro.ps1",
+    "Test-StadiaX.ps1",
     "start.sh",
     "stadia_buttons.ini",
     "README.md",

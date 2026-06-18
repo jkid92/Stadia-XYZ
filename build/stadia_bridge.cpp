@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstdarg>
 #include <cerrno>
 #include <chrono>
@@ -94,7 +95,7 @@ static constexpr uint16_t PORT_C2     = 45495;
 static constexpr uint16_t PORT_MACRO  = 45499;
 static constexpr uint8_t PACKET_MAGIC = 0x53; // 'S'
 static constexpr uint8_t PACKET_VERSION = 1;
-static constexpr int MAX_CONTROLLERS = 2;
+static constexpr int MAX_CONTROLLERS = 4;
 
 static std::atomic<bool> g_running{true};
 static std::atomic<int>  g_evdev_fd{-1};
@@ -138,6 +139,18 @@ static std::string shell_exec(const std::string& cmd) {
     pclose(pipe);
     while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) result.pop_back();
     return result;
+}
+
+static bool is_valid_bluetooth_mac(const std::string& mac) {
+    if (mac.size() != 17) return false;
+    for (size_t i = 0; i < mac.size(); ++i) {
+        if ((i + 1) % 3 == 0) {
+            if (mac[i] != ':') return false;
+        } else if (!std::isxdigit(static_cast<unsigned char>(mac[i]))) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static std::mutex g_log_mtx;
@@ -295,7 +308,11 @@ static int create_udp_recv_socket(uint16_t port) {
 static void send_udp_code(const char* win_ip, const char* msg) {
     int sock = socket(AF_INET, SOCK_DGRAM, 0); if (sock < 0) return;
     struct sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_port = htons(PORT_MACRO);
-    inet_pton(AF_INET, win_ip, &addr.sin_addr);
+    if (inet_pton(AF_INET, win_ip, &addr.sin_addr) != 1) {
+        log_err("Invalid Windows host IP for macro UDP: %s", win_ip);
+        close(sock);
+        return;
+    }
     sendto(sock, msg, strlen(msg), 0, (struct sockaddr*)&addr, sizeof(addr));
     close(sock);
 }
@@ -353,7 +370,11 @@ static void controller_worker(int controller_index, std::string evpath, std::str
     struct sockaddr_in dest{};
     dest.sin_family = AF_INET;
     dest.sin_port = htons(PORT_INPUT);
-    inet_pton(AF_INET, g_target_ip.c_str(), &dest.sin_addr);
+    if (inet_pton(AF_INET, g_target_ip.c_str(), &dest.sin_addr) != 1) {
+        log_err("Invalid Windows host IP for controller UDP: %s", g_target_ip.c_str());
+        close(udp_fd);
+        return;
+    }
 
     int ev_fd = open(evpath.c_str(), O_RDWR | O_NONBLOCK);
     if (ev_fd < 0) {
@@ -470,7 +491,7 @@ static void input_sender_thread() {
 
             int slot = find_free_controller_slot();
             if (slot < 0) {
-                log_info("Extra Stadia controller ignored because both slots are already active: %s", device.path.c_str());
+                log_info("Extra Stadia controller ignored because all %d slots are already active: %s", MAX_CONTROLLERS, device.path.c_str());
                 break;
             }
 
@@ -520,8 +541,9 @@ static void rumble_receiver_thread() {
 
 void start_extra_buttons_thread(const char* win_ip) {
     std::thread([win_ip] {
+        while (g_running) {
         int hid_fd = -1;
-        while (hid_fd < 0) {
+        while (g_running && hid_fd < 0) {
             for (int i = 0; i < 15; ++i) {
                 char path[256]; snprintf(path, sizeof(path), "/dev/hidraw%d", i);
                 int test_fd = open(path, O_RDONLY);
@@ -533,7 +555,12 @@ void start_extra_buttons_thread(const char* win_ip) {
                     close(test_fd);
                 }
             }
-            if (hid_fd < 0) sleep(1);
+            if (hid_fd < 0 && g_running) sleep(1);
+        }
+
+        if (!g_running) {
+            if (hid_fd >= 0) close(hid_fd);
+            break;
         }
 
         send_rumble(128, 128); usleep(500000); send_rumble(0, 0);
@@ -573,12 +600,13 @@ void start_extra_buttons_thread(const char* win_ip) {
             }
         };
 
-        uint8_t buf[32];
-        while (true) {
-            struct pollfd pfd; pfd.fd = hid_fd; pfd.events = POLLIN;
+        uint8_t buf[32] = {};
+        bool ast_solo_sent = false; bool cap_solo_sent = false;
+        while (g_running) {
+            struct pollfd pfd{}; pfd.fd = hid_fd; pfd.events = POLLIN;
             int ret = poll(&pfd, 1, 50);
-            if (ret < 0) { sleep(1); continue; }
-            if (ret > 0) { int n = read(hid_fd, buf, sizeof(buf)); if (n < 6) continue; }
+            if (ret < 0) { if (errno == EINTR) continue; log_info("Extra button HID poll failed; rescanning"); break; }
+            if (ret > 0) { int n = read(hid_fd, buf, sizeof(buf)); if (n <= 0) { log_info("Extra button HID closed; rescanning"); break; } if (n < 6) continue; }
 
             bool ast = (buf[2] & 0x02) != 0;
             bool cap = (buf[2] & 0x01) != 0;
@@ -614,19 +642,22 @@ void start_extra_buttons_thread(const char* win_ip) {
                 else { cap_slots[i].held = false; cap_slots[i].sent_once = false; }
             }
 
-            static bool ast_solo_sent = false; static bool cap_solo_sent = false;
             if (ast && !any_ast) { if (!ast_solo_sent) { send_udp_code(win_ip, "A"); ast_solo_sent = true; } } else ast_solo_sent = false;
             if (cap && !any_cap) { if (!cap_solo_sent) { send_udp_code(win_ip, "C"); cap_solo_sent = true; } } else cap_solo_sent = false;
+        }
+        if (hid_fd >= 0) close(hid_fd);
+        g_assistant_held.store(false); g_capture_held.store(false);
+        if (g_running) sleep(1);
         }
     }).detach();
 }
 
 static std::string bt_scan(int seconds = 8) { return shell_exec("timeout " + std::to_string(seconds + 2) + " bluetoothctl --timeout " + std::to_string(seconds) + " scan on 2>&1; bluetoothctl devices 2>&1"); }
-static std::string bt_pair(const std::string& mac) { std::ostringstream oss; oss << "trust: " << shell_exec("bluetoothctl trust " + mac + " 2>&1") << "\npair: " << shell_exec("timeout 15 bluetoothctl pair " + mac + " 2>&1") << "\nconnect: " << shell_exec("bluetoothctl connect " + mac + " 2>&1") << "\n"; return oss.str(); }
-static std::string bt_connect(const std::string& mac) { return shell_exec("bluetoothctl connect " + mac + " 2>&1"); }
-static std::string bt_disconnect(const std::string& mac) { return shell_exec("bluetoothctl disconnect " + mac + " 2>&1"); }
-static std::string bt_remove(const std::string& mac) { return shell_exec("bluetoothctl remove " + mac + " 2>&1"); }
-static std::string bt_info(const std::string& mac) { return shell_exec("bluetoothctl info " + mac + " 2>&1"); }
+static std::string bt_pair(const std::string& mac) { if (!is_valid_bluetooth_mac(mac)) return "Invalid Bluetooth MAC"; std::ostringstream oss; oss << "trust: " << shell_exec("bluetoothctl trust " + mac + " 2>&1") << "\npair: " << shell_exec("timeout 15 bluetoothctl pair " + mac + " 2>&1") << "\nconnect: " << shell_exec("bluetoothctl connect " + mac + " 2>&1") << "\n"; return oss.str(); }
+static std::string bt_connect(const std::string& mac) { if (!is_valid_bluetooth_mac(mac)) return "Invalid Bluetooth MAC"; return shell_exec("bluetoothctl connect " + mac + " 2>&1"); }
+static std::string bt_disconnect(const std::string& mac) { if (!is_valid_bluetooth_mac(mac)) return "Invalid Bluetooth MAC"; return shell_exec("bluetoothctl disconnect " + mac + " 2>&1"); }
+static std::string bt_remove(const std::string& mac) { if (!is_valid_bluetooth_mac(mac)) return "Invalid Bluetooth MAC"; return shell_exec("bluetoothctl remove " + mac + " 2>&1"); }
+static std::string bt_info(const std::string& mac) { if (!is_valid_bluetooth_mac(mac)) return "Invalid Bluetooth MAC"; return shell_exec("bluetoothctl info " + mac + " 2>&1"); }
 static std::string bt_devices() { return shell_exec("bluetoothctl devices 2>&1"); }
 
 static void handle_c2_client(int client_fd) {
@@ -649,10 +680,18 @@ static void handle_c2_client(int client_fd) {
 }
 
 static void c2_server_thread() {
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0); if (server_fd < 0) return;
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        log_err("C2 socket failed: %s", strerror(errno));
+        return;
+    }
     int opt = 1; setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     struct sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_addr.s_addr = INADDR_ANY; addr.sin_port = htons(PORT_C2);
-    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0 || listen(server_fd, 4) < 0) { close(server_fd); return; }
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0 || listen(server_fd, 4) < 0) {
+        log_err("C2 bind/listen on TCP %u failed: %s", static_cast<unsigned>(PORT_C2), strerror(errno));
+        close(server_fd);
+        return;
+    }
     while (g_running) {
         struct pollfd pfd{}; pfd.fd = server_fd; pfd.events = POLLIN;
         int ret = poll(&pfd, 1, 1000); if (ret <= 0) continue;
@@ -666,6 +705,11 @@ static void c2_server_thread() {
 int main(int argc, char* argv[]) {
     if (argc < 2) return 1;
     g_target_ip = argv[1];
+    struct in_addr target_addr{};
+    if (inet_pton(AF_INET, g_target_ip.c_str(), &target_addr) != 1) {
+        log_err("Invalid Windows host IP: %s", g_target_ip.c_str());
+        return 1;
+    }
     start_extra_buttons_thread(argv[1]);
     std::thread t_input(input_sender_thread);
     std::thread t_rumble(rumble_receiver_thread);

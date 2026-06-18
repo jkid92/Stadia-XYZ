@@ -95,6 +95,12 @@ $checks = [ordered]@{
     "wsl" = if (Test-CommandAvailable "wsl") { "OK" } else { "Missing - Start-Stadia can install Ubuntu/WSL" }
 }
 
+$resolver = Join-Path $installRoot.FullName "Resolve-WslDistro.ps1"
+if (Test-Path $resolver -and (Test-CommandAvailable "wsl")) {
+    $resolvedDistro = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $resolver 2>$null | Select-Object -First 1)
+    $checks["WSL distro"] = if ($resolvedDistro) { $resolvedDistro } else { "Missing - Start-Stadia can install Ubuntu" }
+}
+
 Write-Host ""
 Write-Host "Stadia X installed."
 Write-Host ""

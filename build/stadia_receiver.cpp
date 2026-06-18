@@ -142,12 +142,22 @@ static void parseShortcut(const char* shortcut, WORD* modifiers, WORD* mainKey) 
     *modifiers = 0; *mainKey = 0;
     if (!shortcut || !*shortcut) return;
     char* copy  = _strdup(shortcut);
+    if (!copy) return;
     char* token = strtok(copy, "+");
     while (token) {
         while (*token == ' ') token++;
-        char* end = token + strlen(token) - 1;
+        size_t token_len = strlen(token);
+        if (token_len == 0) {
+            token = strtok(nullptr, "+");
+            continue;
+        }
+        char* end = token + token_len - 1;
         while (end >= token && *end == ' ') end--;
         *(end+1) = '\0';
+        if (*token == '\0') {
+            token = strtok(nullptr, "+");
+            continue;
+        }
         if      (_stricmp(token,"CTRL")==0||_stricmp(token,"CONTROL")==0) *modifiers |= MY_MOD_CONTROL;
         else if (_stricmp(token,"ALT")==0)                                *modifiers |= MY_MOD_ALT;
         else if (_stricmp(token,"SHIFT")==0)                              *modifiers |= MY_MOD_SHIFT;
@@ -190,7 +200,7 @@ static void loadConfig() {
         if (strlen(code)>=MAX_CODE_LEN) continue;
         if (g_mappingCount >= MAX_MAPPINGS) break;
         KeyMapping* map = &g_mappings[g_mappingCount++];
-        strcpy(map->code, code);
+        strcpy_s(map->code, sizeof(map->code), code);
         parseShortcut(shortcut, &map->modifiers, &map->mainKey);
         map->repeat = is_repeatable_vk(map->mainKey);
     }
@@ -220,9 +230,16 @@ static void press_combo(const KeyMapping* map) {
 static void macro_listener_thread() {
     loadConfig();
     SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s == INVALID_SOCKET) return;
+    if (s == INVALID_SOCKET) {
+        log_err("Macro listener socket failed: %d", WSAGetLastError());
+        return;
+    }
     sockaddr_in addr{}; addr.sin_family=AF_INET; addr.sin_port=htons(45499); addr.sin_addr.s_addr=INADDR_ANY;
-    bind(s, (sockaddr*)&addr, sizeof(addr));
+    if (bind(s, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+        log_err("Macro listener bind on UDP 45499 failed: %d", WSAGetLastError());
+        closesocket(s);
+        return;
+    }
 
     // Each macro slot tracks last-received time to avoid double-firing
     // if the OS somehow delivers the same UDP packet twice.
@@ -303,7 +320,7 @@ enum ButtonBit : uint16_t {
     BTN_BIT_DPAD_UP=1<<12,BTN_BIT_DPAD_DOWN=1<<13,BTN_BIT_DPAD_LEFT=1<<14,BTN_BIT_DPAD_RIGHT=1<<15,
 };
 
-static constexpr size_t MAX_CONTROLLERS = 2;
+static constexpr size_t MAX_CONTROLLERS = 4;
 static constexpr uint8_t PACKET_MAGIC = 0x53; // 'S'
 static constexpr uint8_t PACKET_VERSION = 1;
 
@@ -495,9 +512,18 @@ static VOID CALLBACK vigem_rumble_callback(PVIGEM_CLIENT,PVIGEM_TARGET,UCHAR l,U
 
 static void input_receiver_thread(PVIGEM_CLIENT client, std::array<PVIGEM_TARGET, MAX_CONTROLLERS>* pads) {
     SOCKET sock = socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        log_err("Input receiver socket failed: %d", WSAGetLastError());
+        return;
+    }
     DWORD to=1000; setsockopt(sock,SOL_SOCKET,SO_RCVTIMEO,(const char*)&to,sizeof(to));
     sockaddr_in bind_addr{}; bind_addr.sin_family=AF_INET; bind_addr.sin_addr.s_addr=INADDR_ANY; bind_addr.sin_port=htons(PORT_INPUT);
-    bind(sock,(sockaddr*)&bind_addr,sizeof(bind_addr));
+    if (bind(sock,(sockaddr*)&bind_addr,sizeof(bind_addr)) == SOCKET_ERROR) {
+        log_err("Input receiver bind on UDP %u failed: %d", static_cast<unsigned>(PORT_INPUT), WSAGetLastError());
+        closesocket(sock);
+        g_running = false;
+        return;
+    }
 
     while (g_running) {
         char buf[64] = {};
@@ -524,7 +550,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     g_bridge_ip = argv[1];
-    WSADATA wsa; WSAStartup(MAKEWORD(2,2),&wsa);
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2,2),&wsa) != 0) {
+        log_err("WSAStartup failed.");
+        return 1;
+    }
     SetConsoleCtrlHandler(console_handler,TRUE);
 
     log_info("Stadia Receiver starting — bridge at %s", g_bridge_ip.c_str());
@@ -532,14 +562,36 @@ int main(int argc, char* argv[]) {
     PVIGEM_CLIENT client = vigem_alloc();
     if (!client || !VIGEM_SUCCESS(vigem_connect(client))) {
         log_err("ViGEmBus init failed — is the driver installed?");
+        if (client) vigem_free(client);
+        WSACleanup();
         return 1;
     }
     std::array<PVIGEM_TARGET, MAX_CONTROLLERS> pads{};
     for (size_t i = 0; i < MAX_CONTROLLERS; ++i) {
         pads[i] = vigem_target_x360_alloc();
+        if (!pads[i]) {
+            log_err("ViGEm virtual pad %u allocation failed", static_cast<unsigned>(i + 1));
+            for (size_t j = 0; j < i; ++j) {
+                if (!pads[j]) continue;
+                vigem_target_remove(client, pads[j]);
+                vigem_target_free(pads[j]);
+            }
+            vigem_disconnect(client);
+            vigem_free(client);
+            WSACleanup();
+            return 1;
+        }
         const VIGEM_ERROR err = vigem_target_add(client, pads[i]);
         if (!VIGEM_SUCCESS(err)) {
             log_err("ViGEm virtual pad %u init failed: 0x%08X", static_cast<unsigned>(i + 1), err);
+            for (size_t j = 0; j <= i; ++j) {
+                if (!pads[j]) continue;
+                if (j < i) vigem_target_remove(client, pads[j]);
+                vigem_target_free(pads[j]);
+            }
+            vigem_disconnect(client);
+            vigem_free(client);
+            WSACleanup();
             return 1;
         }
         vigem_target_x360_register_notification(client, pads[i], vigem_rumble_callback, reinterpret_cast<LPVOID>(static_cast<uintptr_t>(i)));
@@ -547,8 +599,14 @@ int main(int argc, char* argv[]) {
     }
 
     g_rumble_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (g_rumble_sock == INVALID_SOCKET) {
+        log_err("Rumble socket failed: %d", WSAGetLastError());
+    }
     g_rumble_dest.sin_family=AF_INET; g_rumble_dest.sin_port=htons(PORT_RUMBLE);
-    inet_pton(AF_INET, g_bridge_ip.c_str(), &g_rumble_dest.sin_addr);
+    if (inet_pton(AF_INET, g_bridge_ip.c_str(), &g_rumble_dest.sin_addr) != 1) {
+        log_err("Invalid Linux bridge IP address: %s", g_bridge_ip.c_str());
+        g_running = false;
+    }
 
     std::thread t_input(input_receiver_thread, client, &pads);
     std::thread t_macro(macro_listener_thread);
@@ -563,6 +621,7 @@ int main(int argc, char* argv[]) {
         vigem_target_remove(client,pads[i]); vigem_target_free(pads[i]);
     }
     vigem_disconnect(client); vigem_free(client);
-    closesocket(g_rumble_sock); WSACleanup();
+    if (g_rumble_sock != INVALID_SOCKET) closesocket(g_rumble_sock);
+    WSACleanup();
     return 0;
 }
