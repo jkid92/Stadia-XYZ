@@ -10,7 +10,7 @@ The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer th
 
 ## Native C# control center
 
-The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe` and is the normal entry point for users. The executable now owns the Start/Stop orchestration, WSL distro resolution, native self-test output, log viewing, and GitHub Release checks. The batch and PowerShell tools remain in the package as fallback/debug entry points.
+The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe` and is the normal entry point for users. The executable owns the setup/check flow, Bluetooth and WSL selection, Linux/BlueZ device inspection, controller profiles, macro editing, controller telemetry, battery warnings, support bundles, Start/Stop orchestration, native self-test output, log viewing, and GitHub Release checks. The batch and PowerShell tools remain in the package as compatibility/debug entry points.
 
 Build it from a source checkout with:
 

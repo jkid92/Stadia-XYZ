@@ -90,12 +90,14 @@ internal sealed class BridgeOrchestrator
 
         if (!await DeployLinuxBridgeAsync(distro, status).ConfigureAwait(false))
         {
+            await StopAsync().ConfigureAwait(false);
             return 1;
         }
 
         var linuxStarted = await StartLinuxCoreAsync(distro, status).ConfigureAwait(false);
         if (!linuxStarted)
         {
+            await StopAsync().ConfigureAwait(false);
             return 1;
         }
 
@@ -236,6 +238,15 @@ internal sealed class BridgeOrchestrator
             return requested!;
         }
 
+        if (File.Exists(_paths.SelectedBluetoothBusId))
+        {
+            var saved = File.ReadAllText(_paths.SelectedBluetoothBusId).Trim();
+            if (IsBusId(saved))
+            {
+                return saved;
+            }
+        }
+
         var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
         foreach (var line in list.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {
@@ -265,9 +276,21 @@ internal sealed class BridgeOrchestrator
                 ? new[] { "attach", "--wsl", "--busid", busId, "--distribution", distro }
                 : new[] { "attach", "--wsl", "--busid", busId };
             var attach = await _runner.RunAsync("usbipd", attachArgs, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
+            if (attach.ExitCode != 0 && attachArgs.Any(arg => arg.Equals("--distribution", StringComparison.OrdinalIgnoreCase)))
+            {
+                status.Write("BT_ATTACH_DISTRO_FALLBACK", "Attach with explicit distro failed; retrying default WSL attach");
+                attach = await _runner.RunAsync("usbipd", new[] { "attach", "--wsl", "--busid", busId }, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
+            }
             if (attach.ExitCode == 0)
             {
                 status.Write("BT_ATTACH_OK", "Bluetooth adapter attached to WSL");
+                var verify = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
+                var line = verify.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                    .FirstOrDefault(value => value.TrimStart().StartsWith(busId + " ", StringComparison.OrdinalIgnoreCase));
+                status.Write(line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase) ? "BT_ATTACH_VERIFY_OK" : "BT_ATTACH_VERIFY_WARN",
+                    line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase)
+                        ? $"usbipd reports BUSID {busId} as attached"
+                        : "Attach command succeeded, but usbipd list did not report the BUSID as Attached");
                 await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 return true;
             }

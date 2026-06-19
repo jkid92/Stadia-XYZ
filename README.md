@@ -43,9 +43,9 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 ## 🖥️ Graphical Control Panel
 
-Run `StadiaX.exe` to open the Stadia X Control Center. `Start-GUI.bat` remains available only as a compatibility fallback: it opens `StadiaX.exe` when present, or the legacy PowerShell GUI when running from source without the native executable.
+Run `StadiaX.exe` to open the Stadia X Control Center. `Start-GUI.bat` remains available only as a compatibility launcher: it opens `StadiaX.exe` when present.
 
-The native launcher is a C# WinForms executable. It handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing. The legacy batch and PowerShell scripts remain available as advanced fallback/debug tools.
+The native launcher is a C# WinForms executable. It is the main interface for setup, Bluetooth selection, Linux/BlueZ devices, controller profiles, macros, controller testing, battery warnings, support bundles, update checks, Start/Stop orchestration, self-test output, and live log viewing. The legacy batch and PowerShell scripts remain in the package only as compatibility/debug tools.
 
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
@@ -62,7 +62,7 @@ The GUI lets you:
 * Run a Capacity Wizard that scans Linux/BlueZ, compares visible controllers, active profiles, telemetry, and adapter guidance, then writes `logs/capacity-wizard.txt`.
 * Enable Party Mode for up to four controllers. It saves visible Stadia MACs when Linux can see them, uses auto-connect profiles when available, and otherwise leaves startup in automatic mode.
 * Run a Repair flow that refreshes the Linux Bluetooth stack and reconnects selected Stadia MACs without wiping the user's profiles.
-* Run a full self-test from the Log tab or `Test-StadiaX.ps1`, producing `logs/self-test.txt`.
+* Run a full self-test from the Diagnostics tab or `Test-StadiaX.ps1`, producing `logs/self-test.txt`.
 * Create a human-readable session report with Bluetooth, controller, battery, WSL, runtime, and recent Linux status details.
 * Pair, trust, and connect selected Linux/BlueZ devices from the GUI while keeping automatic detection available.
 * Save controller profiles with name, MAC address, preferred pad slot, and startup auto-connect preference.

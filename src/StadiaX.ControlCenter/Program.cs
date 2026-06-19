@@ -15,6 +15,13 @@ internal static class Program
             Environment.Exit(RunBridgeCommand(start: false));
             return;
         }
+        if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
+        {
+            ApplicationConfiguration.Initialize();
+            using var form = new MainForm(AppPaths.Discover());
+            Environment.Exit(0);
+            return;
+        }
 
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm(AppPaths.Discover()));

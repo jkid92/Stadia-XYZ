@@ -10,6 +10,14 @@ internal sealed class AppPaths
         LinuxStatusLog = Path.Combine(LogDirectory, "linux-status.log");
         LinuxLog = Path.Combine(LogDirectory, "linux.log");
         ControllerState = Path.Combine(LogDirectory, "controller-state.json");
+        BluetoothDiagnostics = Path.Combine(LogDirectory, "bluetooth-diagnostics.txt");
+        ReceiverLog = Path.Combine(LogDirectory, "receiver.log");
+        SelectedBluetoothBusId = Path.Combine(root, "selected_bt_busid.txt");
+        SelectedControllerMacs = Path.Combine(root, "selected_controller_macs.txt");
+        SelectedWslDistro = Path.Combine(root, "selected_wsl_distro.txt");
+        ControllerProfiles = Path.Combine(root, "controller_profiles.json");
+        SupportBundleDirectory = Path.Combine(root, "support-bundles");
+        MacroConfig = Path.Combine(root, "stadia_buttons.ini");
         VersionFile = Path.Combine(root, "VERSION.txt");
         AppExecutable = Path.Combine(root, "StadiaX.exe");
         StartScript = Path.Combine(root, "Start-Stadia.bat");
@@ -25,6 +33,14 @@ internal sealed class AppPaths
     public string LinuxStatusLog { get; }
     public string LinuxLog { get; }
     public string ControllerState { get; }
+    public string BluetoothDiagnostics { get; }
+    public string ReceiverLog { get; }
+    public string SelectedBluetoothBusId { get; }
+    public string SelectedControllerMacs { get; }
+    public string SelectedWslDistro { get; }
+    public string ControllerProfiles { get; }
+    public string SupportBundleDirectory { get; }
+    public string MacroConfig { get; }
     public string VersionFile { get; }
     public string AppExecutable { get; }
     public string StartScript { get; }
