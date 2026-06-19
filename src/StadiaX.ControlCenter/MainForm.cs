@@ -26,6 +26,9 @@ internal sealed class MainForm : Form
     private readonly ListView _profilesList = new();
     private readonly ListView _macroList = new();
     private readonly ListView _controllerList = new();
+    private readonly ControllerVisualizer _controllerVisualizer = new();
+    private readonly ComboBox _controllerPadCombo = new();
+    private readonly Label _controllerVisualStatusLabel = new();
     private readonly ComboBox _macroChordCombo = new();
     private readonly TextBox _macroShortcutText = new();
     private readonly TextBox _profileNameText = new();
@@ -387,9 +390,37 @@ internal sealed class MainForm : Form
     private TabPage BuildControllerTestPage()
     {
         var page = CreatePage("Controller Test");
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14) };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        page.Controls.Add(layout);
+
+        var visualGroup = CreateGroup("Visual controller test");
+        var visualToolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(12, 6, 12, 6), WrapContents = false };
+        _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _controllerPadCombo.Width = 130;
+        _controllerPadCombo.Items.AddRange(new object[] { "Auto active", "P1", "P2", "P3", "P4" });
+        _controllerPadCombo.SelectedIndex = 0;
+        _controllerPadCombo.SelectedIndexChanged += (_, _) => RefreshControllerTelemetry();
+        _controllerVisualStatusLabel.AutoSize = false;
+        _controllerVisualStatusLabel.Width = 560;
+        _controllerVisualStatusLabel.Height = 26;
+        _controllerVisualStatusLabel.AutoEllipsis = true;
+        _controllerVisualStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        visualToolbar.Controls.Add(new Label { Text = "Pad", Width = 38, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+        visualToolbar.Controls.Add(_controllerPadCombo);
+        visualToolbar.Controls.Add(_controllerVisualStatusLabel);
+        _controllerVisualizer.Dock = DockStyle.Fill;
+        _controllerVisualizer.LoadControllerImage(Path.Combine(_paths.Root, "assets", "StadiaControllerPhoto.png"));
+        visualGroup.Controls.Add(_controllerVisualizer);
+        visualGroup.Controls.Add(visualToolbar);
+        layout.Controls.Add(visualGroup, 0, 0);
+
+        var telemetryGroup = CreateGroup("Raw telemetry");
         _controllerList.Dock = DockStyle.Fill;
         ConfigureList(_controllerList, ("Pad", 60), ("Active", 70), ("Packets/s", 80), ("Packets", 90), ("Triggers", 120), ("Sticks", 250), ("Pressed buttons", 420));
-        page.Controls.Add(_controllerList);
+        telemetryGroup.Controls.Add(_controllerList);
+        layout.Controls.Add(telemetryGroup, 0, 1);
         page.Controls.Add(BuildTopPanel("Reads logs/controller-state.json from the native receiver",
             ("Refresh", RefreshControllerTelemetry),
             ("Open state", () => OpenFileIfExists(_paths.ControllerState))));
@@ -671,6 +702,8 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             AddListRow(_controllerList, "-", "ERROR", ex.Message, Color.FromArgb(180, 45, 45));
+            _controllerVisualizer.SetTelemetry(null, "Controller telemetry could not be read.");
+            _controllerVisualStatusLabel.Text = "Telemetry read failed";
             return;
         }
 
@@ -687,6 +720,34 @@ internal sealed class MainForm : Form
                 string.Join(", ", pressed),
                 controller.Active ? Color.FromArgb(34, 120, 72) : Color.FromArgb(90, 90, 90));
         }
+
+        UpdateControllerVisualizer(snapshot);
+    }
+
+    private void UpdateControllerVisualizer(ControllerTelemetrySnapshot snapshot)
+    {
+        ControllerTelemetryRow? selected = null;
+        if (_controllerPadCombo.SelectedIndex > 0)
+        {
+            selected = snapshot.Controllers.FirstOrDefault(controller => controller.Index == _controllerPadCombo.SelectedIndex);
+        }
+        else
+        {
+            selected = snapshot.Controllers.FirstOrDefault(controller => controller.Active) ??
+                       snapshot.Controllers.FirstOrDefault(controller => controller.Packets > 0);
+        }
+
+        if (selected is null)
+        {
+            _controllerVisualizer.SetTelemetry(null, "No controller telemetry yet. Start the bridge and press a button.");
+            _controllerVisualStatusLabel.Text = "No controller data yet";
+            return;
+        }
+
+        var pressed = selected.Buttons.Where(pair => pair.Value).Select(pair => pair.Key.ToUpperInvariant()).ToArray();
+        var status = $"P{selected.Index}  active={selected.Active}  packets/s={selected.PacketsPerSecond:0.0}  pressed={(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
+        _controllerVisualizer.SetTelemetry(selected, status);
+        _controllerVisualStatusLabel.Text = status;
     }
 
     private void RefreshLogs()

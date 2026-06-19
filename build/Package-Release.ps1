@@ -51,6 +51,8 @@ $requiredFiles = @(
     "stadia_buttons.ini",
     "assets\StadiaX.ico",
     "assets\StadiaX-icon.png",
+    "assets\StadiaControllerPhoto.png",
+    "assets\ATTRIBUTION.md",
     "README.md",
     "BUILD.md",
     "LICENSE.txt"
