@@ -2,8 +2,6 @@
 
 ## StadiaControllerPhoto.png
 
-- Source: Wikimedia Commons, File: Google Stadia Controller.jpg
-- URL: https://commons.wikimedia.org/wiki/File:Google_Stadia_Controller.jpg
-- Author: ubahnverleih
-- License: Creative Commons CC0 1.0 Universal Public Domain Dedication
-- Local changes: resized for the Stadia X controller test view and used as a source for the application icon.
+- Source: user-provided reference image in this Codex thread.
+- Local changes: resized to 2048x1024 for the Stadia X controller test view and used as the source for the application icon.
+- Note: replace this file with an owned/redistributable photo before broad public distribution if required by your release policy.

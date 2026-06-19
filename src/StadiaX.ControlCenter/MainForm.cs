@@ -391,8 +391,8 @@ internal sealed class MainForm : Form
     {
         var page = CreatePage("Controller Test");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14) };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 58));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 42));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
         page.Controls.Add(layout);
 
         var visualGroup = CreateGroup("Visual controller test");
