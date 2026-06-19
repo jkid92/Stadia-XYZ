@@ -390,37 +390,53 @@ internal sealed class MainForm : Form
     private TabPage BuildControllerTestPage()
     {
         var page = CreatePage("Controller Test");
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14) };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 68));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 32));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(14) };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
         var visualGroup = CreateGroup("Visual controller test");
-        var visualToolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 42, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(12, 6, 12, 6), WrapContents = false };
-        _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _controllerPadCombo.Width = 130;
-        _controllerPadCombo.Items.AddRange(new object[] { "Auto active", "P1", "P2", "P3", "P4" });
-        _controllerPadCombo.SelectedIndex = 0;
-        _controllerPadCombo.SelectedIndexChanged += (_, _) => RefreshControllerTelemetry();
-        _controllerVisualStatusLabel.AutoSize = false;
-        _controllerVisualStatusLabel.Width = 560;
-        _controllerVisualStatusLabel.Height = 26;
-        _controllerVisualStatusLabel.AutoEllipsis = true;
-        _controllerVisualStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        visualToolbar.Controls.Add(new Label { Text = "Pad", Width = 38, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
-        visualToolbar.Controls.Add(_controllerPadCombo);
-        visualToolbar.Controls.Add(_controllerVisualStatusLabel);
         _controllerVisualizer.Dock = DockStyle.Fill;
         _controllerVisualizer.LoadControllerImage(Path.Combine(_paths.Root, "assets", "StadiaControllerPhoto.png"));
         visualGroup.Controls.Add(_controllerVisualizer);
-        visualGroup.Controls.Add(visualToolbar);
-        layout.Controls.Add(visualGroup, 0, 0);
+        layout.Controls.Add(visualGroup, 1, 0);
 
-        var telemetryGroup = CreateGroup("Raw telemetry");
+        var telemetryGroup = CreateGroup("Telemetry");
+        var telemetryLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(10) };
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        telemetryGroup.Controls.Add(telemetryLayout);
+
+        var padPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
+        _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _controllerPadCombo.Width = 150;
+        _controllerPadCombo.Items.AddRange(new object[] { "Auto active", "P1", "P2", "P3", "P4" });
+        _controllerPadCombo.SelectedIndex = 0;
+        _controllerPadCombo.SelectedIndexChanged += (_, _) => RefreshControllerTelemetry();
+        padPanel.Controls.Add(new Label { Text = "Pad", Width = 38, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
+        padPanel.Controls.Add(_controllerPadCombo);
+        telemetryLayout.Controls.Add(padPanel, 0, 0);
+
+        _controllerVisualStatusLabel.AutoSize = false;
+        _controllerVisualStatusLabel.Dock = DockStyle.Fill;
+        _controllerVisualStatusLabel.AutoEllipsis = true;
+        _controllerVisualStatusLabel.TextAlign = ContentAlignment.TopLeft;
+        telemetryLayout.Controls.Add(_controllerVisualStatusLabel, 0, 1);
+
+        telemetryLayout.Controls.Add(new Label
+        {
+            Text = "Pads",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+        }, 0, 2);
         _controllerList.Dock = DockStyle.Fill;
-        ConfigureList(_controllerList, ("Pad", 60), ("Active", 70), ("Packets/s", 80), ("Packets", 90), ("Triggers", 120), ("Sticks", 250), ("Pressed buttons", 420));
-        telemetryGroup.Controls.Add(_controllerList);
-        layout.Controls.Add(telemetryGroup, 0, 1);
+        ConfigureList(_controllerList, ("Pad", 42), ("On", 38), ("P/s", 54), ("Trig", 58), ("Pressed", 96));
+        telemetryLayout.Controls.Add(_controllerList, 0, 3);
+        layout.Controls.Add(telemetryGroup, 0, 0);
+
         page.Controls.Add(BuildTopPanel("Reads logs/controller-state.json from the native receiver",
             ("Refresh", RefreshControllerTelemetry),
             ("Open state", () => OpenFileIfExists(_paths.ControllerState))));
@@ -711,13 +727,14 @@ internal sealed class MainForm : Form
         {
             var pressed = controller.Buttons.Where(pair => pair.Value).Select(pair => pair.Key).DefaultIfEmpty("-").ToArray();
             AddListRow(_controllerList,
-                "P" + controller.Index,
-                controller.Active ? "yes" : "no",
-                controller.PacketsPerSecond.ToString("0.0"),
-                controller.Packets.ToString(),
-                $"{controller.TriggerLeft}/{controller.TriggerRight}",
-                $"L {controller.StickLeftX},{controller.StickLeftY}  R {controller.StickRightX},{controller.StickRightY}",
-                string.Join(", ", pressed),
+                new[]
+                {
+                    "P" + controller.Index,
+                    controller.Active ? "yes" : "no",
+                    controller.PacketsPerSecond.ToString("0.0"),
+                    $"{controller.TriggerLeft}/{controller.TriggerRight}",
+                    string.Join(", ", pressed)
+                },
                 controller.Active ? Color.FromArgb(34, 120, 72) : Color.FromArgb(90, 90, 90));
         }
 
@@ -745,7 +762,7 @@ internal sealed class MainForm : Form
         }
 
         var pressed = selected.Buttons.Where(pair => pair.Value).Select(pair => pair.Key.ToUpperInvariant()).ToArray();
-        var status = $"P{selected.Index}  active={selected.Active}  packets/s={selected.PacketsPerSecond:0.0}  pressed={(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
+        var status = $"P{selected.Index} active={selected.Active}{Environment.NewLine}packets/s={selected.PacketsPerSecond:0.0} packets={selected.Packets}{Environment.NewLine}triggers={selected.TriggerLeft}/{selected.TriggerRight}{Environment.NewLine}pressed={(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
         _controllerVisualizer.SetTelemetry(selected, status);
         _controllerVisualStatusLabel.Text = status;
     }

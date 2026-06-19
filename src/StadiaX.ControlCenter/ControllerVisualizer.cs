@@ -10,6 +10,8 @@ internal sealed class ControllerVisualizer : Control
     private static readonly Color DpadGlow = Color.FromArgb(74, 220, 211);
     private static readonly Color SystemGlow = Color.FromArgb(116, 154, 255);
     private static readonly Color TriggerGlow = Color.FromArgb(255, 206, 78);
+    private static readonly Color SurfaceTop = Color.FromArgb(255, 255, 255);
+    private static readonly Color SurfaceBottom = Color.FromArgb(246, 246, 246);
 
     private Image? _controllerImage;
     private ControllerTelemetryRow? _controller;
@@ -19,7 +21,7 @@ internal sealed class ControllerVisualizer : Control
     {
         DoubleBuffered = true;
         ResizeRedraw = true;
-        BackColor = Color.FromArgb(18, 24, 33);
+        BackColor = SurfaceBottom;
         Font = new Font("Segoe UI", 9, FontStyle.Bold);
     }
 
@@ -54,7 +56,7 @@ internal sealed class ControllerVisualizer : Control
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-        using var background = new LinearGradientBrush(ClientRectangle, Color.FromArgb(18, 24, 33), Color.FromArgb(36, 51, 68), 25f);
+        using var background = new LinearGradientBrush(ClientRectangle, SurfaceTop, SurfaceBottom, 90f);
         g.FillRectangle(background, ClientRectangle);
 
         var imageBounds = GetImageBounds();
@@ -68,14 +70,13 @@ internal sealed class ControllerVisualizer : Control
         }
 
         DrawControllerOverlays(g, imageBounds);
-        DrawStatus(g);
     }
 
     private RectangleF GetImageBounds()
     {
         var margin = 18f;
-        var available = new RectangleF(margin, margin, Math.Max(1, Width - margin * 2), Math.Max(1, Height - margin * 2 - 30));
-        var scale = Math.Max(available.Width / SourceWidth, available.Height / SourceHeight);
+        var available = new RectangleF(margin, margin, Math.Max(1, Width - margin * 2), Math.Max(1, Height - margin * 2));
+        var scale = Math.Min(available.Width / SourceWidth, available.Height / SourceHeight);
         var width = SourceWidth * scale;
         var height = SourceHeight * scale;
         var x = available.Left + (available.Width - width) / 2f;
@@ -85,8 +86,8 @@ internal sealed class ControllerVisualizer : Control
 
     private void DrawControllerOverlays(Graphics g, RectangleF bounds)
     {
-        DrawVirtualTrigger(g, bounds, "L2", _controller?.TriggerLeft ?? 0, 408, 18, 330, 76);
-        DrawVirtualTrigger(g, bounds, "R2", _controller?.TriggerRight ?? 0, 1310, 18, 330, 76);
+        DrawVirtualTrigger(g, bounds, "L2", _controller?.TriggerLeft ?? 0, 0.22f);
+        DrawVirtualTrigger(g, bounds, "R2", _controller?.TriggerRight ?? 0, 0.62f);
 
         DrawDpad(g, bounds);
         DrawCircleButton(g, bounds, "y", 1487, 162, 50, "Y", FaceGlow);
@@ -150,9 +151,18 @@ internal sealed class ControllerVisualizer : Control
         DrawContour(g, path, IsPressed(button), label, SystemGlow);
     }
 
-    private void DrawVirtualTrigger(Graphics g, RectangleF bounds, string label, int value, float x, float y, float width, float height)
+    private void DrawVirtualTrigger(Graphics g, RectangleF bounds, string label, int value, float xRatio)
     {
-        var rect = RectOnImage(bounds, x, y, width, height);
+        var width = Math.Clamp(bounds.Width * 0.18f, 126f, 188f);
+        var height = Math.Clamp(bounds.Height * 0.08f, 34f, 46f);
+        var x = bounds.Left + bounds.Width * xRatio;
+        var y = bounds.Top - height - 10f;
+        if (y < 8f)
+        {
+            y = bounds.Top + 10f;
+        }
+
+        var rect = new RectangleF(x, y, width, height);
         using var path = RoundedRect(rect, Scale(bounds, 24));
         var active = value > 18;
 
@@ -233,11 +243,11 @@ internal sealed class ControllerVisualizer : Control
 
     private void DrawMissingImage(Graphics g, RectangleF bounds)
     {
-        using var fill = new SolidBrush(Color.FromArgb(26, 38, 52));
-        using var border = new Pen(Color.FromArgb(84, 109, 132), 2f);
+        using var fill = new SolidBrush(Color.FromArgb(241, 245, 249));
+        using var border = new Pen(Color.FromArgb(148, 163, 184), 2f);
         g.FillRectangle(fill, bounds);
         g.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width, bounds.Height);
-        DrawCenteredText(g, "Controller image not found", bounds, Color.FromArgb(226, 232, 240));
+        DrawCenteredText(g, "Controller image not found", bounds, Color.FromArgb(51, 65, 85));
     }
 
     private bool IsPressed(string button)
