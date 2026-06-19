@@ -5,12 +5,12 @@ This project ships as a portable folder plus two native runtime binaries:
 * `stadia_receiver.exe` runs on Windows and exposes the virtual Xbox 360 controller through ViGEmBus.
 * `stadia_bridge` runs inside the selected WSL distro and forwards Stadia Bluetooth input and rumble packets.
 
-The native C# GUI executable, WSL distro resolver, self-test script, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
+The native C# GUI executable, fallback scripts, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
 The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer that copies the folder to a stable install path and creates shortcuts.
 
 ## Native C# control center
 
-The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe`, starts and stops the existing bridge scripts, reads the same logs, runs the same self-test, and checks GitHub Releases while deeper orchestration continues to move out of PowerShell incrementally.
+The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe` and is the normal entry point for users. The executable now owns the Start/Stop orchestration, WSL distro resolution, native self-test output, log viewing, and GitHub Release checks. The batch and PowerShell tools remain in the package as fallback/debug entry points.
 
 Build it from a source checkout with:
 
@@ -105,4 +105,4 @@ After extracting a package or installing Stadia X, run:
 .\Test-StadiaX.ps1
 ```
 
-The script writes `logs/self-test.txt` and exits non-zero only when required files, runtime binaries, or core dependencies are missing. For source-only dry runs, use `-AllowMissingBinaries`.
+The script writes `logs/self-test.txt` and exits non-zero only when required files, runtime binaries, or core dependencies are missing. The same check is also available from the native GUI. For source-only dry runs, use `-AllowMissingBinaries`.

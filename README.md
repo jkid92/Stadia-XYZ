@@ -32,12 +32,12 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 4. **The Setup Phase:**
    * The script will automatically install `usbipd`.
    * If you already have a usable WSL2 distro, Stadia X can use it automatically. It prefers Ubuntu/WSL2 when present, then falls back to any WSL2 distro. If no usable distro exists, it installs `Ubuntu`.
-   * **Note:** You will likely be prompted to **Restart your PC** during the first run. Please restart, and then run `Start-Stadia.bat` again.
+   * **Note:** You will likely be prompted to **Restart your PC** during the first run. Please restart, reopen `StadiaX.exe`, and press `Start` again.
 5. **First Pairing:**
    * Once the script boots Linux, it will look for your controller.
    * Turn on up to four Stadia Controllers, then hold **Stadia + Y** until the light flashes orange to enter pairing mode.
    * They will connect automatically. Next time you play, you just need to turn the controller on!
-6. **Game On!** Leave the black console window open while you play. When you are done, simply close the window and `Stop-Stadia` will automatically run to give your Bluetooth back to Windows.
+6. **Game On!** Leave `StadiaX.exe` open while you play. When you are done, press `Stop` or use the tray menu to restore your Bluetooth adapter to Windows.
 
 ---
 
@@ -45,7 +45,7 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 Run `StadiaX.exe` to open the Stadia X Control Center. `Start-GUI.bat` remains available only as a compatibility fallback: it opens `StadiaX.exe` when present, or the legacy PowerShell GUI when running from source without the native executable.
 
-The native launcher is a C# WinForms executable. It handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing while the legacy PowerShell GUI remains available as an advanced fallback during the migration.
+The native launcher is a C# WinForms executable. It handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing. The legacy batch and PowerShell scripts remain available as advanced fallback/debug tools.
 
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
@@ -97,9 +97,10 @@ Runtime logs are written under `logs/`:
 * `linux.log` keeps the raw Linux core output.
 * `bluetooth-diagnostics.txt` captures Linux/BlueZ adapter, controller, module, and kernel hints after the Linux core starts.
 * `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen. It contains a `controllers` array for up to four pads, plus packet counters and per-pad activity.
-* `self-test.txt` is written by `Test-StadiaX.ps1` and summarizes missing files, runtime binaries, WSL, usbipd, ViGEmBus, and macro config state.
+* `self-test.txt` is written by the native GUI self-test or `Test-StadiaX.ps1` and summarizes missing files, runtime binaries, WSL, usbipd, ViGEmBus, and macro config state.
+* `receiver.log` keeps Windows receiver output when the bridge is started from `StadiaX.exe`.
 
-If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `Start-Stadia.bat` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.
+If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `StadiaX.exe` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.
 
 The `Setup` tab also shows the WSL distro Stadia X will use. Leave it on `Automatic` for the recommended path, or select a specific distro if you keep multiple WSL installs. Startup stores manual selection in `selected_wsl_distro.txt` and passes every Linux command through that distro instead of relying on Windows' default WSL setting.
 

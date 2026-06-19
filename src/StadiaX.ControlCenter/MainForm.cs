@@ -9,6 +9,7 @@ internal sealed class MainForm : Form
     private readonly ProcessRunner _runner = new();
     private readonly ReleaseChecker _releaseChecker = new();
     private readonly RequirementChecker _requirementChecker;
+    private readonly SelfTestService _selfTestService;
     private readonly Label _statusLabel = new();
     private readonly ListView _checksList = new();
     private readonly TextBox _statusLogBox = new();
@@ -20,6 +21,7 @@ internal sealed class MainForm : Form
     {
         _paths = paths;
         _requirementChecker = new RequirementChecker(paths, _runner);
+        _selfTestService = new SelfTestService(paths, _requirementChecker);
         Text = "Stadia X";
         MinimumSize = new Size(960, 640);
         Size = new Size(1080, 720);
@@ -223,15 +225,9 @@ internal sealed class MainForm : Form
 
     private async Task RunSelfTestAsync()
     {
-        if (!File.Exists(_paths.SelfTestScript))
-        {
-            MessageBox.Show("Test-StadiaX.ps1 was not found.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
         _statusLabel.Text = "Running self-test...";
-        var result = await _runner.RunAsync("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{_paths.SelfTestScript}\"", _paths.Root, 60000);
-        _diagnosticsBox.Text = result.Output + Environment.NewLine + result.Error;
+        var result = await _selfTestService.RunAsync(json: true);
+        _diagnosticsBox.Text = result.Text;
         _statusLabel.Text = result.ExitCode == 0 ? "Self-test passed" : $"Self-test exit code {result.ExitCode}";
     }
 
@@ -243,12 +239,12 @@ internal sealed class MainForm : Form
 
     private void StartBridge()
     {
-        LaunchBatch(_paths.StartScript, true);
+        LaunchSelfCommand("--start-bridge", elevateWhenNeeded: true, "Stadia X start requested. Watch Live Logs for progress.");
     }
 
     private void StopBridge()
     {
-        LaunchBatch(_paths.StopScript, true);
+        LaunchSelfCommand("--stop-bridge", elevateWhenNeeded: true, "Stadia X stop requested. Watch Live Logs for progress.");
     }
 
     private void OpenPowerShellGui()
@@ -287,6 +283,39 @@ internal sealed class MainForm : Form
         }
 
         Process.Start(startInfo);
+    }
+
+    private void LaunchSelfCommand(string argument, bool elevateWhenNeeded, string message)
+    {
+        var executable = File.Exists(_paths.AppExecutable) ? _paths.AppExecutable : Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        {
+            MessageBox.Show("StadiaX.exe was not found. Falling back to legacy scripts.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            LaunchBatch(argument.Contains("stop", StringComparison.OrdinalIgnoreCase) ? _paths.StopScript : _paths.StartScript, elevateWhenNeeded);
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo(executable, argument)
+        {
+            WorkingDirectory = _paths.Root,
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Hidden
+        };
+        if (elevateWhenNeeded && !IsAdministrator())
+        {
+            startInfo.Verb = "runas";
+        }
+
+        try
+        {
+            Process.Start(startInfo);
+            _statusLabel.Text = message;
+            RefreshLogs();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private static bool IsAdministrator()

@@ -14,11 +14,13 @@ internal sealed class RequirementChecker
 {
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
+    private readonly WslDistroResolver _wslResolver;
 
     public RequirementChecker(AppPaths paths, ProcessRunner runner)
     {
         _paths = paths;
         _runner = runner;
+        _wslResolver = new WslDistroResolver(paths, runner);
     }
 
     public async Task<IReadOnlyList<CheckResult>> RunAsync()
@@ -55,16 +57,8 @@ internal sealed class RequirementChecker
             15000).ConfigureAwait(false);
         checks.Add(new CheckResult("ViGEmBus driver", vigem.Output.Contains("OK", StringComparison.OrdinalIgnoreCase) ? CheckState.Ok : CheckState.Missing, "Required for virtual Xbox 360 controllers."));
 
-        if (File.Exists(_paths.WslResolverScript))
-        {
-            var distro = await _runner.RunAsync(
-                "powershell.exe",
-                $"-NoProfile -ExecutionPolicy Bypass -File \"{_paths.WslResolverScript}\"",
-                _paths.Root,
-                15000).ConfigureAwait(false);
-            var resolved = distro.Output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-            checks.Add(new CheckResult("WSL distro", string.IsNullOrWhiteSpace(resolved) ? CheckState.Warn : CheckState.Ok, string.IsNullOrWhiteSpace(resolved) ? "No distro resolved yet; first start can install Ubuntu." : resolved));
-        }
+        var resolved = await _wslResolver.ResolveAsync().ConfigureAwait(false);
+        checks.Add(new CheckResult("WSL distro", string.IsNullOrWhiteSpace(resolved) ? CheckState.Warn : CheckState.Ok, string.IsNullOrWhiteSpace(resolved) ? "No distro resolved yet; first start can install Ubuntu." : resolved));
 
         var macroPath = Path.Combine(_paths.Root, "stadia_buttons.ini");
         if (File.Exists(macroPath))
