@@ -49,6 +49,8 @@ $requiredFiles = @(
     "Test-StadiaX.ps1",
     "start.sh",
     "stadia_buttons.ini",
+    "assets\StadiaX.ico",
+    "assets\StadiaX-icon.png",
     "README.md",
     "BUILD.md",
     "LICENSE.txt"
@@ -66,7 +68,12 @@ foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path $source)) {
         throw "Required package file missing: $relativePath"
     }
-    Copy-Item -LiteralPath $source -Destination (Join-Path $packageRoot $relativePath) -Force
+    $destination = Join-Path $packageRoot $relativePath
+    $destinationDirectory = Split-Path -Parent $destination
+    if (-not (Test-Path $destinationDirectory)) {
+        New-Item -ItemType Directory -Force -Path $destinationDirectory | Out-Null
+    }
+    Copy-Item -LiteralPath $source -Destination $destination -Force
 }
 
 foreach ($relativePath in $binaryFiles) {

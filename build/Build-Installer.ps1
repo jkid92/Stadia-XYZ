@@ -75,6 +75,7 @@ $requiredFiles = @(
     "stadia_receiver.exe",
     "ViGEmClient.dll",
     "stadia_bridge",
+    "assets\StadiaX.ico",
     "LICENSE.txt"
 )
 

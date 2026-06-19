@@ -7,5 +7,6 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>StadiaX</AssemblyName>
     <RootNamespace>StadiaX.ControlCenter</RootNamespace>
+    <ApplicationIcon>..\..\assets\StadiaX.ico</ApplicationIcon>
   </PropertyGroup>
 </Project>

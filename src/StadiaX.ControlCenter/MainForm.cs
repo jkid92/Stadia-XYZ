@@ -54,6 +54,7 @@ internal sealed class MainForm : Form
         _native = new NativeControlServices(paths, _runner);
 
         Text = "Stadia X";
+        Icon = LoadApplicationIcon();
         MinimumSize = new Size(1180, 760);
         Size = new Size(1280, 820);
         StartPosition = FormStartPosition.CenterScreen;
@@ -469,7 +470,7 @@ internal sealed class MainForm : Form
 
     private void ConfigureTray()
     {
-        _trayIcon.Icon = SystemIcons.Application;
+        _trayIcon.Icon = Icon is null ? (Icon)SystemIcons.Application.Clone() : (Icon)Icon.Clone();
         _trayIcon.Text = "Stadia X";
         _trayIcon.ContextMenuStrip = new ContextMenuStrip();
         _trayIcon.ContextMenuStrip.Items.Add("Show", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
@@ -1320,6 +1321,18 @@ internal sealed class MainForm : Form
         if (File.Exists(path))
         {
             Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+    }
+
+    private static Icon LoadApplicationIcon()
+    {
+        try
+        {
+            return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? (Icon)SystemIcons.Application.Clone();
+        }
+        catch
+        {
+            return (Icon)SystemIcons.Application.Clone();
         }
     }
 

@@ -31,6 +31,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Stadia X
 UninstallDisplayIcon={app}\StadiaX.exe
+SetupIconFile={#SourceDir}\assets\StadiaX.ico
 CloseApplications=no
 
 [Languages]
