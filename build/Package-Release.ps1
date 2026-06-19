@@ -55,6 +55,7 @@ $requiredFiles = @(
 )
 
 $binaryFiles = @(
+    "StadiaX.exe",
     "stadia_receiver.exe",
     "ViGEmClient.dll",
     "stadia_bridge"
@@ -85,6 +86,9 @@ New-Item -ItemType Directory -Force -Path $sourceDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot "build") -Destination $sourceDir -Recurse -Force
 if (Test-Path (Join-Path $repoRoot "src")) {
     Copy-Item -LiteralPath (Join-Path $repoRoot "src") -Destination $sourceDir -Recurse -Force
+    Get-ChildItem -LiteralPath (Join-Path $sourceDir "src") -Directory -Recurse |
+        Where-Object { $_.Name -in @("bin", "obj") } |
+        Remove-Item -Recurse -Force
 }
 
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal

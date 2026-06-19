@@ -20,7 +20,7 @@ internal sealed class MainForm : Form
     {
         _paths = paths;
         _requirementChecker = new RequirementChecker(paths, _runner);
-        Text = "Stadia X C# Control Center";
+        Text = "Stadia X";
         MinimumSize = new Size(960, 640);
         Size = new Size(1080, 720);
         StartPosition = FormStartPosition.CenterScreen;
@@ -61,7 +61,7 @@ internal sealed class MainForm : Form
 
         var subtitle = new Label
         {
-            Text = "C# control center preview - orchestration migration branch",
+            Text = "Native Windows control center",
             Font = new Font("Segoe UI", 9),
             ForeColor = Color.FromArgb(202, 213, 225),
             AutoSize = true,
@@ -111,7 +111,7 @@ internal sealed class MainForm : Form
             BorderStyle = BorderStyle.None,
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(248, 250, 252),
-            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}This C# app is intentionally side-by-side with the PowerShell GUI while the migration is in progress."
+            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}This is the native .exe launcher. The PowerShell GUI remains available as an advanced fallback while remaining tools are migrated."
         };
         left.Controls.Add(info);
         actions.BringToFront();
@@ -253,7 +253,18 @@ internal sealed class MainForm : Form
 
     private void OpenPowerShellGui()
     {
-        LaunchBatch(_paths.PowerShellGuiLauncher, false);
+        if (!File.Exists(_paths.PowerShellGuiScript))
+        {
+            MessageBox.Show("StadiaX-GUI.ps1 was not found.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo("powershell.exe", $"-NoProfile -ExecutionPolicy Bypass -File \"{_paths.PowerShellGuiScript}\"")
+        {
+            WorkingDirectory = _paths.Root,
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Normal
+        });
     }
 
     private void LaunchBatch(string path, bool elevateWhenNeeded)

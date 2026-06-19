@@ -50,7 +50,7 @@ function New-StadiaShortcut {
     $shortcut = $shell.CreateShortcut($ShortcutPath)
     $shortcut.TargetPath = $TargetPath
     $shortcut.WorkingDirectory = $WorkingDirectory
-    $shortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,220"
+    $shortcut.IconLocation = if ($TargetPath -match "\.exe$") { $TargetPath } else { "$env:SystemRoot\System32\shell32.dll,220" }
     $shortcut.Description = "Launch Stadia X Control Center"
     $shortcut.Save()
 }
@@ -76,8 +76,11 @@ if ($sourceFull -ne $targetFull) {
 }
 
 $launcher = Join-Path $installRoot.FullName "Start-GUI.bat"
-if (-not (Test-Path $launcher)) {
-    throw "Start-GUI.bat was not found in $($installRoot.FullName). The package looks incomplete."
+$appExe = Join-Path $installRoot.FullName "StadiaX.exe"
+if (Test-Path $appExe) {
+    $launcher = $appExe
+} elseif (-not (Test-Path $launcher)) {
+    throw "Neither StadiaX.exe nor Start-GUI.bat was found in $($installRoot.FullName). The package looks incomplete."
 }
 
 if (-not $NoShortcut) {

@@ -11,9 +11,10 @@ internal sealed class AppPaths
         LinuxLog = Path.Combine(LogDirectory, "linux.log");
         ControllerState = Path.Combine(LogDirectory, "controller-state.json");
         VersionFile = Path.Combine(root, "VERSION.txt");
+        AppExecutable = Path.Combine(root, "StadiaX.exe");
         StartScript = Path.Combine(root, "Start-Stadia.bat");
         StopScript = Path.Combine(root, "Stop-Stadia.bat");
-        PowerShellGuiLauncher = Path.Combine(root, "Start-GUI.bat");
+        PowerShellGuiScript = Path.Combine(root, "StadiaX-GUI.ps1");
         SelfTestScript = Path.Combine(root, "Test-StadiaX.ps1");
         WslResolverScript = Path.Combine(root, "Resolve-WslDistro.ps1");
     }
@@ -25,9 +26,10 @@ internal sealed class AppPaths
     public string LinuxLog { get; }
     public string ControllerState { get; }
     public string VersionFile { get; }
+    public string AppExecutable { get; }
     public string StartScript { get; }
     public string StopScript { get; }
-    public string PowerShellGuiLauncher { get; }
+    public string PowerShellGuiScript { get; }
     public string SelfTestScript { get; }
     public string WslResolverScript { get; }
 

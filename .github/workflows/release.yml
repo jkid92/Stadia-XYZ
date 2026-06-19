@@ -91,6 +91,15 @@ jobs:
           Copy-Item -Force artifacts/windows-receiver/ViGEmClient.dll .
           Copy-Item -Force artifacts/linux-bridge/stadia_bridge .
 
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build C# control center
+        shell: pwsh
+        run: ./build/Build-CSharpControlCenter.ps1 -CopyToRoot
+
       - name: Package
         shell: pwsh
         run: |

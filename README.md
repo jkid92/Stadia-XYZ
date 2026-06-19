@@ -26,8 +26,8 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 ## 🚀 Installation & First Run
 
-1. Download the latest `Stadia-X-<version>-Setup.exe` from GitHub Releases and run it. The installer copies Stadia X to your user profile and creates shortcuts.
-2. If you prefer portable mode, download the release ZIP, extract it, then run `Install-StadiaX.bat` or `Start-GUI.bat`. **Do not run Stadia X from inside the ZIP file.**
+1. Download the latest `Stadia-X-<version>-Setup.exe` from GitHub Releases and run it. The installer copies Stadia X to your user profile and creates shortcuts that launch `StadiaX.exe`.
+2. If you prefer portable mode, download the release ZIP, extract it, then run `StadiaX.exe` directly or use `Install-StadiaX.bat` to create shortcuts. **Do not run Stadia X from inside the ZIP file.**
 3. In the GUI, open `First Run` and follow the checklist from top to bottom.
 4. **The Setup Phase:**
    * The script will automatically install `usbipd`.
@@ -43,9 +43,9 @@ Because Windows natively struggles with the Stadia controller's Bluetooth implem
 
 ## 🖥️ Graphical Control Panel
 
-Run `Start-GUI.bat` to open the Stadia X Control Center.
+Run `StadiaX.exe` to open the Stadia X Control Center. `Start-GUI.bat` remains available only as a compatibility fallback: it opens `StadiaX.exe` when present, or the legacy PowerShell GUI when running from source without the native executable.
 
-On the `codex/csharp-control-center` migration branch there is also a side-by-side C# preview launcher, `Start-GUI-CSharp.bat`. It does not replace the PowerShell GUI yet; it starts the new WinForms control center that already handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing while the remaining PowerShell orchestration is migrated gradually.
+The native launcher is a C# WinForms executable. It handles requirement checks, update checks, Start/Stop orchestration, self-test output, and live log viewing while the legacy PowerShell GUI remains available as an advanced fallback during the migration.
 
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
@@ -82,6 +82,7 @@ The GUI lets you:
 
 Release packages are built automatically by GitHub Actions. The preferred download is the installer EXE, while the ZIP remains available for portable use and troubleshooting. Both include:
 * `Install-StadiaX.bat` and `Install-StadiaX.ps1`
+* `StadiaX.exe`
 * `Resolve-WslDistro.ps1`
 * `Test-StadiaX.ps1`
 * `stadia_receiver.exe`

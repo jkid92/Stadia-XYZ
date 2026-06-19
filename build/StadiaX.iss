@@ -30,21 +30,21 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Stadia X
-UninstallDisplayIcon={app}\Start-GUI.bat
+UninstallDisplayIcon={app}\StadiaX.exe
 CloseApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "source\*"
 
 [Icons]
-Name: "{group}\Stadia X"; Filename: "{app}\Start-GUI.bat"; WorkingDir: "{app}"
-Name: "{autodesktop}\Stadia X"; Filename: "{app}\Start-GUI.bat"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Stadia X"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Stadia X"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Start-GUI.bat"; Description: "Launch Stadia X Control Center"; Flags: postinstall shellexec nowait skipifsilent unchecked
+Filename: "{app}\StadiaX.exe"; Description: "Launch Stadia X Control Center"; Flags: postinstall shellexec nowait skipifsilent unchecked

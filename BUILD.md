@@ -5,24 +5,25 @@ This project ships as a portable folder plus two native runtime binaries:
 * `stadia_receiver.exe` runs on Windows and exposes the virtual Xbox 360 controller through ViGEmBus.
 * `stadia_bridge` runs inside the selected WSL distro and forwards Stadia Bluetooth input and rumble packets.
 
-The GUI, WSL distro resolver, self-test script, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
+The native C# GUI executable, WSL distro resolver, self-test script, batch files, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
 The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer that copies the folder to a stable install path and creates shortcuts.
 
-## C# control center migration
+## Native C# control center
 
-The `codex/csharp-control-center` branch adds a side-by-side C# WinForms control center under `src/StadiaX.ControlCenter`. It is intentionally parallel to `StadiaX-GUI.ps1`: the C# app starts and stops the existing bridge scripts, reads the same logs, runs the same self-test, and checks GitHub Releases while the orchestration is migrated out of PowerShell incrementally.
+The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe`, starts and stops the existing bridge scripts, reads the same logs, runs the same self-test, and checks GitHub Releases while deeper orchestration continues to move out of PowerShell incrementally.
 
-Run it from a source checkout with:
+Build it from a source checkout with:
 
 ```powershell
-.\Start-GUI-CSharp.bat
+.\build\Build-CSharpControlCenter.ps1 -CopyToRoot
+.\StadiaX.exe
 ```
 
-Build or publish it with:
+For quick development without publishing:
 
 ```powershell
 dotnet build .\src\StadiaX.ControlCenter\StadiaX.ControlCenter.csproj
-.\build\Build-CSharpControlCenter.ps1
+dotnet run --project .\src\StadiaX.ControlCenter\StadiaX.ControlCenter.csproj
 ```
 
 ## GitHub Actions release flow
