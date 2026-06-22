@@ -60,7 +60,6 @@ $requiredFiles = @(
 
 $binaryFiles = @(
     "StadiaX.exe",
-    "stadia_receiver.exe",
     "ViGEmClient.dll",
     "stadia_bridge"
 )

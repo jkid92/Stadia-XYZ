@@ -41,7 +41,7 @@ internal sealed class RequirementChecker
             checks.Add(new CheckResult($"File: {file}", File.Exists(path) ? CheckState.Ok : CheckState.Missing, path));
         }
 
-        foreach (var runtime in new[] { "StadiaX.exe", "stadia_receiver.exe", "ViGEmClient.dll", "stadia_bridge" })
+        foreach (var runtime in new[] { "StadiaX.exe", "ViGEmClient.dll", "stadia_bridge" })
         {
             var path = Path.Combine(_paths.Root, runtime);
             checks.Add(new CheckResult($"Runtime: {runtime}", File.Exists(path) ? CheckState.Ok : CheckState.Warn, File.Exists(path) ? path : "Missing in source checkout; release package should include it."));

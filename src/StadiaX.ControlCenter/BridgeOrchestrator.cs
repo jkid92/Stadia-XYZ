@@ -19,6 +19,7 @@ internal sealed class BridgeOrchestrator
     {
         var status = new StatusWriter(_paths, "start.log");
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
+        ClearReceiverStopSignal();
 
         var missing = RequiredRuntimeFiles().Where(file => !File.Exists(Path.Combine(_paths.Root, file))).ToArray();
         if (missing.Length > 0)
@@ -114,7 +115,7 @@ internal sealed class BridgeOrchestrator
         }
 
         status.Write("RECEIVER_START", "Starting Windows receiver");
-        var receiverExit = await RunReceiverAndStopAsync(wslIp, status).ConfigureAwait(false);
+        var receiverExit = await RunIntegratedReceiverAndStopAsync(wslIp, status).ConfigureAwait(false);
         return receiverExit;
     }
 
@@ -123,6 +124,7 @@ internal sealed class BridgeOrchestrator
         var status = new StatusWriter(_paths, "teardown.log");
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
+        SignalReceiverStop();
         KillProcess("stadia_receiver");
         KillProcess("stadia-vigem-x86");
 
@@ -158,7 +160,6 @@ internal sealed class BridgeOrchestrator
     {
         yield return "start.sh";
         yield return "stadia_bridge";
-        yield return "stadia_receiver.exe";
         yield return "ViGEmClient.dll";
     }
 
@@ -204,15 +205,20 @@ internal sealed class BridgeOrchestrator
 
     private async Task CleanupOldSessionAsync(StatusWriter status)
     {
-        if (Process.GetProcessesByName("stadia_receiver").Length == 0)
+        SignalReceiverStop();
+        var legacyReceiverRunning = Process.GetProcessesByName("stadia_receiver").Length > 0;
+        if (!legacyReceiverRunning)
         {
+            await Task.Delay(TimeSpan.FromMilliseconds(750)).ConfigureAwait(false);
+            ClearReceiverStopSignal();
             return;
         }
 
-        status.Write("CLEANUP_OLD_SESSION", "Stopping existing receiver and WSL session");
+        status.Write("CLEANUP_OLD_SESSION", "Stopping existing receiver session");
         KillProcess("stadia_receiver");
         await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        ClearReceiverStopSignal();
     }
 
     private async Task<bool> WaitForWslNetworkAsync(string distro)
@@ -367,52 +373,66 @@ internal sealed class BridgeOrchestrator
         return result.Output.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
     }
 
-    private async Task<int> RunReceiverAndStopAsync(string wslIp, StatusWriter status)
+    private async Task<int> RunIntegratedReceiverAndStopAsync(string wslIp, StatusWriter status)
     {
-        var receiver = Path.Combine(_paths.Root, "stadia_receiver.exe");
-        var receiverLog = Path.Combine(_paths.LogDirectory, "receiver.log");
         Directory.CreateDirectory(_paths.LogDirectory);
-        await File.AppendAllTextAsync(receiverLog, $"[{DateTime.Now}] Starting receiver for {wslIp}{Environment.NewLine}").ConfigureAwait(false);
+        await File.AppendAllTextAsync(_paths.ReceiverLog, $"[{DateTime.Now}] Starting integrated receiver for {wslIp}{Environment.NewLine}").ConfigureAwait(false);
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = receiver,
-            WorkingDirectory = _paths.Root,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-        startInfo.ArgumentList.Add(wslIp);
-
-        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        var logLock = new object();
-        process.OutputDataReceived += (_, e) => AppendReceiverLog(receiverLog, logLock, "OUT", e.Data);
-        process.ErrorDataReceived += (_, e) => AppendReceiverLog(receiverLog, logLock, "ERR", e.Data);
-
+        using var cancellation = new CancellationTokenSource();
+        using var stopWatcher = StartReceiverStopWatcher(cancellation);
+        var receiver = new IntegratedReceiver(_paths, wslIp, status);
+        int exitCode;
         try
         {
-            if (!process.Start())
-            {
-                status.Write("RECEIVER_START_FAILED", "Could not start Windows receiver");
-                await StopAsync().ConfigureAwait(false);
-                return 1;
-            }
+            exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            status.Write("RECEIVER_START_FAILED", ex.Message);
-            await StopAsync().ConfigureAwait(false);
-            return 1;
+            status.Write("RECEIVER_FAILED", ex.Message);
+            exitCode = 1;
         }
 
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        process.WaitForExit();
-        status.Write("RECEIVER_EXITED", $"Receiver exited with code {process.ExitCode}");
+        status.Write("RECEIVER_EXITED", $"Integrated receiver exited with code {exitCode}");
         await StopAsync().ConfigureAwait(false);
-        return process.ExitCode;
+        return exitCode;
+    }
+
+    private System.Threading.Timer StartReceiverStopWatcher(CancellationTokenSource cancellation)
+    {
+        return new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                if (File.Exists(ReceiverStopSignalPath()))
+                {
+                    cancellation.Cancel();
+                }
+            }
+            catch
+            {
+                cancellation.Cancel();
+            }
+        }, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500));
+    }
+
+    private void SignalReceiverStop()
+    {
+        Directory.CreateDirectory(_paths.LogDirectory);
+        File.WriteAllText(ReceiverStopSignalPath(), DateTime.Now.ToString("O") + Environment.NewLine);
+    }
+
+    private void ClearReceiverStopSignal()
+    {
+        var path = ReceiverStopSignalPath();
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+    }
+
+    private string ReceiverStopSignalPath()
+    {
+        return Path.Combine(_paths.LogDirectory, "receiver.stop");
     }
 
     private async Task<string> ResolveBusIdForDetachAsync()
@@ -476,19 +496,6 @@ internal sealed class BridgeOrchestrator
     private static string EscapeWslConfigPath(string path)
     {
         return path.Replace("\\", "\\\\", StringComparison.Ordinal);
-    }
-
-    private static void AppendReceiverLog(string path, object logLock, string stream, string? line)
-    {
-        if (line is null)
-        {
-            return;
-        }
-
-        lock (logLock)
-        {
-            File.AppendAllText(path, $"[{DateTime.Now}] {stream}: {line}{Environment.NewLine}");
-        }
     }
 
     private static void KillProcess(string processName)

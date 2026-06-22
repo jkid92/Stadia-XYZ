@@ -78,14 +78,13 @@ The GUI lets you:
 * Edit macros visually by chord or directly in `stadia_buttons.ini`, with automatic timestamped backups.
 * Create a support ZIP with logs, Bluetooth diagnostics, controller telemetry, selected profiles, and environment snapshots.
 
-> Developer note: the source branch must contain or build `stadia_receiver.exe`, `ViGEmClient.dll`, and `stadia_bridge` before the Start button can complete successfully. The GUI reports those missing runtime files clearly instead of failing later in the startup script.
+> Developer note: the Windows receiver now runs inside `StadiaX.exe`. A runnable package still needs `ViGEmClient.dll` beside the app and `stadia_bridge` for the Linux side. The GUI reports missing runtime files clearly before startup continues.
 
 Release packages are built automatically by GitHub Actions. The preferred download is the installer EXE, while the ZIP remains available for portable use and troubleshooting. Both include:
 * `Install-StadiaX.bat` and `Install-StadiaX.ps1`
 * `StadiaX.exe`
 * `Resolve-WslDistro.ps1`
 * `Test-StadiaX.ps1`
-* `stadia_receiver.exe`
 * `ViGEmClient.dll`
 * `stadia_bridge`
 
@@ -96,9 +95,9 @@ Runtime logs are written under `logs/`:
 * `linux-status.log` records structured Linux bridge states such as scanning, connecting, and input-device detection.
 * `linux.log` keeps the raw Linux core output.
 * `bluetooth-diagnostics.txt` captures Linux/BlueZ adapter, controller, module, and kernel hints after the Linux core starts.
-* `controller-state.json` is written by the updated Windows receiver and powers the Controller Test screen. It contains a `controllers` array for up to four pads, plus packet counters and per-pad activity.
+* `controller-state.json` is written by the integrated Windows receiver inside `StadiaX.exe` and powers the Controller Test screen. It contains a `controllers` array for up to four pads, plus packet counters and per-pad activity.
 * `self-test.txt` is written by the native GUI self-test or `Test-StadiaX.ps1` and summarizes missing files, runtime binaries, WSL, usbipd, ViGEmBus, and macro config state.
-* `receiver.log` keeps Windows receiver output when the bridge is started from `StadiaX.exe`.
+* `receiver.log` keeps integrated Windows receiver output when the bridge is started from `StadiaX.exe`.
 
 If more than one Bluetooth-looking adapter appears, open the `Setup` tab, select the row that matches your real Bluetooth controller or dongle, and confirm that the same BUSID appears in the `Control` tab before pressing Start. `StadiaX.exe` verifies that the chosen BUSID still appears in `usbipd list` and logs whether usbipd reports it as attached after handoff.
 
@@ -145,8 +144,8 @@ To use one, copy it from `Alternate_Layouts` into the main folder and rename it 
 
 ## ⚠️ Troubleshooting
 
-**1. Windows Defender / SmartScreen blocks the script or `.exe`**
-Because Stadia X uses a custom-compiled executable (`stadia_receiver.exe`) to inject controller and keyboard inputs, some antivirus software may flag it as suspicious. This is a false positive. Click "More Info" → "Run Anyway", or for a permanent fix, add the Stadia X folder to your antivirus exclusions.
+**1. Windows Defender / SmartScreen blocks the app**
+Because Stadia X controls virtual gamepads and can inject configured keyboard shortcuts, some antivirus software may flag the unsigned app as suspicious. This is a false positive. Click "More Info" -> "Run Anyway", or for a permanent fix, add the Stadia X folder to your antivirus exclusions.
 
 **2. Script crashes with "Virtual Machine Platform is not enabled"**
 You need to enable hardware virtualization in your BIOS. Look for `VT-x` (Intel) or `SVM / AMD-V` (AMD) and set it to Enabled.

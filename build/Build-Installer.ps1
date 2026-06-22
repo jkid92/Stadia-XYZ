@@ -72,7 +72,6 @@ $requiredFiles = @(
     "StadiaX.exe",
     "start.sh",
     "stadia_buttons.ini",
-    "stadia_receiver.exe",
     "ViGEmClient.dll",
     "stadia_bridge",
     "assets\StadiaX.ico",

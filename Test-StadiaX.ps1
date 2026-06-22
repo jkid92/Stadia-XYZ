@@ -85,7 +85,7 @@ foreach ($relativePath in $requiredFiles) {
     Add-Result "File: $relativePath" ($(if (Test-Path $path) { "OK" } else { "MISSING" })) ($(if (Test-Path $path) { $path } else { "Required file is missing" }))
 }
 
-foreach ($relativePath in @("StadiaX.exe", "stadia_receiver.exe", "ViGEmClient.dll", "stadia_bridge")) {
+foreach ($relativePath in @("StadiaX.exe", "ViGEmClient.dll", "stadia_bridge")) {
     $path = Join-Path $root $relativePath
     if (Test-Path $path) {
         Add-Result "Runtime: $relativePath" "OK" $path

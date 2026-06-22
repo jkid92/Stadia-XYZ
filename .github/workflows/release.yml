@@ -40,40 +40,11 @@ jobs:
           path: artifacts/linux/stadia_bridge
           if-no-files-found: error
 
-  build-windows-receiver:
-    name: Build Windows receiver
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Build stadia_receiver.exe
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
-          ./build/Build-WindowsReceiver.ps1 -OutputDirectory artifacts/windows
-
-      - name: Upload Windows receiver artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-receiver
-          path: |
-            artifacts/windows/stadia_receiver.exe
-            artifacts/windows/ViGEmClient.dll
-          if-no-files-found: error
-
   package:
     name: Package release ZIP and installer
     runs-on: windows-latest
     needs:
       - build-linux-bridge
-      - build-windows-receiver
 
     steps:
       - name: Checkout
@@ -87,9 +58,8 @@ jobs:
       - name: Stage runtime binaries
         shell: pwsh
         run: |
-          Copy-Item -Force artifacts/windows-receiver/stadia_receiver.exe .
-          Copy-Item -Force artifacts/windows-receiver/ViGEmClient.dll .
           Copy-Item -Force artifacts/linux-bridge/stadia_bridge .
+          ./build/Download-ViGEmClient.ps1 -OutputDirectory .
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4

@@ -1,8 +1,9 @@
 # Build and Release
 
-This project ships as a portable folder plus two native runtime binaries:
+This project ships as a portable folder plus a native GUI and two runtime components:
 
-* `stadia_receiver.exe` runs on Windows and exposes the virtual Xbox 360 controller through ViGEmBus.
+* `StadiaX.exe` runs on Windows, includes the receiver logic, and exposes virtual Xbox 360 controllers through ViGEmBus.
+* `ViGEmClient.dll` is the native ViGEm client library loaded by the integrated receiver.
 * `stadia_bridge` runs inside the selected WSL distro and forwards Stadia Bluetooth input and rumble packets.
 
 The native C# GUI executable, fallback scripts, configuration file, `VERSION.txt`, runtime binaries, and documentation are packaged into a ZIP and a Windows installer EXE by the release workflow.
@@ -10,7 +11,7 @@ The ZIP also includes `Install-StadiaX.bat`, a lightweight portable installer th
 
 ## Native C# control center
 
-The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe` and is the normal entry point for users. The executable owns the setup/check flow, Bluetooth and WSL selection, Linux/BlueZ device inspection, controller profiles, macro editing, controller telemetry, battery warnings, support bundles, Start/Stop orchestration, native self-test output, log viewing, and GitHub Release checks. The batch and PowerShell tools remain in the package as compatibility/debug entry points.
+The primary GUI is a C# WinForms control center under `src/StadiaX.ControlCenter`. It publishes as `StadiaX.exe` and is the normal entry point for users. The executable owns the setup/check flow, Bluetooth and WSL selection, Linux/BlueZ device inspection, controller profiles, macro editing, the integrated Windows receiver, controller telemetry, battery warnings, support bundles, Start/Stop orchestration, native self-test output, log viewing, and GitHub Release checks. The batch and PowerShell tools remain in the package as compatibility/debug entry points.
 
 Build it from a source checkout with:
 
@@ -31,7 +32,7 @@ dotnet run --project .\src\StadiaX.ControlCenter\StadiaX.ControlCenter.csproj
 The workflow in `.github/workflows/release.yml` does three things:
 
 1. Builds `stadia_bridge` on `ubuntu-latest`.
-2. Builds `stadia_receiver.exe` on `windows-latest` with MSVC and downloads the native ViGEmClient SDK files needed for linking.
+2. Publishes the C# control center as `StadiaX.exe` and downloads `ViGEmClient.dll`.
 3. Creates `dist/Stadia-X-<version>.zip`, `dist/Stadia-X-<version>-Setup.exe`, and matching SHA256 files.
 
 Every push to `main` creates downloadable workflow artifacts. Pushing a tag like `v0.4.0` also creates a GitHub Release with the ZIP and installer EXE attached.
@@ -43,23 +44,23 @@ git push origin v0.4.0
 
 You can also run the workflow manually from the GitHub Actions tab and optionally provide a package version.
 
-## Local Windows receiver build
+## Local Windows runtime setup
 
 Requirements:
 
-* Visual Studio Build Tools 2022 or Visual Studio 2022 with the C++ desktop workload.
 * PowerShell 5.1 or newer.
-* Internet access for the ViGEmClient header, `.lib`, and `.dll` downloads.
+* Internet access for the ViGEmClient DLL download.
 
-Open a Developer PowerShell for VS 2022 from the repository root and run:
+Build the C# app and download the native ViGEm client DLL:
 
 ```powershell
-.\build\Build-WindowsReceiver.ps1
+.\build\Build-CSharpControlCenter.ps1 -CopyToRoot
+.\build\Download-ViGEmClient.ps1
 ```
 
-This writes `stadia_receiver.exe` and `ViGEmClient.dll` to the repository root.
+This writes `StadiaX.exe` and `ViGEmClient.dll` to the repository root.
 
-The receiver still requires the ViGEmBus driver to be installed on the user's machine. If the driver is missing, the receiver starts but reports that ViGEmBus initialization failed.
+The integrated receiver still requires the ViGEmBus driver to be installed on the user's machine. If the driver is missing, the receiver starts but reports that ViGEmBus initialization failed.
 
 ## Local Linux bridge build
 
@@ -75,7 +76,7 @@ This writes `stadia_bridge` to the repository root.
 
 ## Local package build
 
-After both runtime binaries exist in the repository root:
+After `StadiaX.exe`, `ViGEmClient.dll`, and `stadia_bridge` exist in the repository root:
 
 ```powershell
 .\build\Package-Release.ps1 -Version local-test
@@ -97,7 +98,7 @@ For a source-only packaging dry run, use:
 .\build\Package-Release.ps1 -Version dry-run -AllowMissingBinaries
 ```
 
-That mode is useful to validate the ZIP layout on a machine without MSVC or Linux build tools.
+That mode is useful to validate the ZIP layout on a machine without runtime binaries.
 
 After extracting a package or installing Stadia X, run:
 
