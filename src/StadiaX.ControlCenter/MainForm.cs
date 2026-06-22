@@ -192,6 +192,8 @@ internal sealed class MainForm : Form
     {
         _tabs.Dock = DockStyle.Fill;
         _tabs.Font = new Font("Segoe UI", 9);
+        _tabs.Padding = new Point(14, 8);
+        _tabs.Multiline = true;
 
         _tabs.TabPages.Add(BuildFirstRunPage());
         _tabs.TabPages.Add(BuildControlPage());
@@ -454,7 +456,7 @@ internal sealed class MainForm : Form
         _macroBox.BackColor = Color.White;
         _macroBox.ForeColor = Color.FromArgb(25, 30, 40);
         split.Panel2.Controls.Add(_macroBox);
-        var visual = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44, Padding = new Padding(12, 6, 12, 6), WrapContents = false };
+        var visual = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(12, 8, 12, 8), WrapContents = false };
         _macroChordCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _macroChordCombo.Width = 145;
         _macroChordCombo.Items.AddRange(BuildMacroChordCodes().Cast<object>().ToArray());
@@ -1226,28 +1228,50 @@ internal sealed class MainForm : Form
         };
     }
 
-    private static Panel BuildTopPanel(string title, params (string Text, Action Action)[] buttons)
+    private static Control BuildTopPanel(string title, params (string Text, Action Action)[] buttons)
     {
-        var panel = new Panel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(12, 8, 12, 8) };
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 64,
+            MinimumSize = new Size(0, 64),
+            Padding = new Padding(12, 10, 12, 10),
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+
         var label = new Label
         {
             Text = title,
-            Dock = DockStyle.Left,
-            Width = 360,
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
-        panel.Controls.Add(label);
-        var flow = new FlowLayoutPanel { Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, Width = Math.Max(160, buttons.Length * 115), WrapContents = false };
-        foreach (var button in buttons.Reverse())
+
+        var flow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(8, 0, 0, 0),
+            MinimumSize = new Size(0, 40)
+        };
+        foreach (var button in buttons)
         {
             AddFlowButton(flow, button.Text, button.Action);
         }
-        panel.Controls.Add(flow);
+
+        panel.Controls.Add(label, 0, 0);
+        panel.Controls.Add(flow, 1, 0);
         return panel;
     }
 
-    private static Panel BuildTopPanel(string title, params (string Text, Func<Task> Action)[] buttons)
+    private static Control BuildTopPanel(string title, params (string Text, Func<Task> Action)[] buttons)
     {
         return BuildTopPanel(title, buttons.Select(b => (b.Text, Action: new Action(() => { _ = RunActionWithDialogAsync(b.Action); }))).ToArray());
     }
@@ -1310,11 +1334,14 @@ internal sealed class MainForm : Form
         var button = new Button
         {
             Text = text,
-            Width = 112,
-            Height = 30,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(112, 36),
+            Padding = new Padding(10, 0, 10, 0),
             BackColor = backColor ?? SystemColors.Control,
             ForeColor = foreColor ?? SystemColors.ControlText,
-            Margin = new Padding(4)
+            Margin = new Padding(4, 2, 4, 2),
+            UseVisualStyleBackColor = backColor is null
         };
         button.Click += (_, _) => action();
         parent.Controls.Add(button);
