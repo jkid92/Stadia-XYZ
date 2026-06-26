@@ -11,6 +11,9 @@ if [ "$MAX_CONTROLLERS" -gt 4 ]; then MAX_CONTROLLERS=4; fi
 mkdir -p "$(dirname "$STATUS_LOG")" "$(dirname "$LINUX_LOG")" "$(dirname "$BT_DIAG_LOG")" /dev/input/
 SCAN_PID=""
 RECOVERY_PID=""
+BT_AGENT_PID=""
+BT_AGENT_YES_PID=""
+BT_AGENT_SCRIPT="/tmp/stadia-x-auto-agent.py"
 
 cleanup_processes() {
     if [ -n "${SCAN_PID:-}" ]; then
@@ -20,6 +23,14 @@ cleanup_processes() {
     if [ -n "${RECOVERY_PID:-}" ]; then
         kill "$RECOVERY_PID" 2>/dev/null || true
         RECOVERY_PID=""
+    fi
+    if [ -n "${BT_AGENT_YES_PID:-}" ]; then
+        kill "$BT_AGENT_YES_PID" 2>/dev/null || true
+        BT_AGENT_YES_PID=""
+    fi
+    if [ -n "${BT_AGENT_PID:-}" ]; then
+        kill "$BT_AGENT_PID" 2>/dev/null || true
+        BT_AGENT_PID=""
     fi
     bluetoothctl scan off >/dev/null 2>&1 || true
 }
@@ -38,6 +49,112 @@ status() {
 
 log() {
     echo "[Stadia X] $1"
+}
+
+unique_macs() {
+    awk 'NF && !seen[toupper($0)]++ { print toupper($0) }'
+}
+
+btmgmt_quiet() {
+    timeout 4 btmgmt "$@" >/dev/null 2>&1 || true
+}
+
+start_bluetooth_agent() {
+    if [ -n "${BT_AGENT_PID:-}" ] && kill -0 "$BT_AGENT_PID" 2>/dev/null; then
+        return 0
+    fi
+
+    cat > "$BT_AGENT_SCRIPT" <<'PY'
+#!/usr/bin/env python3
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+BUS_NAME = "org.bluez"
+AGENT_MANAGER_IFACE = "org.bluez.AgentManager1"
+AGENT_IFACE = "org.bluez.Agent1"
+AGENT_PATH = "/stadiax/agent"
+
+class Agent(dbus.service.Object):
+    @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
+    def Release(self):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        return "0000"
+
+    @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
+    def DisplayPinCode(self, device, pincode):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        return dbus.UInt32(0)
+
+    @dbus.service.method(AGENT_IFACE, in_signature="ouq", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="o", out_signature="")
+    def RequestAuthorization(self, device):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature="", out_signature="")
+    def Cancel(self):
+        pass
+
+dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+bus = dbus.SystemBus()
+agent = Agent(bus, AGENT_PATH)
+manager = dbus.Interface(bus.get_object(BUS_NAME, "/org/bluez"), AGENT_MANAGER_IFACE)
+try:
+    manager.RegisterAgent(AGENT_PATH, "NoInputNoOutput")
+except dbus.exceptions.DBusException:
+    pass
+manager.RequestDefaultAgent(AGENT_PATH)
+print("Stadia X BlueZ auto-agent ready", flush=True)
+GLib.MainLoop().run()
+PY
+    chmod +x "$BT_AGENT_SCRIPT"
+    python3 "$BT_AGENT_SCRIPT" >/tmp/stadia-x-bluetooth-agent.log 2>&1 &
+    BT_AGENT_PID=$!
+    BT_AGENT_YES_PID=""
+    bluetoothctl <<'BTCTL' >/dev/null 2>&1 || true
+power on
+pairable on
+discoverable on
+BTCTL
+    sleep 1
+}
+
+configure_bluetooth_pairing() {
+    start_bluetooth_agent
+    if command -v btmgmt >/dev/null 2>&1; then
+        btmgmt_quiet power on
+        btmgmt_quiet le on
+        btmgmt_quiet bredr on
+        btmgmt_quiet connectable on
+        btmgmt_quiet io-cap 3
+        btmgmt_quiet bondable on
+        btmgmt_quiet pairable on
+        btmgmt_quiet discov yes 180
+    fi
+
+    bluetoothctl <<'BTCTL' >/dev/null 2>&1 || true
+power on
+pairable on
+discoverable on
+BTCTL
 }
 
 write_bt_diagnostics() {
@@ -70,7 +187,10 @@ write_bt_diagnostics() {
         if command -v hciconfig >/dev/null 2>&1; then hciconfig -a 2>&1 || true; else echo "hciconfig not installed"; fi
         echo
         echo "== btmgmt info =="
-        if command -v btmgmt >/dev/null 2>&1; then btmgmt info 2>&1 || true; else echo "btmgmt not installed"; fi
+        if command -v btmgmt >/dev/null 2>&1; then timeout 5 btmgmt info 2>&1 || true; else echo "btmgmt not installed"; fi
+        echo
+        echo "== Stadia X bluetooth agent log =="
+        tail -n 80 /tmp/stadia-x-bluetooth-agent.log 2>/dev/null || true
         echo
         echo "== rfkill =="
         if command -v rfkill >/dev/null 2>&1; then rfkill list 2>&1 || true; else echo "rfkill not installed"; fi
@@ -114,11 +234,14 @@ fi
 modprobe joydev 2>/dev/null
 modprobe hid-generic 2>/dev/null
 modprobe uhid 2>/dev/null
-# Load all needed modules — fail silently if already built into kernel
+# Load all needed modules â€” fail silently if already built into kernel
 modprobe vhci-hcd    2>/dev/null || true
 modprobe uhid        2>/dev/null || true
 modprobe joydev      2>/dev/null || true
 modprobe hid_generic 2>/dev/null || true
+modprobe cmac        2>/dev/null || true
+modprobe ecb         2>/dev/null || true
+modprobe aes_generic 2>/dev/null || true
 modprobe bluetooth   2>/dev/null || true
 modprobe btusb       2>/dev/null || true
 status "KERNEL_MODULES_CHECKED" "Bluetooth and HID kernel modules checked"
@@ -148,7 +271,7 @@ fi
 status "BLUETOOTHD_START" "Starting bluetoothd"
 killall bluetoothd 2>/dev/null || true
 sleep 1
-bluetoothd &
+bluetoothd --experimental &
 sleep 2
 
 if bluetoothctl power on >/dev/null 2>&1; then
@@ -156,6 +279,16 @@ if bluetoothctl power on >/dev/null 2>&1; then
 else
     status "ADAPTER_POWER_FAILED" "Could not power on Bluetooth adapter"
 fi
+
+configure_bluetooth_pairing
+bluetoothctl scan off >/dev/null 2>&1 || true
+
+if bluetoothctl show 2>/dev/null | grep -q "Pairable: yes"; then
+    status "PAIRING_READY" "Bluetooth agent, pairable mode, and discovery mode enabled"
+else
+    status "PAIRING_READY_WARN" "Requested Bluetooth pairing mode, but BlueZ did not confirm Pairable: yes"
+fi
+
 STADIA_MAC=""
 write_bt_diagnostics "adapter powered"
 
@@ -168,7 +301,26 @@ sleep 3
 log "Scanning for Stadia controller..."
 
 discover_stadia_macs() {
-    bluetoothctl devices | grep -i "Stadia" | awk '{print $2}' | head -n "$MAX_CONTROLLERS"
+    {
+        bluetoothctl devices 2>/dev/null
+        bluetoothctl devices Paired 2>/dev/null
+        bluetoothctl devices Trusted 2>/dev/null
+    } | awk 'tolower($0) ~ /stadia/ && $2 ~ /^[0-9A-Fa-f][0-9A-Fa-f](:[0-9A-Fa-f][0-9A-Fa-f]){5}$/ { print $2 }' | unique_macs | head -n "$MAX_CONTROLLERS"
+}
+
+scan_for_stadia_macs() {
+    local scan_log="/tmp/stadia-x-scan.log"
+    timeout 9 bluetoothctl --timeout 7 scan le > "$scan_log" 2>&1 || true
+    timeout 9 bluetoothctl --timeout 7 scan on >> "$scan_log" 2>&1 || true
+    discover_stadia_macs
+    if command -v btmgmt >/dev/null 2>&1; then
+        local mgmt_log="/tmp/stadia-x-btmgmt-find.log"
+        timeout 9 btmgmt find -l > "$mgmt_log" 2>&1 || true
+        awk '
+            /dev_found:/ { mac=$2 }
+            tolower($0) ~ /stadia/ && mac ~ /^[0-9A-Fa-f][0-9A-Fa-f](:[0-9A-Fa-f][0-9A-Fa-f]){5}$/ { print mac }
+        ' "$mgmt_log" | unique_macs
+    fi
 }
 
 read_manual_controller_macs() {
@@ -182,6 +334,49 @@ read_manual_controller_macs() {
     }' | head -n "$MAX_CONTROLLERS"
 }
 
+bluetooth_device_known() {
+    local mac="$1"
+    local info
+    info="$(bluetoothctl info "$mac" 2>&1 || true)"
+    if printf '%s\n' "$info" | grep -qi "not available"; then
+        return 1
+    fi
+    printf '%s\n' "$info" | grep -Eq "Name:|Alias:|Connected:|UUID:"
+}
+
+wait_for_bluetooth_device() {
+    local mac="$1"
+    local seconds="${2:-60}"
+    local elapsed=0
+
+    if bluetooth_device_known "$mac"; then
+        return 0
+    fi
+
+    status "CONTROLLER_DISCOVER_WAIT" "Controller $mac is not visible to Linux; scanning"
+    log "Controller $mac is not visible yet. Put it in pairing mode if its light is not pulsing."
+
+    while [ "$elapsed" -lt "$seconds" ]; do
+        configure_bluetooth_pairing
+        bluetoothctl scan on >/dev/null 2>&1 || true
+        timeout 6 bluetoothctl --timeout 4 scan on >/tmp/stadia-x-manual-scan-${mac//:/}.log 2>&1 || true
+
+        if bluetooth_device_known "$mac"; then
+            status "CONTROLLER_DISCOVERED" "Controller $mac is visible to Linux"
+            return 0
+        fi
+
+        sleep 2
+        elapsed=$((elapsed + 8))
+        if [ $((elapsed % 16)) -eq 0 ]; then
+            status "CONTROLLER_DISCOVER_WAIT" "Still waiting for controller $mac ($elapsed seconds)"
+        fi
+    done
+
+    status "CONTROLLER_NOT_AVAILABLE" "Controller $mac is not available in BlueZ"
+    return 1
+}
+
 connect_stadia_controller() {
     local mac="$1"
     local label="$2"
@@ -190,11 +385,15 @@ connect_stadia_controller() {
         STADIA_MAC="$mac"
     fi
 
+    if ! wait_for_bluetooth_device "$mac" 60; then
+        return 1
+    fi
+
     status "CONTROLLER_SEEN" "Found $label controller $mac"
     log "Found $label controller: $mac"
-    bluetoothctl trust "$mac" >/dev/null 2>&1
 
     if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+        bluetoothctl trust "$mac" >/dev/null 2>&1 || true
         status "CONTROLLER_CONNECTED" "Controller $mac already connected"
         log "Controller $mac already connected."
         return 0
@@ -202,14 +401,45 @@ connect_stadia_controller() {
 
     status "CONNECT_START" "Connecting to controller $mac"
     log "Connecting to $mac..."
-    if bluetoothctl connect "$mac" >/dev/null 2>&1; then
-        status "CONNECT_COMMAND_OK" "Connect command completed for $mac"
-    else
+    for attempt in $(seq 1 8); do
+        configure_bluetooth_pairing
+        bluetoothctl scan on >/dev/null 2>&1 || true
+        if [ "$attempt" -eq 4 ]; then
+            bluetoothctl remove "$mac" >/dev/null 2>&1 || true
+            sleep 1
+        fi
+        timeout 18 bluetoothctl <<BTCTL >/tmp/stadia-x-pair-${mac//:/}-attempt-${attempt}.log 2>&1 || true
+power on
+agent NoInputNoOutput
+default-agent
+pairable on
+trust $mac
+pair $mac
+trust $mac
+connect $mac
+trust $mac
+info $mac
+BTCTL
+        if command -v btmgmt >/dev/null 2>&1; then
+            timeout 20 btmgmt pair -c 3 -t 1 "$mac" >>/tmp/stadia-x-pair-${mac//:/}-attempt-${attempt}.log 2>&1 || true
+        fi
+        for wait_tick in $(seq 1 5); do
+            if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+                status "CONNECT_COMMAND_OK" "Connect command completed for $mac on attempt $attempt"
+                break 2
+            fi
+            sleep 2
+        done
+        status "CONNECT_RETRY" "Controller $mac not connected yet; retry $attempt/8"
+    done
+
+    if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
         status "CONNECT_COMMAND_FAILED" "Connect command failed for $mac"
     fi
 
     sleep 3
     if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+        bluetoothctl trust "$mac" >/dev/null 2>&1 || true
         status "CONTROLLER_CONNECTED" "Controller $mac connected"
         return 0
     fi
@@ -225,8 +455,19 @@ controller_recovery_loop() {
             [ -z "$mac" ] && continue
             if ! bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
                 status "RECOVERY_RECONNECT" "Controller $mac appears disconnected; reconnecting"
-                if bluetoothctl connect "$mac" >/dev/null 2>&1; then
+                configure_bluetooth_pairing
+                timeout 20 bluetoothctl <<BTCTL >/tmp/stadia-x-recovery-${mac//:/}.log 2>&1 || true
+power on
+pairable on
+trust $mac
+connect $mac
+trust $mac
+info $mac
+BTCTL
+                if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
                     status "RECOVERY_RECONNECT_OK" "Controller $mac reconnected"
+                    status "RECOVERY_BRIDGE_RESTART" "Restarting native bridge after Bluetooth reconnect"
+                    pkill -TERM -x stadia_bridge >/dev/null 2>&1 || true
                 else
                     status "RECOVERY_RECONNECT_FAILED" "Reconnect failed for controller $mac"
                 fi
@@ -250,8 +491,13 @@ if [ ${#MANUAL_STADIA_MACS[@]} -gt 0 ]; then
         fi
         index=$((index + 1))
     done
-else
-    mapfile -t STADIA_MACS < <(discover_stadia_macs)
+    if [ "$CONNECTED_COUNT" -eq 0 ]; then
+        status "CONTROLLER_MANUAL_FALLBACK" "Selected controller did not connect; falling back to discovery"
+    fi
+fi
+
+if [ "$CONNECTED_COUNT" -eq 0 ]; then
+    mapfile -t STADIA_MACS < <(scan_for_stadia_macs | unique_macs | head -n "$MAX_CONTROLLERS")
     if [ ${#STADIA_MACS[@]} -gt 0 ]; then
         RECOVERY_MACS=("${STADIA_MACS[@]}")
         status "CONTROLLER_SEEN" "Found ${#STADIA_MACS[@]} known Stadia controller(s)"
@@ -268,7 +514,11 @@ else
         log "Hold Stadia + Y on up to $MAX_CONTROLLERS controllers for pairing mode."
         for i in $(seq 1 30); do
             sleep 2
-            mapfile -t STADIA_MACS < <(discover_stadia_macs)
+            if [ $((i % 3)) -eq 1 ]; then
+                mapfile -t STADIA_MACS < <(scan_for_stadia_macs | unique_macs | head -n "$MAX_CONTROLLERS")
+            else
+                mapfile -t STADIA_MACS < <(discover_stadia_macs | unique_macs | head -n "$MAX_CONTROLLERS")
+            fi
             if [ ${#STADIA_MACS[@]} -gt 0 ]; then
                 RECOVERY_MACS=("${STADIA_MACS[@]}")
                 index=1
@@ -326,7 +576,7 @@ if [ $TIMEOUT -eq 0 ]; then
     echo "[WARNING] Fix: run 'wsl --update' in Windows, restart, and try again."
 fi
 
-# Get Windows host IP — the default gateway from WSL's perspective
+# Get Windows host IP â€” the default gateway from WSL's perspective
 WIN_IP=$(ip route show default | grep -oP 'via \K[\d.]+')
 
 # Fallback if grep -P unavailable
@@ -357,7 +607,7 @@ fi
 BRIDGE_EXIT=0
 BRIDGE_RESTARTS=0
 while true; do
-    ./stadia_bridge "$WIN_IP"
+    STADIA_X_ENABLE_RUMBLE="${STADIA_X_ENABLE_RUMBLE:-1}" ./stadia_bridge "$WIN_IP"
     BRIDGE_EXIT=$?
     if [ "$BRIDGE_EXIT" -eq 0 ]; then
         break
