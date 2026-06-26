@@ -172,28 +172,41 @@ internal sealed class NativeControlServices
 
         scanSeconds = Math.Clamp(scanSeconds, 0, 20);
         var scanCommand = scanSeconds > 0
-            ? $"timeout {scanSeconds + 2} bluetoothctl --timeout {scanSeconds} scan on >/dev/null 2>&1 || true;"
+            ? $"timeout {scanSeconds + 2} bluetoothctl --timeout {scanSeconds} scan on >/dev/null 2>&1 || true; "
             : "";
+        var knownMacs = string.Join(" ",
+            GetSelectedControllerMacs()
+                .Concat(GetProfiles().Select(p => p.Mac))
+                .Where(IsMac)
+                .Select(m => m.ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase));
+        var knownMacLoop = string.IsNullOrWhiteSpace(knownMacs)
+            ? ""
+            : $"for mac in {knownMacs}; do emit_device \"$mac\" \"\"; done; ";
 
-        var script = $$"""
-if ! command -v bluetoothctl >/dev/null 2>&1; then
-  echo "__ERROR__|bluetoothctl missing"
-  exit 0
-fi
-{{scanCommand}}
-bluetoothctl devices 2>/dev/null | while read -r kind mac name; do
-  [ -z "$mac" ] && continue
-  info="$(bluetoothctl info "$mac" 2>/dev/null || true)"
-  paired="$(printf "%s\n" "$info" | awk -F': ' '/Paired:/ {print $2; exit}')"
-  trusted="$(printf "%s\n" "$info" | awk -F': ' '/Trusted:/ {print $2; exit}')"
-  connected="$(printf "%s\n" "$info" | awk -F': ' '/Connected:/ {print $2; exit}')"
-  battery="$(printf "%s\n" "$info" | awk -F'[()]' '/Battery Percentage:/ {print $2; exit}')"
-  printf '%s|%s|%s|%s|%s|%s\n' "$mac" "$name" "$paired" "$trusted" "$connected" "$battery"
-done
-""";
+        var script =
+            "if ! command -v bluetoothctl >/dev/null 2>&1; then echo \"__ERROR__|bluetoothctl missing\"; exit 0; fi; " +
+            scanCommand +
+            "emit_device() { " +
+            "mac=\"$1\"; name=\"$2\"; [ -z \"$mac\" ] && return; " +
+            "info=\"$(timeout 6 bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
+            "printf \"%s\\n\" \"$info\" | grep -Eiq \"Name:|Alias:|Connected:|UUID:\" || return; " +
+            "[ -z \"$name\" ] && name=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Name:/ {print $2; exit}')\"; " +
+            "paired=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Paired:/ {print $2; exit}')\"; " +
+            "trusted=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Trusted:/ {print $2; exit}')\"; " +
+            "connected=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Connected:/ {print $2; exit}')\"; " +
+            "battery=\"$(printf \"%s\\n\" \"$info\" | awk -F'[()]' '/Battery Percentage:/ {print $2; exit}')\"; " +
+            "printf '%s|%s|%s|%s|%s|%s\\n' \"$mac\" \"$name\" \"$paired\" \"$trusted\" \"$connected\" \"$battery\"; " +
+            "}; " +
+            "bluetoothctl devices 2>/dev/null | while read -r kind mac name; do " +
+            "[ -z \"$mac\" ] && continue; " +
+            "emit_device \"$mac\" \"$name\"; " +
+            "done; " +
+            knownMacLoop;
 
-        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", script }, _paths.Root, Math.Max(10000, (scanSeconds + 6) * 1000)).ConfigureAwait(false);
+        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, Math.Max(15000, (scanSeconds + 8) * 1000)).ConfigureAwait(false);
         var devices = new List<LinuxBluetoothDevice>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in result.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {
             if (line.StartsWith("__ERROR__|", StringComparison.Ordinal))
@@ -203,6 +216,11 @@ done
 
             var parts = line.Split('|');
             if (parts.Length < 6 || !IsMac(parts[0]))
+            {
+                continue;
+            }
+
+            if (!seen.Add(parts[0].Trim()))
             {
                 continue;
             }
@@ -217,6 +235,20 @@ done
                 parts[3].Trim(),
                 battery,
                 name.Contains("stadia", StringComparison.OrdinalIgnoreCase)));
+        }
+
+        foreach (var mac in knownMacs.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (seen.Contains(mac))
+            {
+                continue;
+            }
+
+            var device = await GetLinuxBluetoothDeviceByInfoAsync(distro, mac).ConfigureAwait(false);
+            if (device is not null && seen.Add(device.Mac))
+            {
+                devices.Add(device);
+            }
         }
 
         return devices
@@ -248,7 +280,7 @@ done
             _ => $"bluetoothctl info '{mac}' || true"
         };
 
-        return await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
+        return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
     }
 
     public async Task<CommandResult> RunLinuxBluetoothRepairAsync()
@@ -268,12 +300,12 @@ bluetoothctl scan off 2>&1 || true
 bluetoothctl power off 2>&1 || true
 sleep 2
 bluetoothctl power on 2>&1 || true
-bluetoothctl agent on 2>&1 || true
+bluetoothctl agent NoInputNoOutput 2>&1 || true
 bluetoothctl default-agent 2>&1 || true
 bluetoothctl show 2>&1 || true
 bluetoothctl devices 2>&1 || true
 """;
-        return await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", script }, _paths.Root, 30000).ConfigureAwait(false);
+        return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, 30000).ConfigureAwait(false);
     }
 
     public async Task<string> CreateCapacityReportAsync()
@@ -602,6 +634,84 @@ bluetoothctl devices 2>&1 || true
                value.Contains("mediatek", StringComparison.OrdinalIgnoreCase) ||
                value.Contains("qualcomm", StringComparison.OrdinalIgnoreCase) ||
                value.Contains("broadcom", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<LinuxBluetoothDevice?> GetLinuxBluetoothDeviceByInfoAsync(string distro, string mac)
+    {
+        if (!IsMac(mac))
+        {
+            return null;
+        }
+
+        var result = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "--", "bash", "-lc", $"timeout 8s bluetoothctl info '{mac}' 2>/dev/null || true" },
+            _paths.Root,
+            12000).ConfigureAwait(false);
+
+        return ParseLinuxBluetoothInfo(mac, result.Output);
+    }
+
+    private static LinuxBluetoothDevice? ParseLinuxBluetoothInfo(string mac, string info)
+    {
+        if (!IsMac(mac) ||
+            string.IsNullOrWhiteSpace(info) ||
+            info.Contains("not available", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var name = InfoValue(info, "Name");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            name = InfoValue(info, "Alias");
+        }
+
+        var connected = InfoValue(info, "Connected");
+        var paired = InfoValue(info, "Paired");
+        var trusted = InfoValue(info, "Trusted");
+        var battery = ParseBatteryPercent(info);
+        var isStadia = name.Contains("stadia", StringComparison.OrdinalIgnoreCase) ||
+                       info.Contains("Modalias: usb:v18D1p9400", StringComparison.OrdinalIgnoreCase);
+
+        if (string.IsNullOrWhiteSpace(name) &&
+            string.IsNullOrWhiteSpace(connected) &&
+            string.IsNullOrWhiteSpace(paired) &&
+            string.IsNullOrWhiteSpace(trusted))
+        {
+            return null;
+        }
+
+        return new LinuxBluetoothDevice(
+            mac.Trim().ToUpperInvariant(),
+            string.IsNullOrWhiteSpace(name) ? "(unknown)" : name.Trim(),
+            connected.Trim(),
+            paired.Trim(),
+            trusted.Trim(),
+            battery,
+            isStadia);
+    }
+
+    private static string InfoValue(string info, string key)
+    {
+        foreach (var rawLine in info.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            if (line.StartsWith(key + ":", StringComparison.OrdinalIgnoreCase))
+            {
+                return line[(key.Length + 1)..].Trim();
+            }
+        }
+
+        return "";
+    }
+
+    private static int? ParseBatteryPercent(string info)
+    {
+        var match = Regex.Match(info, @"Battery Percentage:\s+0x[0-9A-Fa-f]+\s+\((\d+)\)");
+        return match.Success && int.TryParse(match.Groups[1].Value, out var percent)
+            ? Math.Clamp(percent, 0, 100)
+            : null;
     }
 
     private static bool IsBusId(string? value)
