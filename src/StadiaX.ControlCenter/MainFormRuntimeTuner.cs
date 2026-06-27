@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -7,6 +8,20 @@ internal static class MainFormRuntimeTuner
 {
     private static readonly HashSet<Form> PatchedForms = new();
     private static readonly Dictionary<Form, List<System.Windows.Forms.Timer>> Timers = new();
+    private static readonly Dictionary<Control, Bitmap> OwnedBitmaps = new();
+
+    private static readonly Color AppBackground = Color.FromArgb(241, 245, 249);
+    private static readonly Color HeaderTop = Color.FromArgb(16, 29, 45);
+    private static readonly Color HeaderBottom = Color.FromArgb(24, 43, 64);
+    private static readonly Color Surface = Color.White;
+    private static readonly Color TextPrimary = Color.FromArgb(24, 33, 48);
+    private static readonly Color TextMuted = Color.FromArgb(92, 106, 126);
+    private static readonly Color Border = Color.FromArgb(203, 213, 225);
+    private static readonly Color NeutralButton = Color.FromArgb(248, 250, 252);
+    private static readonly Color NeutralButtonHover = Color.FromArgb(226, 232, 240);
+    private static readonly Color Accent = Color.FromArgb(23, 184, 178);
+    private static readonly Color Success = Color.FromArgb(36, 132, 85);
+    private static readonly Color Danger = Color.FromArgb(184, 64, 64);
 
     [ModuleInitializer]
     internal static void Initialize()
@@ -23,20 +38,156 @@ internal static class MainFormRuntimeTuner
                 continue;
             }
 
+            PatchVisualDesign(form);
+            PatchBluetoothLayout(form);
             PatchLinuxSummary(form);
             PatchControllerVisualizerRefresh(form);
         }
     }
 
-    private static void PatchLinuxSummary(Form form)
+    private static void PatchVisualDesign(Form form)
     {
-        var formType = form.GetType();
-        if (formType.GetField("_linuxBluetoothSummaryLabel", BindingFlags.Instance | BindingFlags.NonPublic) is not null)
+        form.BackColor = AppBackground;
+        form.Font = new Font("Segoe UI", 9F);
+
+        try
+        {
+            form.Icon = BrandLogo.CreateIcon(64);
+            if (ReadPrivate<NotifyIcon>(form, "_trayIcon") is { } tray)
+            {
+                tray.Icon = BrandLogo.CreateIcon(64);
+            }
+        }
+        catch
+        {
+            // The default executable icon remains available if runtime icon creation fails.
+        }
+
+        PatchHeader(form);
+        foreach (Control control in form.Controls)
+        {
+            StyleTree(control);
+        }
+    }
+
+    private static void PatchHeader(Form form)
+    {
+        var header = form.Controls.Cast<Control>()
+            .FirstOrDefault(control => control is Panel && control.Dock == DockStyle.Top);
+        if (header is null)
         {
             return;
         }
 
+        header.Height = 88;
+        header.BackColor = HeaderTop;
+        header.Paint += (_, e) =>
+        {
+            if (header.ClientRectangle.Width <= 0 || header.ClientRectangle.Height <= 0)
+            {
+                return;
+            }
+
+            using var brush = new LinearGradientBrush(header.ClientRectangle, HeaderTop, HeaderBottom, LinearGradientMode.Horizontal);
+            e.Graphics.FillRectangle(brush, header.ClientRectangle);
+            using var pen = new Pen(Accent, 2);
+            e.Graphics.DrawLine(pen, 0, header.Height - 2, header.Width, header.Height - 2);
+        };
+
+        if (!header.Controls.ContainsKey("StadiaXBrandLogo"))
+        {
+            var logoBitmap = BrandLogo.CreateBitmap(54);
+            var logo = new PictureBox
+            {
+                Name = "StadiaXBrandLogo",
+                Image = logoBitmap,
+                SizeMode = PictureBoxSizeMode.Zoom,
+                BackColor = Color.Transparent,
+                Location = new Point(20, 14),
+                Size = new Size(54, 54)
+            };
+            OwnedBitmaps[logo] = logoBitmap;
+            logo.Disposed += (_, _) =>
+            {
+                if (OwnedBitmaps.Remove(logo, out var bitmap))
+                {
+                    bitmap.Dispose();
+                }
+            };
+            header.Controls.Add(logo);
+            logo.BringToFront();
+        }
+
+        foreach (var label in header.Controls.OfType<Label>())
+        {
+            label.BackColor = Color.Transparent;
+            if (label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
+            {
+                label.Location = new Point(100, 12);
+                label.Font = new Font("Segoe UI", 22, FontStyle.Bold);
+                label.ForeColor = Color.White;
+            }
+            else if (label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase))
+            {
+                label.Text = "Bluetooth controller bridge";
+                label.Location = new Point(102, 54);
+                label.ForeColor = Color.FromArgb(202, 213, 225);
+            }
+            else
+            {
+                label.Location = new Point(Math.Max(label.Left, header.Width - label.Width - 40), 30);
+                label.ForeColor = Color.White;
+            }
+        }
+    }
+
+    private static void PatchBluetoothLayout(Form form)
+    {
+        if (ReadPrivate<TabControl>(form, "_tabs")?.TabPages["Bluetooth"] is not { } page)
+        {
+            return;
+        }
+
+        var layout = page.Controls.OfType<TableLayoutPanel>().FirstOrDefault();
+        if (layout is null || layout.ColumnCount < 2 || layout.RowCount < 2)
+        {
+            return;
+        }
+
+        var windowsGroup = layout.GetControlFromPosition(0, 0);
+        var linuxActions = layout.GetControlFromPosition(1, 0);
+        var linuxGroup = layout.Controls.Cast<Control>()
+            .OfType<GroupBox>()
+            .FirstOrDefault(group => group.Text.Equals("Visible to Linux", StringComparison.OrdinalIgnoreCase));
+
+        if (windowsGroup is not null)
+        {
+            layout.SetColumnSpan(windowsGroup, 2);
+        }
+
+        if (linuxActions is not null && linuxGroup is not null && linuxActions.Parent == layout)
+        {
+            layout.Controls.Remove(linuxActions);
+            linuxActions.Dock = DockStyle.Top;
+            linuxActions.Height = 58;
+            linuxGroup.Controls.Add(linuxActions);
+            linuxActions.BringToFront();
+        }
+
+        if (layout.RowStyles.Count > 0)
+        {
+            layout.RowStyles[0] = new RowStyle(SizeType.Absolute, 220);
+        }
+    }
+
+    private static void PatchLinuxSummary(Form form)
+    {
         if (ReadPrivate<ListView>(form, "_linuxBluetoothList") is not { } list || list.Parent is not Control parent)
+        {
+            return;
+        }
+
+        if (parent.Controls.ContainsKey("LinuxBluetoothSummaryLabel"))
         {
             return;
         }
@@ -45,11 +196,11 @@ internal static class MainFormRuntimeTuner
         {
             Name = "LinuxBluetoothSummaryLabel",
             Dock = DockStyle.Top,
-            Height = 28,
-            Padding = new Padding(8, 5, 0, 0),
+            Height = 30,
+            Padding = new Padding(8, 6, 0, 0),
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9, FontStyle.Regular),
-            ForeColor = Color.FromArgb(70, 70, 70),
+            ForeColor = TextMuted,
             Text = "Linux devices: not refreshed yet"
         };
 
@@ -78,7 +229,7 @@ internal static class MainFormRuntimeTuner
         var battery = items.Select(item => SubItemText(item, 5))
             .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text) && text != "-");
 
-        summary.ForeColor = items.Length == 0 ? Color.FromArgb(180, 45, 45) : Color.FromArgb(34, 120, 72);
+        summary.ForeColor = items.Length == 0 ? Danger : Success;
         summary.Text = items.Length == 0
             ? "Linux devices: none returned. Start the bridge, then press Refresh or Scan."
             : $"Linux devices: {items.Length} visible, {connected} connected, {stadia} Stadia" +
@@ -87,15 +238,9 @@ internal static class MainFormRuntimeTuner
 
     private static void PatchControllerVisualizerRefresh(Form form)
     {
-        var formType = form.GetType();
-        if (formType.GetField("_controllerTimer", BindingFlags.Instance | BindingFlags.NonPublic) is not null)
-        {
-            return;
-        }
-
         var tabs = ReadPrivate<TabControl>(form, "_tabs");
         var native = ReadPrivate<NativeControlServices>(form, "_native");
-        var update = formType.GetMethod("UpdateControllerVisualizer", BindingFlags.Instance | BindingFlags.NonPublic);
+        var update = form.GetType().GetMethod("UpdateControllerVisualizer", BindingFlags.Instance | BindingFlags.NonPublic);
         if (tabs is null || native is null || update is null || update.GetParameters().Length != 1)
         {
             return;
@@ -120,6 +265,77 @@ internal static class MainFormRuntimeTuner
         };
         timer.Start();
         TrackTimer(form, timer);
+    }
+
+    private static void StyleTree(Control control)
+    {
+        switch (control)
+        {
+            case Button button:
+                StyleButton(button);
+                break;
+            case GroupBox group:
+                group.BackColor = Surface;
+                group.ForeColor = TextPrimary;
+                group.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+                break;
+            case ListView list:
+                list.GridLines = false;
+                list.BackColor = Surface;
+                list.ForeColor = TextPrimary;
+                list.BorderStyle = BorderStyle.FixedSingle;
+                list.Font = new Font("Segoe UI", 9);
+                break;
+            case TabControl tabs:
+                tabs.Font = new Font("Segoe UI", 9);
+                tabs.Padding = new Point(14, 8);
+                break;
+            case TextBox textBox when textBox.Multiline && textBox.BackColor.ToArgb() == Color.FromArgb(20, 24, 32).ToArgb():
+                textBox.BorderStyle = BorderStyle.FixedSingle;
+                break;
+            case TextBox textBox:
+                textBox.BorderStyle = BorderStyle.FixedSingle;
+                textBox.BackColor = Surface;
+                textBox.ForeColor = TextPrimary;
+                break;
+            case ComboBox comboBox:
+                comboBox.FlatStyle = FlatStyle.Flat;
+                comboBox.BackColor = Surface;
+                comboBox.ForeColor = TextPrimary;
+                break;
+            case Panel panel when panel.Dock == DockStyle.Left:
+                panel.BackColor = AppBackground;
+                break;
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            StyleTree(child);
+        }
+    }
+
+    private static void StyleButton(Button button)
+    {
+        var lower = button.Text.ToLowerInvariant();
+        var back = lower.Contains("start") ? Success :
+            lower.Contains("stop") || lower.Contains("disable") || lower.Contains("delete") ? Danger :
+            NeutralButton;
+        var fore = back == NeutralButton ? TextPrimary : Color.White;
+
+        button.UseVisualStyleBackColor = false;
+        button.FlatStyle = FlatStyle.Flat;
+        button.BackColor = back;
+        button.ForeColor = fore;
+        button.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+        button.Cursor = Cursors.Hand;
+        button.FlatAppearance.BorderSize = back == NeutralButton ? 1 : 0;
+        button.FlatAppearance.BorderColor = Border;
+        button.FlatAppearance.MouseOverBackColor = back == NeutralButton ? NeutralButtonHover : ControlPaint.Light(back);
+        button.FlatAppearance.MouseDownBackColor = back == NeutralButton ? Border : ControlPaint.Dark(back);
+        if (button.Height < 34)
+        {
+            button.Height = 34;
+        }
     }
 
     private static T? ReadPrivate<T>(object instance, string fieldName) where T : class

@@ -70,24 +70,14 @@ jobs:
         shell: pwsh
         run: ./build/Build-CSharpControlCenter.ps1 -CopyToRoot
 
-      - name: Resolve package version
-        id: package_version
+      - name: Package
         shell: pwsh
         run: |
           $version = "${{ github.event.inputs.version }}"
           if ([string]::IsNullOrWhiteSpace($version)) {
-            if (Test-Path VERSION.txt) {
-              $version = (Get-Content VERSION.txt -Raw).Trim()
-            }
-          }
-          if ([string]::IsNullOrWhiteSpace($version)) {
             $version = "${{ github.ref_name }}"
           }
-          "version=$version" >> $env:GITHUB_OUTPUT
-
-      - name: Package
-        shell: pwsh
-        run: ./build/Package-Release.ps1 -Version "${{ steps.package_version.outputs.version }}"
+          ./build/Package-Release.ps1 -Version $version
 
       - name: Install Inno Setup
         shell: pwsh
@@ -95,7 +85,12 @@ jobs:
 
       - name: Build installer EXE
         shell: pwsh
-        run: ./build/Build-Installer.ps1 -Version "${{ steps.package_version.outputs.version }}"
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "${{ github.ref_name }}"
+          }
+          ./build/Build-Installer.ps1 -Version $version
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -109,14 +104,9 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main' && startsWith(github.event.head_commit.message, 'Release '))
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.package_version.outputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ steps.package_version.outputs.version }}
-          generate_release_notes: true
-          make_latest: true
           files: |
             dist/*.zip
             dist/*.sha256
