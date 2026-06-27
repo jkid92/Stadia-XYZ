@@ -64,7 +64,7 @@ internal sealed class BridgeOrchestrator
         {
             return 1;
         }
-        await CleanupOldSessionAsync(status).ConfigureAwait(false);
+        await CleanupOldSessionAsync(distro, status).ConfigureAwait(false);
 
         status.Write("WSL_START", $"Starting WSL distro {distro}");
         await _runner.RunAsync("wsl", new[] { "-d", distro, "echo", "WSL Booted" }, _paths.Root, 15000).ConfigureAwait(false);
@@ -203,11 +203,22 @@ internal sealed class BridgeOrchestrator
         return true;
     }
 
-    private async Task CleanupOldSessionAsync(StatusWriter status)
+    private async Task CleanupOldSessionAsync(string distro, StatusWriter status)
     {
         SignalReceiverStop();
         var legacyReceiverRunning = Process.GetProcessesByName("stadia_receiver").Length > 0;
-        if (!legacyReceiverRunning)
+        var linuxSessionRunning = false;
+        if (!string.IsNullOrWhiteSpace(distro))
+        {
+            var probe = await _runner.RunAsync(
+                "wsl",
+                new[] { "-d", distro, "-u", "root", "bash", "-lc", "pgrep -x stadia_bridge >/dev/null || pgrep -f '^/bin/bash /opt/stadia-x/start.sh' >/dev/null" },
+                _paths.Root,
+                10000).ConfigureAwait(false);
+            linuxSessionRunning = probe.ExitCode == 0;
+        }
+
+        if (!legacyReceiverRunning && !linuxSessionRunning)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(750)).ConfigureAwait(false);
             ClearReceiverStopSignal();
@@ -216,6 +227,14 @@ internal sealed class BridgeOrchestrator
 
         status.Write("CLEANUP_OLD_SESSION", "Stopping existing receiver session");
         KillProcess("stadia_receiver");
+        if (linuxSessionRunning)
+        {
+            await _runner.RunAsync(
+                "wsl",
+                new[] { "-d", distro, "-u", "root", "bash", "-lc", "pkill -TERM -x stadia_bridge 2>/dev/null || true; pkill -TERM -f '^/bin/bash /opt/stadia-x/start.sh' 2>/dev/null || true" },
+                _paths.Root,
+                10000).ConfigureAwait(false);
+        }
         await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         ClearReceiverStopSignal();
@@ -278,9 +297,11 @@ internal sealed class BridgeOrchestrator
             status.Write("BT_ATTACH_START", $"Attaching Bluetooth adapter to WSL distro {distro}");
             await _runner.RunAsync("usbipd", new[] { "bind", "--busid", busId, "--force" }, _paths.Root, 20000).ConfigureAwait(false);
             var help = await _runner.RunAsync("usbipd", new[] { "attach", "--help" }, _paths.Root, 15000).ConfigureAwait(false);
-            var attachArgs = help.Output.Contains("distribution", StringComparison.OrdinalIgnoreCase)
+            var attachArgs = help.Output.Contains("--distribution", StringComparison.OrdinalIgnoreCase)
                 ? new[] { "attach", "--wsl", "--busid", busId, "--distribution", distro }
-                : new[] { "attach", "--wsl", "--busid", busId };
+                : help.Output.Contains("<[DISTRIBUTION]>", StringComparison.OrdinalIgnoreCase)
+                    ? new[] { "attach", "--wsl", distro, "--busid", busId }
+                    : new[] { "attach", "--wsl", "--busid", busId };
             var attach = await _runner.RunAsync("usbipd", attachArgs, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
             if (attach.ExitCode != 0 && attachArgs.Any(arg => arg.Equals("--distribution", StringComparison.OrdinalIgnoreCase)))
             {

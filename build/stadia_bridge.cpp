@@ -284,7 +284,14 @@ static void send_rumble(uint8_t strong, uint8_t weak) {
         if (write(rumble_hid_fd, report, 5) < 0) { close(rumble_hid_fd); rumble_hid_fd = -1; }
     }
 }
-static void ff_upload_and_play(int, uint8_t strong, uint8_t weak) { send_rumble(strong, weak); }
+static bool rumble_enabled() {
+    const char* enable_rumble = std::getenv("STADIA_X_ENABLE_RUMBLE");
+    return enable_rumble != nullptr && std::strcmp(enable_rumble, "1") == 0;
+}
+static void ff_upload_and_play(int, uint8_t strong, uint8_t weak) {
+    if (!rumble_enabled()) return;
+    send_rumble(strong, weak);
+}
 static void ff_stop(int fd) {
     if (ff_effect_id < 0) return;
     struct input_event stop{}; stop.type = EV_FF; stop.code = static_cast<uint16_t>(ff_effect_id); stop.value = 0;
@@ -378,13 +385,16 @@ static void controller_worker(int controller_index, std::string evpath, std::str
 
     int ev_fd = open(evpath.c_str(), O_RDWR | O_NONBLOCK);
     if (ev_fd < 0) {
+        log_info("Controller %d open failed for %s: %s", controller_index + 1, evpath.c_str(), strerror(errno));
         g_controllers[controller_index].connected.store(false);
         close(udp_fd);
         return;
     }
 
     ControllerRuntime& slot = g_controllers[controller_index];
-    ioctl(ev_fd, EVIOCGRAB, 1);
+    if (ioctl(ev_fd, EVIOCGRAB, 1) < 0) {
+        log_info("Controller %d EVIOCGRAB failed for %s: %s", controller_index + 1, evpath.c_str(), strerror(errno));
+    }
     {
         std::lock_guard<std::mutex> lk(slot.meta_mtx);
         slot.path = evpath;
@@ -420,18 +430,36 @@ static void controller_worker(int controller_index, std::string evpath, std::str
         int ret = poll(&pfd, 1, 500);
         if (ret < 0) {
             if (errno == EINTR) continue;
+            log_info("Controller %d poll failed for %s: %s", controller_index + 1, evpath.c_str(), strerror(errno));
             break;
         }
         if (ret == 0) continue;
-
-        struct input_event events[64];
-        ssize_t rd = read(ev_fd, events, sizeof(events));
-        if (rd <= 0) {
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            log_info("Controller %d event device closed for %s: revents=0x%x", controller_index + 1, evpath.c_str(), pfd.revents);
             connected = false;
             break;
         }
+        if (!(pfd.revents & POLLIN)) continue;
+
+        struct input_event events[64];
+        ssize_t rd = read(ev_fd, events, sizeof(events));
+        if (rd < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            log_info("Controller %d read failed for %s: %s", controller_index + 1, evpath.c_str(), strerror(errno));
+            connected = false;
+            break;
+        }
+        if (rd == 0) {
+            log_info("Controller %d read returned EOF for %s", controller_index + 1, evpath.c_str());
+            connected = false;
+            break;
+        }
+        if ((rd % static_cast<ssize_t>(sizeof(struct input_event))) != 0) {
+            log_info("Controller %d partial evdev read for %s: %zd bytes", controller_index + 1, evpath.c_str(), rd);
+        }
 
         size_t count = static_cast<size_t>(rd) / sizeof(struct input_event);
+        if (count == 0) continue;
         bool changed = false;
 
         {
@@ -562,8 +590,6 @@ void start_extra_buttons_thread(const char* win_ip) {
             if (hid_fd >= 0) close(hid_fd);
             break;
         }
-
-        send_rumble(128, 128); usleep(500000); send_rumble(0, 0);
 
         struct ChordSlot {
             const char* code; bool held; bool sent_once;
@@ -710,7 +736,10 @@ int main(int argc, char* argv[]) {
         log_err("Invalid Windows host IP: %s", g_target_ip.c_str());
         return 1;
     }
-    start_extra_buttons_thread(argv[1]);
+    const char* enable_hidraw_chords = std::getenv("STADIA_X_ENABLE_HIDRAW_CHORDS");
+    if (enable_hidraw_chords != nullptr && std::strcmp(enable_hidraw_chords, "1") == 0) {
+        start_extra_buttons_thread(argv[1]);
+    }
     std::thread t_input(input_sender_thread);
     std::thread t_rumble(rumble_receiver_thread);
     std::thread t_c2(c2_server_thread);
