@@ -49,6 +49,7 @@ internal sealed class MainForm : Form
 
     private Form? _batteryOverlay;
     private Label? _batteryOverlayLabel;
+    private bool _linuxRefreshInProgress;
 
     public MainForm(AppPaths paths)
     {
@@ -349,7 +350,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(linuxActions, 1, 0);
 
         var linuxGroup = CreateGroup("Visible to Linux");
-        ConfigureList(_linuxBluetoothList, ("MAC", 140), ("Name", 240), ("Connected", 90), ("Paired", 80), ("Trusted", 80), ("Battery", 80), ("Stadia", 70));
+        ConfigureList(_linuxBluetoothList, ("MAC / Source", 150), ("Name", 240), ("Connected", 90), ("Paired", 80), ("Trusted", 80), ("Battery", 80), ("Stadia", 70));
         _linuxBluetoothList.MultiSelect = true;
         linuxGroup.Controls.Add(_linuxBluetoothList);
         layout.Controls.Add(linuxGroup, 0, 1);
@@ -640,22 +641,81 @@ internal sealed class MainForm : Form
 
     private async Task RefreshLinuxBluetoothDevicesAsync(int scanSeconds)
     {
-        _linuxBluetoothList.Items.Clear();
-        var devices = await _native.GetLinuxBluetoothDevicesAsync(scanSeconds);
-        foreach (var device in devices)
+        if (_linuxRefreshInProgress)
         {
-            var item = new ListViewItem(device.Mac);
-            item.SubItems.Add(device.Name);
-            item.SubItems.Add(device.Connected);
-            item.SubItems.Add(device.Paired);
-            item.SubItems.Add(device.Trusted);
-            item.SubItems.Add(device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%");
-            item.SubItems.Add(device.IsStadia ? "yes" : "no");
-            item.Tag = device;
-            item.ForeColor = device.IsStadia ? Color.FromArgb(34, 120, 72) : Color.FromArgb(70, 70, 70);
-            _linuxBluetoothList.Items.Add(item);
+            return;
         }
-        await UpdateBatteryAsync(devices);
+
+        _linuxRefreshInProgress = true;
+        _linuxBluetoothList.Items.Clear();
+        try
+        {
+            var devices = (await _native.GetLinuxBluetoothDevicesAsync(scanSeconds)).ToList();
+            AddReceiverFallbackDevices(devices);
+            foreach (var device in devices)
+            {
+                var item = new ListViewItem(device.Mac);
+                item.SubItems.Add(device.Name);
+                item.SubItems.Add(device.Connected);
+                item.SubItems.Add(device.Paired);
+                item.SubItems.Add(device.Trusted);
+                item.SubItems.Add(device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%");
+                item.SubItems.Add(device.IsStadia ? "yes" : "no");
+                item.Tag = device;
+                item.ForeColor = device.IsStadia ? Color.FromArgb(34, 120, 72) : Color.FromArgb(70, 70, 70);
+                if (!NativeControlServices.IsBluetoothMac(device.Mac))
+                {
+                    item.ForeColor = Color.FromArgb(45, 91, 150);
+                }
+                _linuxBluetoothList.Items.Add(item);
+            }
+            await UpdateBatteryAsync(devices);
+        }
+        finally
+        {
+            _linuxRefreshInProgress = false;
+        }
+    }
+
+    private void AddReceiverFallbackDevices(List<LinuxBluetoothDevice> devices)
+    {
+        if (!IsControllerStateFresh())
+        {
+            return;
+        }
+
+        ControllerTelemetrySnapshot snapshot;
+        try
+        {
+            snapshot = _native.ReadControllerTelemetry();
+        }
+        catch
+        {
+            return;
+        }
+
+        var activeRows = snapshot.Controllers
+            .Where(controller => controller.Active || controller.PacketsPerSecond > 0)
+            .OrderBy(controller => controller.Index)
+            .ToArray();
+        var realStadiaRows = devices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+        foreach (var controller in activeRows.Skip(realStadiaRows))
+        {
+            devices.Add(new LinuxBluetoothDevice(
+                $"P{controller.Index}",
+                "Stadia Controller (receiver)",
+                "yes",
+                "-",
+                "-",
+                null,
+                true));
+        }
+    }
+
+    private bool IsControllerStateFresh()
+    {
+        return File.Exists(_paths.ControllerState) &&
+               File.GetLastWriteTimeUtc(_paths.ControllerState) >= DateTime.UtcNow - TimeSpan.FromSeconds(10);
     }
 
     private async Task UpdateBatteryAsync(IReadOnlyList<LinuxBluetoothDevice>? knownDevices = null)
@@ -844,7 +904,22 @@ internal sealed class MainForm : Form
         }
         RefreshSelectionLabels();
         LaunchSelfCommand("--start-bridge", elevateWhenNeeded: true, "Stadia X start requested. Watch Live Logs for progress.");
+        _ = RefreshLinuxListAfterBridgeStartAsync();
         _tabs.SelectedTab = _tabs.TabPages["Control"];
+    }
+
+    private async Task RefreshLinuxListAfterBridgeStartAsync()
+    {
+        foreach (var delay in new[] { 4000, 8000, 15000 })
+        {
+            await Task.Delay(delay);
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            await RunActionWithDialogAsync(() => RefreshLinuxBluetoothDevicesAsync(0));
+        }
     }
 
     private void StopBridge()
@@ -898,7 +973,7 @@ internal sealed class MainForm : Form
     {
         var macs = _linuxBluetoothList.SelectedItems.Cast<ListViewItem>()
             .Select(item => item.Tag as LinuxBluetoothDevice)
-            .Where(device => device is not null)
+            .Where(device => device is not null && NativeControlServices.IsBluetoothMac(device.Mac))
             .Select(device => device!.Mac)
             .Take(4)
             .ToArray();
@@ -929,6 +1004,15 @@ internal sealed class MainForm : Form
             {
                 continue;
             }
+
+            if (!NativeControlServices.IsBluetoothMac(device.Mac))
+            {
+                lines.Add($"== {device.Mac} {device.Name} ==");
+                lines.Add("This row comes from the Windows receiver telemetry. Refresh or Scan until BlueZ reports the Bluetooth MAC before using pair/connect commands.");
+                lines.Add("");
+                continue;
+            }
+
             var result = await _native.RunLinuxBluetoothCommandAsync(device.Mac, command);
             lines.Add($"== {command} {device.Mac} {device.Name} ==");
             lines.Add(result.Output.Trim());
@@ -1031,6 +1115,12 @@ internal sealed class MainForm : Form
         if (_linuxBluetoothList.SelectedItems.Count == 0 || _linuxBluetoothList.SelectedItems[0].Tag is not LinuxBluetoothDevice device)
         {
             MessageBox.Show("Select a Linux Bluetooth device first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        if (!NativeControlServices.IsBluetoothMac(device.Mac))
+        {
+            MessageBox.Show("This receiver row does not expose a Bluetooth MAC yet. Use Refresh or Scan until the BlueZ row appears, then save the profile.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 

@@ -200,8 +200,10 @@ internal sealed class NativeControlServices
             "}; " +
             "emit_list() { " +
             "filter=\"$1\"; " +
-            "if [ -z \"$filter\" ]; then bluetoothctl devices 2>/dev/null; else bluetoothctl devices \"$filter\" 2>/dev/null; fi | while read -r kind mac name; do " +
+            "if [ -z \"$filter\" ]; then bluetoothctl devices 2>/dev/null; else bluetoothctl devices \"$filter\" 2>/dev/null; fi | while IFS= read -r line; do " +
+            "mac=\"$(printf '%s\\n' \"$line\" | grep -Eo '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -n 1)\"; " +
             "[ -z \"$mac\" ] && continue; " +
+            "name=\"${line#*$mac}\"; name=\"${name# }\"; " +
             "emit_device \"$mac\" \"$name\"; " +
             "done; " +
             "}; " +
@@ -722,6 +724,8 @@ bluetoothctl devices 2>&1 || true
     {
         return !string.IsNullOrWhiteSpace(value) && BusIdPattern.IsMatch(value.Trim());
     }
+
+    public static bool IsBluetoothMac(string? value) => IsMac(value);
 
     private static bool IsMac(string? value)
     {
