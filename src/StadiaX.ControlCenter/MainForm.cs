@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using System.Security.Principal;
 
 namespace StadiaX.ControlCenter;
@@ -46,9 +48,11 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
     private readonly NotifyIcon _trayIcon = new();
+    private readonly Icon _baseIcon;
 
     private Form? _batteryOverlay;
     private Label? _batteryOverlayLabel;
+    private Icon? _batteryIndicatorIcon;
     private bool _linuxRefreshInProgress;
 
     public MainForm(AppPaths paths)
@@ -59,7 +63,8 @@ internal sealed class MainForm : Form
         _native = new NativeControlServices(paths, _runner);
 
         Text = "Stadia X";
-        Icon = LoadApplicationIcon();
+        _baseIcon = LoadApplicationIcon();
+        Icon = (Icon)_baseIcon.Clone();
         MinimumSize = new Size(1180, 760);
         Size = new Size(1280, 820);
         StartPosition = FormStartPosition.CenterScreen;
@@ -99,6 +104,8 @@ internal sealed class MainForm : Form
             _batteryTimer.Stop();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
+            _batteryIndicatorIcon?.Dispose();
+            _baseIcon.Dispose();
             HideBatteryOverlay();
         };
     }
@@ -516,14 +523,15 @@ internal sealed class MainForm : Form
             RefreshControllerTelemetry();
         };
 
-        _batteryTimer.Interval = 300000;
+        _batteryTimer.Interval = 30000;
         _batteryTimer.Tick += (_, _) => { _ = RunActionWithDialogAsync(() => UpdateBatteryAsync()); };
     }
 
     private void ConfigureTray()
     {
-        _trayIcon.Icon = Icon is null ? (Icon)SystemIcons.Application.Clone() : (Icon)Icon.Clone();
+        _trayIcon.Icon = (Icon)_baseIcon.Clone();
         _trayIcon.Text = "Stadia X";
+        _trayIcon.Visible = true;
         _trayIcon.ContextMenuStrip = new ContextMenuStrip();
         _trayIcon.ContextMenuStrip.Items.Add("Show", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         _trayIcon.ContextMenuStrip.Items.Add("Start", null, (_, _) => StartBridge());
@@ -720,8 +728,15 @@ internal sealed class MainForm : Form
 
     private async Task UpdateBatteryAsync(IReadOnlyList<LinuxBluetoothDevice>? knownDevices = null)
     {
-        knownDevices ??= await _native.GetLinuxBluetoothDevicesAsync(0);
+        if (knownDevices is null)
+        {
+            var devices = (await _native.GetLinuxBluetoothDevicesAsync(0)).ToList();
+            AddReceiverFallbackDevices(devices);
+            knownDevices = devices;
+        }
+
         var stadia = knownDevices.Where(d => d.IsStadia || d.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)).ToArray();
+        UpdateBatteryIndicator(stadia);
         if (stadia.Length == 0)
         {
             _batteryLabel.Text = "Battery: not available yet. Start the bridge and connect a controller.";
@@ -922,9 +937,96 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void UpdateBatteryIndicator(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        var replacement = CreateBatteryIndicatorIcon(devices);
+        var previous = _batteryIndicatorIcon;
+        _batteryIndicatorIcon = replacement;
+        Icon = replacement;
+        _trayIcon.Icon = replacement;
+        _trayIcon.Text = BatteryTooltip(devices);
+        previous?.Dispose();
+    }
+
+    private static string BatteryTooltip(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        if (devices.Count == 0)
+        {
+            return "Stadia X - no controller battery";
+        }
+
+        var summary = string.Join("  ", devices.Take(4).Select((device, index) =>
+        {
+            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
+            var connected = device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "on" : device.Connected;
+            return $"P{index + 1} {battery} {connected}";
+        }));
+        var text = "Stadia X - " + summary;
+        return text.Length <= 63 ? text : text[..63];
+    }
+
+    private static Icon CreateBatteryIndicatorIcon(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        var known = devices
+            .Where(device => device.BatteryPercent.HasValue)
+            .Select(device => device.BatteryPercent!.Value)
+            .ToArray();
+        int? percent = known.Length > 0 ? known.Min() : null;
+        var active = devices.Count > 0;
+        var backColor = !active
+            ? Color.FromArgb(96, 106, 116)
+            : percent is null
+                ? Color.FromArgb(45, 91, 150)
+                : percent <= 30
+                    ? Color.FromArgb(190, 55, 55)
+                    : percent <= 55
+                        ? Color.FromArgb(196, 132, 35)
+                        : Color.FromArgb(42, 140, 89);
+        var text = !active ? "-" : percent is null ? "?" : percent.Value.ToString();
+
+        using var bitmap = new Bitmap(32, 32);
+        using (var g = Graphics.FromImage(bitmap))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            using var back = new SolidBrush(backColor);
+            using var white = new SolidBrush(Color.White);
+            using var border = new Pen(Color.FromArgb(240, 255, 255, 255), 2);
+            g.FillEllipse(back, 1, 1, 30, 30);
+            g.DrawEllipse(border, 1, 1, 30, 30);
+
+            using var font = new Font("Segoe UI", text.Length > 2 ? 9 : 11, FontStyle.Bold, GraphicsUnit.Pixel);
+            var size = g.MeasureString(text, font);
+            g.DrawString(text, font, white, (32 - size.Width) / 2f, (32 - size.Height) / 2f - 1);
+
+            if (devices.Count > 1)
+            {
+                using var countFont = new Font("Segoe UI", 7, FontStyle.Bold, GraphicsUnit.Pixel);
+                var count = devices.Count.ToString();
+                var countSize = g.MeasureString(count, countFont);
+                g.FillEllipse(white, 21, 21, 10, 10);
+                using var countBrush = new SolidBrush(backColor);
+                g.DrawString(count, countFont, countBrush, 26 - countSize.Width / 2f, 26 - countSize.Height / 2f);
+            }
+        }
+
+        var handle = bitmap.GetHicon();
+        try
+        {
+            using var icon = Icon.FromHandle(handle);
+            return (Icon)icon.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
+    }
+
     private void StopBridge()
     {
         LaunchSelfCommand("--stop-bridge", elevateWhenNeeded: true, "Stadia X stop requested. Watch Live Logs for progress.");
+        UpdateBatteryIndicator(Array.Empty<LinuxBluetoothDevice>());
+        HideBatteryOverlay();
         _tabs.SelectedTab = _tabs.TabPages["Control"];
     }
 
@@ -1289,8 +1391,11 @@ internal sealed class MainForm : Form
         _batteryOverlay.Location = new Point(area.Right - _batteryOverlay.Width - 16, area.Top + 16);
         if (!_batteryOverlay.Visible)
         {
-            _batteryOverlay.Show(this);
+            _batteryOverlay.Show();
         }
+        _batteryOverlay.TopMost = false;
+        _batteryOverlay.TopMost = true;
+        _batteryOverlay.BringToFront();
     }
 
     private void HideBatteryOverlay()
@@ -1572,6 +1677,9 @@ internal sealed class MainForm : Form
             return (Icon)SystemIcons.Application.Clone();
         }
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     private static bool IsAdministrator()
     {
