@@ -226,14 +226,9 @@ internal sealed class NativeControlServices
                 continue;
             }
 
-            if (!seen.Add(parts[0].Trim()))
-            {
-                continue;
-            }
-
             int? battery = int.TryParse(parts[5].Trim(), out var percent) ? Math.Clamp(percent, 0, 100) : null;
             var name = string.IsNullOrWhiteSpace(parts[1]) ? "(unknown)" : parts[1].Trim();
-            devices.Add(new LinuxBluetoothDevice(
+            UpsertLinuxDevice(devices, seen, new LinuxBluetoothDevice(
                 parts[0].Trim().ToUpperInvariant(),
                 name,
                 parts[4].Trim(),
@@ -251,11 +246,14 @@ internal sealed class NativeControlServices
             }
 
             var device = await GetLinuxBluetoothDeviceByInfoAsync(distro, mac).ConfigureAwait(false);
-            if (device is not null && seen.Add(device.Mac))
+            if (device is not null)
             {
-                devices.Add(device);
+                UpsertLinuxDevice(devices, seen, device);
             }
         }
+
+        AddBluetoothDiagnosticsDevices(devices, seen);
+        AddBridgeLogDevices(devices, seen);
 
         return devices
             .OrderByDescending(d => d.IsStadia)
@@ -287,6 +285,109 @@ internal sealed class NativeControlServices
         };
 
         return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
+    }
+
+    private void AddBluetoothDiagnosticsDevices(List<LinuxBluetoothDevice> devices, HashSet<string> seen)
+    {
+        if (!File.Exists(_paths.BluetoothDiagnostics))
+        {
+            return;
+        }
+
+        var text = ReadFileBestEffort(_paths.BluetoothDiagnostics);
+        foreach (Match match in Regex.Matches(text, @"(?ms)^--\s*(?<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s*--\r?\n(?<info>.*?)(?=^--\s*(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\s*--|^==|\z)"))
+        {
+            var device = ParseLinuxBluetoothInfo(match.Groups["mac"].Value, match.Groups["info"].Value);
+            if (device is not null)
+            {
+                UpsertLinuxDevice(devices, seen, device);
+            }
+        }
+    }
+
+    private void AddBridgeLogDevices(List<LinuxBluetoothDevice> devices, HashSet<string> seen)
+    {
+        if (!File.Exists(_paths.LinuxLog))
+        {
+            return;
+        }
+
+        var text = ReadFileBestEffort(_paths.LinuxLog);
+        foreach (Match match in Regex.Matches(text, @"Controller\s+(?<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(?:already\s+)?connected", RegexOptions.IgnoreCase))
+        {
+            var mac = match.Groups["mac"].Value.ToUpperInvariant();
+            UpsertLinuxDevice(devices, seen, new LinuxBluetoothDevice(
+                mac,
+                "Stadia Controller (bridge log)",
+                "yes",
+                "",
+                "",
+                null,
+                true));
+        }
+    }
+
+    private static void UpsertLinuxDevice(List<LinuxBluetoothDevice> devices, HashSet<string> seen, LinuxBluetoothDevice candidate)
+    {
+        if (!IsMac(candidate.Mac))
+        {
+            return;
+        }
+
+        var mac = candidate.Mac.Trim().ToUpperInvariant();
+        var normalized = candidate with { Mac = mac };
+        var index = devices.FindIndex(device => device.Mac.Equals(mac, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            seen.Add(mac);
+            devices.Add(normalized);
+            return;
+        }
+
+        devices[index] = MergeLinuxDevice(devices[index], normalized);
+        seen.Add(mac);
+    }
+
+    private static LinuxBluetoothDevice MergeLinuxDevice(LinuxBluetoothDevice existing, LinuxBluetoothDevice candidate)
+    {
+        return existing with
+        {
+            Name = BetterValue(existing.Name, candidate.Name, "(unknown)"),
+            Connected = BetterValue(existing.Connected, candidate.Connected, ""),
+            Paired = BetterValue(existing.Paired, candidate.Paired, ""),
+            Trusted = BetterValue(existing.Trusted, candidate.Trusted, ""),
+            BatteryPercent = candidate.BatteryPercent ?? existing.BatteryPercent,
+            IsStadia = existing.IsStadia || candidate.IsStadia
+        };
+    }
+
+    private static string BetterValue(string existing, string candidate, string emptyValue)
+    {
+        if (string.IsNullOrWhiteSpace(candidate) || candidate == "-" || candidate.Equals(emptyValue, StringComparison.OrdinalIgnoreCase))
+        {
+            return existing;
+        }
+
+        if (string.IsNullOrWhiteSpace(existing) || existing == "-" || existing.Equals(emptyValue, StringComparison.OrdinalIgnoreCase))
+        {
+            return candidate;
+        }
+
+        return existing;
+    }
+
+    private static string ReadFileBestEffort(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
+        }
+        catch
+        {
+            return "";
+        }
     }
 
     public async Task<CommandResult> RunLinuxBluetoothRepairAsync()

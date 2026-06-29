@@ -15,6 +15,7 @@ internal sealed class MainForm : Form
     private readonly NativeControlServices _native;
 
     private readonly Label _statusLabel = new();
+    private readonly Label _batteryStatusLabel = new();
     private readonly Label _batteryLabel = new();
     private readonly Label _selectionLabel = new();
     private readonly Label _capacityLabel = new();
@@ -152,8 +153,17 @@ internal sealed class MainForm : Form
         _statusLabel.TextAlign = ContentAlignment.MiddleRight;
         _statusLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
         _statusLabel.Size = new Size(520, 30);
-        _statusLabel.Location = new Point(Width - 560, 24);
+        _statusLabel.Location = new Point(Width - 560, 17);
         header.Controls.Add(_statusLabel);
+
+        _batteryStatusLabel.Text = "Battery: --";
+        _batteryStatusLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+        _batteryStatusLabel.ForeColor = Color.FromArgb(202, 213, 225);
+        _batteryStatusLabel.TextAlign = ContentAlignment.MiddleRight;
+        _batteryStatusLabel.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _batteryStatusLabel.Size = new Size(520, 22);
+        _batteryStatusLabel.Location = new Point(Width - 560, 47);
+        header.Controls.Add(_batteryStatusLabel);
         return header;
     }
 
@@ -945,7 +955,24 @@ internal sealed class MainForm : Form
         Icon = replacement;
         _trayIcon.Icon = replacement;
         _trayIcon.Text = BatteryTooltip(devices);
+        _batteryStatusLabel.Text = BatteryHeaderText(devices);
+        Text = devices.Count == 0 ? "Stadia X" : "Stadia X - " + BatteryShortText(devices);
         previous?.Dispose();
+    }
+
+    private static string BatteryHeaderText(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        return devices.Count == 0 ? "Battery: --" : "Battery: " + BatteryShortText(devices);
+    }
+
+    private static string BatteryShortText(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        return string.Join("  ", devices.Take(4).Select((device, index) =>
+        {
+            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
+            var connected = device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "on" : device.Connected;
+            return $"P{index + 1} {battery} {connected}";
+        }));
     }
 
     private static string BatteryTooltip(IReadOnlyList<LinuxBluetoothDevice> devices)
@@ -955,13 +982,7 @@ internal sealed class MainForm : Form
             return "Stadia X - no controller battery";
         }
 
-        var summary = string.Join("  ", devices.Take(4).Select((device, index) =>
-        {
-            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
-            var connected = device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "on" : device.Connected;
-            return $"P{index + 1} {battery} {connected}";
-        }));
-        var text = "Stadia X - " + summary;
+        var text = "Stadia X - " + BatteryShortText(devices);
         return text.Length <= 63 ? text : text[..63];
     }
 
