@@ -189,8 +189,8 @@ internal sealed class NativeControlServices
             scanCommand +
             "emit_device() { " +
             "mac=\"$1\"; name=\"$2\"; [ -z \"$mac\" ] && return; " +
-            "info=\"$(timeout 6 bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
-            "printf \"%s\\n\" \"$info\" | grep -Eiq \"Name:|Alias:|Connected:|UUID:\" || return; " +
+            "info=\"$(timeout 3 bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
+            "printf \"%s\\n\" \"$info\" | grep -Eiq \"Name:|Alias:|Connected:|UUID:\" || [ -n \"$name\" ] || return; " +
             "[ -z \"$name\" ] && name=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Name:/ {print $2; exit}')\"; " +
             "paired=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Paired:/ {print $2; exit}')\"; " +
             "trusted=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Trusted:/ {print $2; exit}')\"; " +
@@ -198,10 +198,14 @@ internal sealed class NativeControlServices
             "battery=\"$(printf \"%s\\n\" \"$info\" | awk -F'[()]' '/Battery Percentage:/ {print $2; exit}')\"; " +
             "printf '%s|%s|%s|%s|%s|%s\\n' \"$mac\" \"$name\" \"$paired\" \"$trusted\" \"$connected\" \"$battery\"; " +
             "}; " +
-            "bluetoothctl devices 2>/dev/null | while read -r kind mac name; do " +
+            "emit_list() { " +
+            "filter=\"$1\"; " +
+            "if [ -z \"$filter\" ]; then bluetoothctl devices 2>/dev/null; else bluetoothctl devices \"$filter\" 2>/dev/null; fi | while read -r kind mac name; do " +
             "[ -z \"$mac\" ] && continue; " +
             "emit_device \"$mac\" \"$name\"; " +
             "done; " +
+            "}; " +
+            "emit_list \"\"; emit_list Connected; emit_list Paired; emit_list Trusted; emit_list Bonded; " +
             knownMacLoop;
 
         var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, Math.Max(15000, (scanSeconds + 8) * 1000)).ConfigureAwait(false);
