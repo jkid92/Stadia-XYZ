@@ -35,6 +35,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _profileMacText = new();
     private readonly ComboBox _profileSlotCombo = new();
     private readonly CheckBox _profileAutoConnectCheck = new();
+    private readonly CheckBox _batteryOverlayCheck = new();
     private readonly TextBox _macroBox = new();
     private readonly TextBox _controlStatusLogBox = new();
     private readonly TextBox _controlLinuxLogBox = new();
@@ -237,8 +238,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(quick, 0, 0);
 
         var health = CreateGroup("Current selection and battery");
-        var healthPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12) };
-        healthPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        var healthPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
         healthPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         healthPanel.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         healthPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -344,6 +344,8 @@ internal sealed class MainForm : Form
             ("Disconnect", async () => await RunLinuxCommandForSelectedAsync("disconnect")),
             ("Repair", async () => await RepairLinuxBluetoothAsync()),
             ("Capacity", async () => await CreateCapacityReportAsync()));
+        ConfigureBatteryOverlayToggle();
+        AddTopPanelControl(linuxActions, _batteryOverlayCheck);
         layout.Controls.Add(linuxActions, 1, 0);
 
         var linuxGroup = CreateGroup("Visible to Linux");
@@ -669,9 +671,13 @@ internal sealed class MainForm : Form
 
         _batteryLabel.Text = "Battery: " + string.Join("   ", stadia.Select((d, i) => $"P{i + 1} {(d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%")} ({d.Connected})"));
         var low = stadia.Where(d => d.BatteryPercent is <= 30).ToArray();
-        if (low.Length > 0)
+        if (_batteryOverlayCheck.Checked)
         {
-            ShowBatteryOverlay(low);
+            ShowBatteryOverlay(stadia, warning: low.Length > 0);
+        }
+        else if (low.Length > 0)
+        {
+            ShowBatteryOverlay(low, warning: true);
         }
         else
         {
@@ -1155,7 +1161,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void ShowBatteryOverlay(IReadOnlyList<LinuxBluetoothDevice> lowDevices)
+    private void ShowBatteryOverlay(IReadOnlyList<LinuxBluetoothDevice> devices, bool warning)
     {
         if (_batteryOverlay is null || _batteryOverlay.IsDisposed)
         {
@@ -1165,23 +1171,30 @@ internal sealed class MainForm : Form
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 TopMost = true,
-                BackColor = Color.FromArgb(180, 45, 45),
                 Opacity = 0.94,
-                Size = new Size(210, 44)
+                Size = new Size(280, 64)
             };
             _batteryOverlayLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
+                Padding = new Padding(12, 8, 12, 8),
+                TextAlign = ContentAlignment.MiddleLeft,
                 Font = new Font("Segoe UI", 9, FontStyle.Bold),
                 ForeColor = Color.White
             };
             _batteryOverlay.Controls.Add(_batteryOverlayLabel);
         }
 
-        _batteryOverlayLabel!.Text = lowDevices.Count == 1
-            ? $"Stadia battery {lowDevices[0].BatteryPercent}%"
-            : "Low batteries: " + string.Join(" / ", lowDevices.Select(d => d.BatteryPercent + "%"));
+        _batteryOverlay.BackColor = warning ? Color.FromArgb(180, 45, 45) : Color.FromArgb(18, 35, 54);
+        var title = warning ? "Low battery" : "Controller batteries";
+        var rows = devices.Select((device, index) =>
+        {
+            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
+            var connected = string.IsNullOrWhiteSpace(device.Connected) ? "?" : device.Connected;
+            return $"P{index + 1}: {battery} ({connected})";
+        });
+        _batteryOverlayLabel!.Text = title + Environment.NewLine + string.Join("   ", rows);
+        _batteryOverlay.Size = new Size(300, devices.Count > 2 ? 82 : 64);
         var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
         _batteryOverlay.Location = new Point(area.Right - _batteryOverlay.Width - 16, area.Top + 16);
         if (!_batteryOverlay.Visible)
@@ -1226,6 +1239,35 @@ internal sealed class MainForm : Form
             Font = new Font("Segoe UI", 9, FontStyle.Bold),
             Padding = new Padding(10)
         };
+    }
+
+    private void ConfigureBatteryOverlayToggle()
+    {
+        _batteryOverlayCheck.Text = "Battery overlay";
+        _batteryOverlayCheck.AutoSize = true;
+        _batteryOverlayCheck.Height = 36;
+        _batteryOverlayCheck.TextAlign = ContentAlignment.MiddleLeft;
+        _batteryOverlayCheck.Margin = new Padding(4, 8, 10, 2);
+        _batteryOverlayCheck.CheckedChanged += (_, _) =>
+        {
+            if (_batteryOverlayCheck.Checked)
+            {
+                _ = RunActionWithDialogAsync(() => UpdateBatteryAsync());
+            }
+            else
+            {
+                HideBatteryOverlay();
+            }
+        };
+    }
+
+    private static void AddTopPanelControl(Control topPanel, Control control)
+    {
+        if (topPanel is TableLayoutPanel table && table.GetControlFromPosition(1, 0) is FlowLayoutPanel flow)
+        {
+            flow.Controls.Add(control);
+            flow.Controls.SetChildIndex(control, 0);
+        }
     }
 
     private static Control BuildTopPanel(string title, params (string Text, Action Action)[] buttons)
