@@ -295,7 +295,9 @@ static void ff_upload_and_play(int, uint8_t strong, uint8_t weak) {
 static void ff_stop(int fd) {
     if (ff_effect_id < 0) return;
     struct input_event stop{}; stop.type = EV_FF; stop.code = static_cast<uint16_t>(ff_effect_id); stop.value = 0;
-    write(fd, &stop, sizeof(stop));
+    if (write(fd, &stop, sizeof(stop)) < 0) {
+        log_err("failed to stop force-feedback effect: %s", strerror(errno));
+    }
 }
 
 static int create_udp_socket() {

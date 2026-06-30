@@ -22,14 +22,14 @@ internal sealed class WslDistroResolver
         }
 
         var distros = new List<WslDistro>();
-        foreach (var rawLine in result.Output.Replace("\0", "").Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var rawLine in result.Output.Replace("\0", "", StringComparison.Ordinal).Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {
             var line = rawLine.Trim();
             if (line.Length == 0 || line.StartsWith("NAME", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
-            if (line.StartsWith("*", StringComparison.Ordinal))
+            if (line.StartsWith('*'))
             {
                 line = line[1..].Trim();
             }

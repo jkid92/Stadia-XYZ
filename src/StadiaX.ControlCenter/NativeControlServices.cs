@@ -278,6 +278,8 @@ internal sealed class NativeControlServices
         command = command.ToLowerInvariant() switch
         {
             "pair" => $"bluetoothctl trust '{mac}'; timeout 20 bluetoothctl pair '{mac}' || true; timeout 20 bluetoothctl connect '{mac}' || true; bluetoothctl info '{mac}'",
+            "trust" => $"bluetoothctl trust '{mac}' || true; bluetoothctl info '{mac}'",
+            "pair-only" => $"timeout 20 bluetoothctl pair '{mac}' || true; bluetoothctl info '{mac}'",
             "connect" => $"timeout 20 bluetoothctl connect '{mac}' || true; bluetoothctl info '{mac}'",
             "disconnect" => $"bluetoothctl disconnect '{mac}' || true; bluetoothctl info '{mac}'",
             "remove" => $"bluetoothctl remove '{mac}' || true",
@@ -571,12 +573,33 @@ bluetoothctl devices 2>&1 || true
             return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
         }
 
-        using var document = JsonDocument.Parse(File.ReadAllText(_paths.ControllerState));
-        if (!document.RootElement.TryGetProperty("controllers", out var controllers) || controllers.ValueKind != JsonValueKind.Array)
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(File.ReadAllText(_paths.ControllerState));
+        }
+        catch (IOException)
+        {
+            return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+        }
+        catch (JsonException)
         {
             return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
         }
 
+        using (document)
+        {
+            if (!document.RootElement.TryGetProperty("controllers", out var controllers) || controllers.ValueKind != JsonValueKind.Array)
+            {
+                return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+            }
+
+            return ReadControllerRows(controllers);
+        }
+    }
+
+    private static ControllerTelemetrySnapshot ReadControllerRows(JsonElement controllers)
+    {
         var rows = new List<ControllerTelemetryRow>();
         foreach (var item in controllers.EnumerateArray())
         {
@@ -633,6 +656,11 @@ bluetoothctl devices 2>&1 || true
             LogReader.Tail(_paths.StatusLog, 80),
             "```",
             "",
+            "## Recent User Actions",
+            "```",
+            LogReader.Tail(_paths.UserActionLog, 80),
+            "```",
+            "",
             "## Recent Linux Log",
             "```",
             LogReader.Tail(_paths.LinuxLog, 80),
@@ -655,6 +683,7 @@ bluetoothctl devices 2>&1 || true
             _paths.StatusLog,
             _paths.LinuxStatusLog,
             _paths.LinuxLog,
+            _paths.UserActionLog,
             _paths.BluetoothDiagnostics,
             _paths.ReceiverLog,
             _paths.ControllerState,

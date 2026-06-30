@@ -13,6 +13,7 @@ internal sealed class MainForm : Form
     private readonly RequirementChecker _requirementChecker;
     private readonly SelfTestService _selfTestService;
     private readonly NativeControlServices _native;
+    private readonly UserActionLogger _actionLogger;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -26,6 +27,7 @@ internal sealed class MainForm : Form
     private readonly ListView _usbipdList = new();
     private readonly ListView _windowsBluetoothList = new();
     private readonly ListView _linuxBluetoothList = new();
+    private readonly ListView _wizardLinuxBluetoothList = new();
     private readonly ListView _profilesList = new();
     private readonly ListView _macroList = new();
     private readonly ListView _controllerList = new();
@@ -42,19 +44,42 @@ internal sealed class MainForm : Form
     private readonly TextBox _macroBox = new();
     private readonly TextBox _controlStatusLogBox = new();
     private readonly TextBox _controlLinuxLogBox = new();
+    private readonly TextBox _dashboardActionLogBox = new();
     private readonly TextBox _statusLogBox = new();
     private readonly TextBox _linuxLogBox = new();
+    private readonly TextBox _userActionLogBox = new();
     private readonly TextBox _diagnosticsBox = new();
+    private readonly Label _dashboardStatusLabel = new();
+    private readonly Label _dashboardDetailLabel = new();
+    private readonly Label[] _dashboardPadNameLabels = new Label[4];
+    private readonly Label[] _dashboardPadStatusLabels = new Label[4];
+    private readonly Label[] _dashboardPadBatteryLabels = new Label[4];
+    private readonly Label[] _dashboardPadPacketsLabels = new Label[4];
+    private readonly Label[] _dashboardPadMacLabels = new Label[4];
+    private readonly ProgressBar[] _dashboardPadBatteryBars = new ProgressBar[4];
+    private readonly Label _wizardStatusLabel = new();
+    private readonly Label _wizardSelectionLabel = new();
+    private readonly ProgressBar _wizardProgress = new();
+    private readonly Label[] _wizardStepLabels = new Label[7];
+    private readonly Label _operationTitleLabel = new();
+    private readonly Label _operationDetailLabel = new();
+    private readonly ProgressBar _operationProgress = new();
+    private readonly Label _linuxBluetoothSummaryLabel = new();
     private readonly TabControl _tabs = new();
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
     private readonly NotifyIcon _trayIcon = new();
+    private readonly ImageList _linuxBluetoothRowSizer = new() { ImageSize = new Size(1, 26), ColorDepth = ColorDepth.Depth32Bit };
     private readonly Icon _baseIcon;
 
     private Form? _batteryOverlay;
     private Label? _batteryOverlayLabel;
     private Icon? _batteryIndicatorIcon;
     private bool _linuxRefreshInProgress;
+    private bool _suppressSelectionLogging;
+    private IReadOnlyList<LinuxBluetoothDevice> _lastLinuxBluetoothDevices = Array.Empty<LinuxBluetoothDevice>();
+    private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
+    private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
 
     public MainForm(AppPaths paths)
     {
@@ -62,12 +87,14 @@ internal sealed class MainForm : Form
         _requirementChecker = new RequirementChecker(paths, _runner);
         _selfTestService = new SelfTestService(paths, _requirementChecker);
         _native = new NativeControlServices(paths, _runner);
+        _actionLogger = new UserActionLogger(paths);
 
         Text = "Stadia X";
         _baseIcon = LoadApplicationIcon();
         Icon = (Icon)_baseIcon.Clone();
-        MinimumSize = new Size(1180, 760);
-        Size = new Size(1280, 820);
+        var compactUi = IsCompactUi();
+        MinimumSize = compactUi ? new Size(1040, 660) : new Size(1180, 760);
+        Size = compactUi ? new Size(1120, 720) : new Size(1280, 820);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(248, 250, 252);
 
@@ -79,6 +106,7 @@ internal sealed class MainForm : Form
         {
             try
             {
+                LogUserAction("App shown");
                 Directory.CreateDirectory(_paths.LogDirectory);
                 await RefreshEverythingAsync();
                 _logTimer.Start();
@@ -101,12 +129,14 @@ internal sealed class MainForm : Form
         };
         FormClosing += (_, _) =>
         {
+            LogUserAction("App closing");
             _logTimer.Stop();
             _batteryTimer.Stop();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
             _batteryIndicatorIcon?.Dispose();
             _baseIcon.Dispose();
+            _linuxBluetoothRowSizer.Dispose();
             HideBatteryOverlay();
         };
     }
@@ -118,12 +148,17 @@ internal sealed class MainForm : Form
         Controls.Add(BuildHeader());
     }
 
+    internal static bool IsCompactUi()
+    {
+        return string.Equals(Environment.GetEnvironmentVariable("STADIAX_UI_DENSITY"), "compact", StringComparison.OrdinalIgnoreCase);
+    }
+
     private Control BuildHeader()
     {
         var header = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 78,
+            Height = IsCompactUi() ? 70 : 78,
             BackColor = Color.FromArgb(28, 38, 54)
         };
 
@@ -173,24 +208,49 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Left,
             Width = 318,
-            Padding = new Padding(14)
+            Padding = IsCompactUi() ? new Padding(10) : new Padding(14)
         };
+
+        var sidebarLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 266));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.Controls.Add(sidebarLayout);
 
         var actions = new GroupBox
         {
             Text = "Control",
-            Dock = DockStyle.Top,
-            Height = 250,
+            Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
-        left.Controls.Add(actions);
+        sidebarLayout.Controls.Add(actions, 0, 0);
 
-        AddButton(actions, "Start bridge", 18, 30, 280, StartBridge, Color.FromArgb(45, 125, 90), Color.White);
-        AddButton(actions, "Stop and restore Bluetooth", 18, 78, 280, StopBridge, Color.FromArgb(178, 62, 62), Color.White);
-        AddButton(actions, "Refresh all", 18, 132, 135, async () => await RefreshEverythingAsync());
-        AddButton(actions, "Self-test", 163, 132, 135, async () => await RunSelfTestAsync());
-        AddButton(actions, "Support bundle", 18, 178, 135, async () => await CreateSupportBundleAsync());
-        AddButton(actions, "Releases", 163, 178, 135, async () => await CheckUpdatesAsync());
+        var actionGrid = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 4,
+            Padding = IsCompactUi() ? new Padding(10, 14, 10, 10) : new Padding(14, 18, 14, 14)
+        };
+        actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        actions.Controls.Add(actionGrid);
+
+        AddActionGridButton(actionGrid, "Start bridge", 0, 0, 2, StartBridge, Color.FromArgb(45, 125, 90), Color.White);
+        AddActionGridButton(actionGrid, "Stop and restore", 0, 1, 2, StopBridge, Color.FromArgb(178, 62, 62), Color.White);
+        AddActionGridButton(actionGrid, "Refresh all", 0, 2, 1, async () => await RefreshEverythingAsync());
+        AddActionGridButton(actionGrid, "Self-test", 1, 2, 1, async () => await RunSelfTestAsync());
+        AddActionGridButton(actionGrid, "Support bundle", 0, 3, 1, async () => await CreateSupportBundleAsync());
+        AddActionGridButton(actionGrid, "Releases", 1, 3, 1, async () => await CheckUpdatesAsync());
 
         var summary = new TextBox
         {
@@ -199,11 +259,11 @@ internal sealed class MainForm : Form
             BorderStyle = BorderStyle.None,
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(248, 250, 252),
-            Font = new Font("Segoe UI", 9),
-            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Everything user-facing lives in this WinForms app: setup, Bluetooth, Linux devices, controller profiles, macros, battery, testing, logs, and diagnostics."
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
+            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Daily flow:{Environment.NewLine}Dashboard -> Pairing -> Test"
         };
-        left.Controls.Add(summary);
-        actions.BringToFront();
+        sidebarLayout.Controls.Add(BuildOperationProgressPanel(), 0, 1);
+        sidebarLayout.Controls.Add(summary, 0, 2);
         return left;
     }
 
@@ -212,18 +272,310 @@ internal sealed class MainForm : Form
         _tabs.Dock = DockStyle.Fill;
         _tabs.Font = new Font("Segoe UI", 9);
         _tabs.Padding = new Point(14, 8);
-        _tabs.Multiline = true;
+        _tabs.Multiline = false;
 
-        _tabs.TabPages.Add(BuildFirstRunPage());
+        _tabs.TabPages.Add(BuildDashboardPage());
+        _tabs.TabPages.Add(BuildPairingWizardPage());
         _tabs.TabPages.Add(BuildControlPage());
-        _tabs.TabPages.Add(BuildSetupPage());
         _tabs.TabPages.Add(BuildBluetoothPage());
         _tabs.TabPages.Add(BuildProfilesPage());
         _tabs.TabPages.Add(BuildControllerTestPage());
         _tabs.TabPages.Add(BuildMacrosPage());
         _tabs.TabPages.Add(BuildLogsPage());
         _tabs.TabPages.Add(BuildDiagnosticsPage());
+        _tabs.TabPages.Add(BuildSetupPage());
+        _tabs.TabPages.Add(BuildFirstRunPage());
+        _tabs.SelectedIndexChanged += (_, _) => LogUserSelection("Tab selected", ("name", _tabs.SelectedTab?.Text));
         return _tabs;
+    }
+
+    private TabPage BuildDashboardPage()
+    {
+        var page = CreatePage("Dashboard");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(14)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 156 : 168));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 212));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        page.Controls.Add(layout);
+
+        var overview = CreateGroup("Control center");
+        var overviewLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(14, 16, 14, 12)
+        };
+        overviewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        overviewLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        overview.Controls.Add(overviewLayout);
+
+        var statusLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2
+        };
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _dashboardStatusLabel.Text = "Ready";
+        _dashboardStatusLabel.Dock = DockStyle.Fill;
+        _dashboardStatusLabel.AutoEllipsis = true;
+        _dashboardStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _dashboardStatusLabel.Font = new Font("Segoe UI", IsCompactUi() ? 12.5F : 15, FontStyle.Bold);
+        _dashboardStatusLabel.ForeColor = Color.FromArgb(24, 33, 48);
+        _dashboardDetailLabel.Text = "Start the bridge or open the pairing wizard.";
+        _dashboardDetailLabel.Dock = DockStyle.Fill;
+        _dashboardDetailLabel.AutoEllipsis = true;
+        _dashboardDetailLabel.TextAlign = ContentAlignment.TopLeft;
+        _dashboardDetailLabel.Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9);
+        _dashboardDetailLabel.ForeColor = Color.FromArgb(92, 106, 126);
+        statusLayout.Controls.Add(_dashboardStatusLabel, 0, 0);
+        statusLayout.Controls.Add(_dashboardDetailLabel, 0, 1);
+        overviewLayout.Controls.Add(statusLayout, 0, 0);
+
+        var actionFlow = CreateFullWidthToolbarFlow();
+        actionFlow.Dock = DockStyle.Fill;
+        actionFlow.Padding = new Padding(0, 0, 0, 0);
+        AddFlowButton(actionFlow, "Start bridge", StartBridge, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actionFlow, "Stop", StopBridge, Color.FromArgb(178, 62, 62), Color.White);
+        AddFlowButton(actionFlow, "Pairing wizard", () => SelectTabIfExists("Pairing"));
+        AddFlowButton(actionFlow, "Scan devices", async () => await RefreshLinuxBluetoothDevicesAsync(8));
+        overviewLayout.Controls.Add(actionFlow, 1, 0);
+        layout.Controls.Add(overview, 0, 0);
+
+        var cards = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        for (var slot = 1; slot <= 4; slot++)
+        {
+            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+            cards.Controls.Add(BuildDashboardPadCard(slot), slot - 1, 0);
+        }
+        layout.Controls.Add(cards, 0, 1);
+
+        var activity = CreateGroup("Recent user actions");
+        activity.Margin = new Padding(0, 10, 0, 0);
+        ConfigureLogBox(_dashboardActionLogBox, "User action log not loaded yet.");
+        activity.Controls.Add(_dashboardActionLogBox);
+        layout.Controls.Add(activity, 0, 2);
+
+        return page;
+    }
+
+    private Control BuildDashboardPadCard(int slot)
+    {
+        var group = CreateGroup("P" + slot);
+        group.Margin = new Padding(4);
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 7,
+            Padding = IsCompactUi() ? new Padding(10, 12, 10, 8) : new Padding(12, 16, 12, 10)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 26 : 30));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 22 : 26));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 22 : 26));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        group.Controls.Add(layout);
+
+        var nameLabel = CreateDashboardValueLabel("No profile", IsCompactUi() ? 9.5F : 11, FontStyle.Bold);
+        var statusLabel = CreateDashboardValueLabel("Waiting", IsCompactUi() ? 8.25F : 9, FontStyle.Bold, Color.FromArgb(92, 106, 126));
+        var batteryLabel = CreateDashboardValueLabel("Battery --", IsCompactUi() ? 8.25F : 9);
+        var batteryBar = new ProgressBar
+        {
+            Dock = DockStyle.Fill,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 0,
+            Style = ProgressBarStyle.Continuous,
+            Margin = new Padding(0, 4, 0, 4)
+        };
+        var packetsLabel = CreateDashboardValueLabel("Input 0.0/s", IsCompactUi() ? 8.25F : 9);
+        var macLabel = CreateDashboardValueLabel("Automatic", 8, FontStyle.Regular, Color.FromArgb(92, 106, 126));
+
+        _dashboardPadNameLabels[slot - 1] = nameLabel;
+        _dashboardPadStatusLabels[slot - 1] = statusLabel;
+        _dashboardPadBatteryLabels[slot - 1] = batteryLabel;
+        _dashboardPadBatteryBars[slot - 1] = batteryBar;
+        _dashboardPadPacketsLabels[slot - 1] = packetsLabel;
+        _dashboardPadMacLabels[slot - 1] = macLabel;
+
+        layout.Controls.Add(nameLabel, 0, 0);
+        layout.Controls.Add(statusLabel, 0, 1);
+        layout.Controls.Add(batteryLabel, 0, 2);
+        layout.Controls.Add(batteryBar, 0, 3);
+        layout.Controls.Add(packetsLabel, 0, 4);
+        layout.Controls.Add(macLabel, 0, 5);
+        return group;
+    }
+
+    private static Label CreateDashboardValueLabel(string text, float size, FontStyle style = FontStyle.Regular, Color? foreColor = null)
+    {
+        return new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", size, style),
+            ForeColor = foreColor ?? Color.FromArgb(24, 33, 48)
+        };
+    }
+
+    private TabPage BuildPairingWizardPage()
+    {
+        var page = CreatePage("Pairing");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(14)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 324 : 360));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        page.Controls.Add(layout);
+
+        var stepsGroup = CreateGroup("Guided pairing");
+        var stepsLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = PairingWizardStepNames().Length + 4,
+            Padding = IsCompactUi() ? new Padding(12, 12, 12, 10) : new Padding(14, 16, 14, 12)
+        };
+        stepsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 38 : 46));
+        stepsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 34));
+        stepsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 40 : 48));
+        for (var i = 0; i < PairingWizardStepNames().Length; i++)
+        {
+            stepsLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 32 : 38));
+        }
+        stepsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        stepsGroup.Controls.Add(stepsLayout);
+
+        _wizardStatusLabel.Text = "Waiting for setup data";
+        _wizardStatusLabel.Dock = DockStyle.Fill;
+        _wizardStatusLabel.AutoEllipsis = true;
+        _wizardStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _wizardStatusLabel.Font = new Font("Segoe UI", IsCompactUi() ? 10.5F : 12, FontStyle.Bold);
+        stepsLayout.Controls.Add(_wizardStatusLabel, 0, 0);
+
+        _wizardProgress.Dock = DockStyle.Fill;
+        _wizardProgress.Minimum = 0;
+        _wizardProgress.Maximum = 100;
+        _wizardProgress.Value = 0;
+        _wizardProgress.Style = ProgressBarStyle.Continuous;
+        stepsLayout.Controls.Add(_wizardProgress, 0, 1);
+
+        _wizardSelectionLabel.Text = "Selected: none";
+        _wizardSelectionLabel.Dock = DockStyle.Fill;
+        _wizardSelectionLabel.AutoEllipsis = true;
+        _wizardSelectionLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _wizardSelectionLabel.ForeColor = Color.FromArgb(92, 106, 126);
+        stepsLayout.Controls.Add(_wizardSelectionLabel, 0, 2);
+
+        var stepNames = PairingWizardStepNames();
+        for (var i = 0; i < stepNames.Length; i++)
+        {
+            var label = CreateWizardStepLabel(i + 1, stepNames[i]);
+            _wizardStepLabels[i] = label;
+            stepsLayout.Controls.Add(label, 0, i + 3);
+        }
+        layout.Controls.Add(stepsGroup, 0, 0);
+
+        var devicesGroup = CreateGroup("Linux devices");
+        var devicesLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        devicesLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        devicesLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        devicesGroup.Controls.Add(devicesLayout);
+
+        devicesLayout.Controls.Add(BuildPairingWizardActionsPanel(), 0, 0);
+        ConfigureList(_wizardLinuxBluetoothList, ("State", 82), ("Name", 300), ("MAC", 170), ("Batt", 72));
+        _wizardLinuxBluetoothList.MultiSelect = true;
+        _wizardLinuxBluetoothList.ShowItemToolTips = true;
+        _wizardLinuxBluetoothList.SmallImageList = _linuxBluetoothRowSizer;
+        _wizardLinuxBluetoothList.Resize += (_, _) => ResizeWizardLinuxBluetoothColumns();
+        _wizardLinuxBluetoothList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_wizardLinuxBluetoothList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Pairing wizard device selected", ("device", SelectedListText(_wizardLinuxBluetoothList)));
+            }
+            RefreshPairingWizardStatus();
+        };
+        devicesLayout.Controls.Add(_wizardLinuxBluetoothList, 0, 1);
+        layout.Controls.Add(devicesGroup, 1, 0);
+
+        return page;
+    }
+
+    private Control BuildPairingWizardActionsPanel()
+    {
+        var flow = CreateFullWidthToolbarFlow();
+        flow.Padding = IsCompactUi() ? new Padding(8, 5, 8, 4) : new Padding(12, 8, 12, 6);
+        AddFlowButton(flow, "Refresh setup", async () =>
+        {
+            await RefreshChecksAsync();
+            await RefreshWslDistrosAsync();
+            await RefreshUsbipdDevicesAsync();
+        });
+        AddFlowButton(flow, "Start bridge", StartBridge, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(flow, "Scan", async () => await RefreshLinuxBluetoothDevicesAsync(8));
+        AddFlowButton(flow, "Pair", async () => await RunLinuxCommandForSelectedAsync("pair"));
+        AddFlowButton(flow, "Connect", async () => await RunLinuxCommandForSelectedAsync("connect"));
+        AddFlowButton(flow, "Use selected", UseSelectedLinuxControllers);
+        AddFlowButton(flow, "Test input", () => SelectTabIfExists("Controller Test"));
+        return flow;
+    }
+
+    private static Label CreateWizardStepLabel(int index, string text)
+    {
+        return new Label
+        {
+            Text = $"WAIT {index}. {text}",
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold),
+            ForeColor = Color.FromArgb(92, 106, 126),
+            Padding = new Padding(4, 0, 0, 0)
+        };
+    }
+
+    private static string[] PairingWizardStepNames()
+    {
+        return new[]
+        {
+            "Requirements",
+            "WSL distro",
+            "BT adapter",
+            "Bridge started",
+            "Device scan",
+            "Controller picked",
+            "Input test"
+        };
     }
 
     private TabPage BuildFirstRunPage()
@@ -295,8 +647,9 @@ internal sealed class MainForm : Form
         page.Controls.Add(layout);
 
         var wslGroup = CreateGroup("WSL distro");
-        var wslPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), WrapContents = false };
+        var wslPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), WrapContents = true, AutoScroll = true };
         _wslCombo.Width = 260;
+        _wslCombo.SelectedIndexChanged += (_, _) => LogUserSelection("WSL distro selected", ("candidateDistro", _wslCombo.SelectedItem?.ToString()));
         wslPanel.Controls.Add(_wslCombo);
         AddFlowButton(wslPanel, "Use", SaveSelectedWslDistro);
         AddFlowButton(wslPanel, "Refresh", async () => await RefreshWslDistrosAsync());
@@ -304,7 +657,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(wslGroup, 0, 0);
 
         var busGroup = CreateGroup("Bluetooth BUSID");
-        var busPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), WrapContents = false };
+        var busPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(12), WrapContents = true, AutoScroll = true };
         _selectedBusText.Width = 120;
         busPanel.Controls.Add(_selectedBusText);
         AddFlowButton(busPanel, "Save", SaveSelectedBluetoothBusId);
@@ -320,6 +673,7 @@ internal sealed class MainForm : Form
             if (_usbipdList.SelectedItems.Count > 0)
             {
                 _selectedBusText.Text = _usbipdList.SelectedItems[0].Text;
+                LogUserSelection("USB/IP device selected", ("device", SelectedListText(_usbipdList, 1)));
                 RefreshSelectionLabels();
             }
         };
@@ -336,42 +690,74 @@ internal sealed class MainForm : Form
     private TabPage BuildBluetoothPage()
     {
         var page = CreatePage("Bluetooth");
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 240));
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14) };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
         var windowsGroup = CreateGroup("Windows Bluetooth");
+        var windowsLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        windowsLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        windowsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        windowsGroup.Controls.Add(windowsLayout);
         ConfigureList(_windowsBluetoothList, ("Name", 300), ("Status", 90), ("Instance ID", 480));
-        windowsGroup.Controls.Add(_windowsBluetoothList);
-        windowsGroup.Controls.Add(BuildTopPanel("",
-            ("Refresh", async () => await RefreshWindowsBluetoothAsync()),
-            ("Enable", async () => await SetSelectedWindowsBluetoothEnabledAsync(true)),
-            ("Disable", async () => await SetSelectedWindowsBluetoothEnabledAsync(false))));
+        _windowsBluetoothList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_windowsBluetoothList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Windows Bluetooth device selected", ("device", SelectedListText(_windowsBluetoothList, 1)));
+            }
+        };
+        windowsLayout.Controls.Add(BuildWindowsBluetoothActionsPanel(), 0, 0);
+        windowsLayout.Controls.Add(_windowsBluetoothList, 0, 1);
         layout.Controls.Add(windowsGroup, 0, 0);
 
-        var linuxActions = BuildTopPanel("Linux / BlueZ devices",
-            ("Refresh", async () => await RefreshLinuxBluetoothDevicesAsync(0)),
-            ("Scan", async () => await RefreshLinuxBluetoothDevicesAsync(8)),
-            ("Use selected", UseSelectedLinuxControllers),
-            ("Automatic", ClearSelectedLinuxControllers),
-            ("Pair", async () => await RunLinuxCommandForSelectedAsync("pair")),
-            ("Connect", async () => await RunLinuxCommandForSelectedAsync("connect")),
-            ("Disconnect", async () => await RunLinuxCommandForSelectedAsync("disconnect")),
-            ("Repair", async () => await RepairLinuxBluetoothAsync()),
-            ("Capacity", async () => await CreateCapacityReportAsync()));
-        ConfigureBatteryOverlayToggle();
-        AddTopPanelControl(linuxActions, _batteryOverlayCheck);
-        layout.Controls.Add(linuxActions, 1, 0);
-
         var linuxGroup = CreateGroup("Visible to Linux");
-        ConfigureList(_linuxBluetoothList, ("MAC / Source", 150), ("Name", 240), ("Connected", 90), ("Paired", 80), ("Trusted", 80), ("Battery", 80), ("Stadia", 70));
+        var linuxLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(0, 8, 0, 0)
+        };
+        linuxLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        linuxLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        linuxLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        linuxGroup.Controls.Add(linuxLayout);
+
+        linuxLayout.Controls.Add(BuildLinuxBluetoothActionsPanel(), 0, 0);
+
+        _linuxBluetoothSummaryLabel.Name = "LinuxBluetoothSummaryLabel";
+        _linuxBluetoothSummaryLabel.Dock = DockStyle.Fill;
+        _linuxBluetoothSummaryLabel.Padding = new Padding(8, 6, 0, 0);
+        _linuxBluetoothSummaryLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _linuxBluetoothSummaryLabel.Font = new Font("Segoe UI", 9, FontStyle.Regular);
+        _linuxBluetoothSummaryLabel.ForeColor = Color.FromArgb(92, 106, 126);
+        _linuxBluetoothSummaryLabel.Text = "Linux devices: not refreshed yet";
+        linuxLayout.Controls.Add(_linuxBluetoothSummaryLabel, 0, 1);
+
+        ConfigureList(_linuxBluetoothList, ("State", 82), ("Name", 340), ("MAC / Source", 170), ("Paired", 72), ("Trust", 72), ("Batt", 72), ("Source", 90));
         _linuxBluetoothList.MultiSelect = true;
-        linuxGroup.Controls.Add(_linuxBluetoothList);
+        _linuxBluetoothList.ShowItemToolTips = true;
+        _linuxBluetoothList.SmallImageList = _linuxBluetoothRowSizer;
+        _linuxBluetoothList.Resize += (_, _) => ResizeLinuxBluetoothColumns();
+        _linuxBluetoothList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_linuxBluetoothList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Linux Bluetooth device selected", ("device", SelectedListText(_linuxBluetoothList)));
+            }
+            RefreshPairingWizardStatus();
+        };
+        linuxLayout.Controls.Add(_linuxBluetoothList, 0, 2);
         layout.Controls.Add(linuxGroup, 0, 1);
-        layout.SetColumnSpan(linuxGroup, 2);
         return page;
     }
 
@@ -385,7 +771,14 @@ internal sealed class MainForm : Form
 
         var listGroup = CreateGroup("Saved controllers");
         ConfigureList(_profilesList, ("Name", 180), ("MAC", 150), ("Slot", 70), ("Auto", 70));
-        _profilesList.SelectedIndexChanged += (_, _) => LoadSelectedProfileIntoEditor();
+        _profilesList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_profilesList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Controller profile selected", ("profile", SelectedListText(_profilesList, 1)));
+            }
+            LoadSelectedProfileIntoEditor();
+        };
         listGroup.Controls.Add(_profilesList);
         listGroup.Controls.Add(BuildTopPanel("", ("Refresh", RefreshProfiles), ("Apply auto", ApplyAutoProfiles), ("Delete", DeleteSelectedProfile)));
         layout.Controls.Add(listGroup, 0, 0);
@@ -436,7 +829,11 @@ internal sealed class MainForm : Form
         _controllerPadCombo.Width = 150;
         _controllerPadCombo.Items.AddRange(new object[] { "Auto active", "P1", "P2", "P3", "P4" });
         _controllerPadCombo.SelectedIndex = 0;
-        _controllerPadCombo.SelectedIndexChanged += (_, _) => RefreshControllerTelemetry();
+        _controllerPadCombo.SelectedIndexChanged += (_, _) =>
+        {
+            LogUserSelection("Controller test pad selected", ("pad", _controllerPadCombo.SelectedItem?.ToString()));
+            RefreshControllerTelemetry();
+        };
         padPanel.Controls.Add(new Label { Text = "Pad", Width = 38, Height = 26, TextAlign = ContentAlignment.MiddleLeft });
         padPanel.Controls.Add(_controllerPadCombo);
         telemetryLayout.Controls.Add(padPanel, 0, 0);
@@ -471,12 +868,27 @@ internal sealed class MainForm : Form
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 230 };
         page.Controls.Add(split);
         ConfigureList(_macroList, ("Chord", 160), ("Shortcut", 520));
+        _macroList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_macroList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Macro mapping selected", ("mapping", SelectedListText(_macroList, 1)));
+            }
+        };
         split.Panel1.Controls.Add(_macroList);
-        ConfigureLogBox(_macroBox, "");
+        ConfigureLogBox(_macroBox, "", readOnly: false);
         _macroBox.BackColor = Color.White;
         _macroBox.ForeColor = Color.FromArgb(25, 30, 40);
         split.Panel2.Controls.Add(_macroBox);
-        var visual = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(12, 8, 12, 8), WrapContents = false };
+        var visual = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            MinimumSize = new Size(0, 56),
+            Padding = new Padding(12, 8, 12, 8),
+            WrapContents = true
+        };
         _macroChordCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _macroChordCombo.Width = 145;
         _macroChordCombo.Items.AddRange(BuildMacroChordCodes().Cast<object>().ToArray());
@@ -501,12 +913,34 @@ internal sealed class MainForm : Form
     private TabPage BuildLogsPage()
     {
         var page = CreatePage("Logs");
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 300 };
-        page.Controls.Add(split);
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(14)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 33));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 33));
+        page.Controls.Add(layout);
+
         ConfigureLogBox(_statusLogBox, "Status log not loaded yet.");
         ConfigureLogBox(_linuxLogBox, "Linux log not loaded yet.");
-        split.Panel1.Controls.Add(_statusLogBox);
-        split.Panel2.Controls.Add(_linuxLogBox);
+        ConfigureLogBox(_userActionLogBox, "User action log not loaded yet.");
+
+        var statusGroup = CreateGroup("Status timeline");
+        statusGroup.Controls.Add(_statusLogBox);
+        layout.Controls.Add(statusGroup, 0, 0);
+
+        var linuxGroup = CreateGroup("Linux core");
+        linuxGroup.Controls.Add(_linuxLogBox);
+        layout.Controls.Add(linuxGroup, 0, 1);
+
+        var userGroup = CreateGroup("User actions");
+        userGroup.Controls.Add(_userActionLogBox);
+        layout.Controls.Add(userGroup, 0, 2);
+
         page.Controls.Add(BuildTopPanel("Live logs", ("Refresh", RefreshLogs), ("Open logs", () => Process.Start("explorer.exe", $"\"{_paths.LogDirectory}\""))));
         return page;
     }
@@ -543,28 +977,39 @@ internal sealed class MainForm : Form
         _trayIcon.Text = "Stadia X";
         _trayIcon.Visible = true;
         _trayIcon.ContextMenuStrip = new ContextMenuStrip();
-        _trayIcon.ContextMenuStrip.Items.Add("Show", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
-        _trayIcon.ContextMenuStrip.Items.Add("Start", null, (_, _) => StartBridge());
-        _trayIcon.ContextMenuStrip.Items.Add("Stop", null, (_, _) => StopBridge());
-        _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (_, _) => Close());
-        _trayIcon.DoubleClick += (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); };
+        _trayIcon.ContextMenuStrip.Items.Add("Show", null, (_, _) => { LogUserAction("Tray show"); Show(); WindowState = FormWindowState.Normal; Activate(); });
+        _trayIcon.ContextMenuStrip.Items.Add("Start", null, (_, _) => { LogUserAction("Tray start"); StartBridge(); });
+        _trayIcon.ContextMenuStrip.Items.Add("Stop", null, (_, _) => { LogUserAction("Tray stop"); StopBridge(); });
+        _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (_, _) => { LogUserAction("Tray exit"); Close(); });
+        _trayIcon.DoubleClick += (_, _) => { LogUserAction("Tray double-click show"); Show(); WindowState = FormWindowState.Normal; Activate(); };
     }
 
     private async Task RefreshEverythingAsync()
     {
+        LogUserAction("Refresh all requested");
+        BeginOperationProgress("Refreshing app state", "Checking requirements", 5);
         _statusLabel.Text = "Refreshing Stadia X state...";
         await RefreshChecksAsync();
+        SetOperationProgress("Refreshing app state", "Reading WSL distros", 18);
         await RefreshWslDistrosAsync();
+        SetOperationProgress("Refreshing app state", "Reading USB/IP devices", 32);
         await RefreshUsbipdDevicesAsync();
+        SetOperationProgress("Refreshing app state", "Reading Windows Bluetooth devices", 46);
         await RefreshWindowsBluetoothAsync();
-        await RefreshLinuxBluetoothDevicesAsync(0);
+        SetOperationProgress("Refreshing app state", "Reading Linux Bluetooth devices", 62);
+        await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
+        SetOperationProgress("Refreshing app state", "Loading profiles and macros", 78);
         RefreshProfiles();
         LoadMacroConfig();
         RefreshControllerTelemetry();
         RefreshLogs();
+        SetOperationProgress("Refreshing app state", "Updating battery status", 90);
         await UpdateBatteryAsync();
         RefreshSelectionLabels();
+        RefreshDashboardUi();
+        RefreshPairingWizardStatus();
         _statusLabel.Text = $"Ready - {_paths.Version}";
+        CompleteOperationProgress("Refreshing app state", $"Ready - {_paths.Version}");
     }
 
     private async Task RefreshChecksAsync()
@@ -583,29 +1028,39 @@ internal sealed class MainForm : Form
         var missing = checks.Count(c => c.State == CheckState.Missing);
         var warn = checks.Count(c => c.State == CheckState.Warn);
         _statusLabel.Text = missing > 0 ? $"{missing} missing requirement(s)" : warn > 0 ? $"{warn} warning(s)" : $"Ready - {_paths.Version}";
+        RefreshPairingWizardStatus();
     }
 
     private async Task RefreshWslDistrosAsync()
     {
         var selected = _native.GetSelectedWslDistro();
-        _wslCombo.Items.Clear();
-        _wslCombo.Items.Add("Automatic");
-        foreach (var distro in await _native.GetWslDistrosAsync())
+        _suppressSelectionLogging = true;
+        try
         {
-            _wslCombo.Items.Add($"{distro.Name}  (WSL{distro.Version}, {distro.State})");
-        }
-        _wslCombo.SelectedIndex = 0;
-        if (!string.IsNullOrWhiteSpace(selected))
-        {
-            for (var i = 0; i < _wslCombo.Items.Count; i++)
+            _wslCombo.Items.Clear();
+            _wslCombo.Items.Add("Automatic");
+            foreach (var distro in await _native.GetWslDistrosAsync())
             {
-                if (_wslCombo.Items[i]?.ToString()?.StartsWith(selected + " ", StringComparison.Ordinal) == true)
+                _wslCombo.Items.Add($"{distro.Name}  (WSL{distro.Version}, {distro.State})");
+            }
+            _wslCombo.SelectedIndex = 0;
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                for (var i = 0; i < _wslCombo.Items.Count; i++)
                 {
-                    _wslCombo.SelectedIndex = i;
-                    break;
+                    if (_wslCombo.Items[i]?.ToString()?.StartsWith(selected + " ", StringComparison.Ordinal) == true)
+                    {
+                        _wslCombo.SelectedIndex = i;
+                        break;
+                    }
                 }
             }
         }
+        finally
+        {
+            _suppressSelectionLogging = false;
+        }
+        RefreshPairingWizardStatus();
     }
 
     private async Task RefreshUsbipdDevicesAsync()
@@ -635,6 +1090,7 @@ internal sealed class MainForm : Form
             _selectedBusText.Text = autoDevice.BusId;
         }
         RefreshSelectionLabels();
+        RefreshPairingWizardStatus();
     }
 
     private async Task RefreshWindowsBluetoothAsync()
@@ -655,44 +1111,249 @@ internal sealed class MainForm : Form
 
         var selectedDevice = SelectedUsbipdDevice();
         _capacityLabel.Text = NativeControlServices.EstimateCapacity(selectedDevice, devices);
+        RefreshPairingWizardStatus();
     }
 
-    private async Task RefreshLinuxBluetoothDevicesAsync(int scanSeconds)
+    private async Task<IReadOnlyList<LinuxBluetoothDevice>> RefreshLinuxBluetoothDevicesAsync(int scanSeconds, bool updateProgress = true)
     {
         if (_linuxRefreshInProgress)
         {
-            return;
+            if (updateProgress)
+            {
+                SetOperationProgress("Linux Bluetooth", "Another Linux refresh is already running", 100);
+            }
+            return Array.Empty<LinuxBluetoothDevice>();
         }
 
+        var title = scanSeconds > 0 ? "Scanning Linux Bluetooth" : "Refreshing Linux Bluetooth";
         _linuxRefreshInProgress = true;
-        _linuxBluetoothList.Items.Clear();
+        if (updateProgress)
+        {
+            BeginOperationProgress(title, scanSeconds > 0 ? "Preparing bluetoothctl scan" : "Querying BlueZ devices", 8);
+        }
+
         try
         {
-            var devices = (await _native.GetLinuxBluetoothDevicesAsync(scanSeconds)).ToList();
-            AddReceiverFallbackDevices(devices);
-            foreach (var device in devices)
+            IReadOnlyList<LinuxBluetoothDevice> nativeDevices;
+            if (scanSeconds > 0 && updateProgress)
             {
-                var item = new ListViewItem(device.Mac);
-                item.SubItems.Add(device.Name);
-                item.SubItems.Add(device.Connected);
-                item.SubItems.Add(device.Paired);
-                item.SubItems.Add(device.Trusted);
-                item.SubItems.Add(device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%");
-                item.SubItems.Add(device.IsStadia ? "yes" : "no");
-                item.Tag = device;
-                item.ForeColor = device.IsStadia ? Color.FromArgb(34, 120, 72) : Color.FromArgb(70, 70, 70);
-                if (!NativeControlServices.IsBluetoothMac(device.Mac))
+                nativeDevices = await AwaitWithTimedProgressAsync(
+                    _native.GetLinuxBluetoothDevicesAsync(scanSeconds),
+                    15,
+                    72,
+                    TimeSpan.FromSeconds(scanSeconds + 3),
+                    title,
+                    "Scanning for Bluetooth devices").ConfigureAwait(true);
+            }
+            else
+            {
+                if (updateProgress)
                 {
-                    item.ForeColor = Color.FromArgb(45, 91, 150);
+                    SetOperationProgress(title, "Reading devices from Linux", 32);
                 }
-                _linuxBluetoothList.Items.Add(item);
+                nativeDevices = await _native.GetLinuxBluetoothDevicesAsync(scanSeconds).ConfigureAwait(true);
+            }
+
+            if (updateProgress)
+            {
+                SetOperationProgress(title, "Merging receiver telemetry", 76);
+            }
+            var devices = nativeDevices.ToList();
+            AddReceiverFallbackDevices(devices);
+
+            if (updateProgress)
+            {
+                SetOperationProgress(title, "Rendering device list", 84);
+            }
+            var visibleDevices = devices.ToArray();
+            PopulateLinuxBluetoothList(_linuxBluetoothList, visibleDevices, compact: false);
+            PopulateLinuxBluetoothList(_wizardLinuxBluetoothList, visibleDevices, compact: true);
+            _lastLinuxBluetoothDevices = visibleDevices;
+            ResizeLinuxBluetoothColumns();
+            ResizeWizardLinuxBluetoothColumns();
+            UpdateLinuxBluetoothSummary(devices);
+            RefreshDashboardUi();
+            RefreshPairingWizardStatus();
+
+            if (updateProgress)
+            {
+                SetOperationProgress(title, "Updating battery status", 94);
             }
             await UpdateBatteryAsync(devices);
+
+            if (updateProgress)
+            {
+                CompleteOperationProgress(title, devices.Count == 0 ? "No Linux Bluetooth devices visible yet" : $"{devices.Count} Linux device(s) visible");
+            }
+            return devices;
+        }
+        catch (Exception ex)
+        {
+            if (updateProgress)
+            {
+                FailOperationProgress(title, "Linux Bluetooth refresh failed");
+            }
+            _linuxBluetoothSummaryLabel.Text = "Linux devices: refresh failed - " + ex.Message;
+            _linuxBluetoothSummaryLabel.ForeColor = Color.FromArgb(180, 45, 45);
+            throw;
         }
         finally
         {
             _linuxRefreshInProgress = false;
         }
+    }
+
+    private void UpdateLinuxBluetoothSummary(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        if (devices.Count == 0)
+        {
+            _linuxBluetoothSummaryLabel.Text = "Linux devices: none visible. Start the bridge, then press Scan.";
+            _linuxBluetoothSummaryLabel.ForeColor = Color.FromArgb(180, 45, 45);
+            return;
+        }
+
+        var connected = devices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var paired = devices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var stadia = devices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+        var firstBattery = devices
+            .Where(device => device.BatteryPercent.HasValue)
+            .Select(device => device.BatteryPercent!.Value + "%")
+            .FirstOrDefault();
+
+        _linuxBluetoothSummaryLabel.Text = $"Linux devices: {devices.Count} visible, {connected} connected, {paired} paired, {stadia} Stadia" +
+                                           (string.IsNullOrWhiteSpace(firstBattery) ? "" : $" - battery {firstBattery}");
+        _linuxBluetoothSummaryLabel.ForeColor = connected > 0 || stadia > 0 ? Color.FromArgb(34, 120, 72) : Color.FromArgb(92, 106, 126);
+    }
+
+    private static void PopulateLinuxBluetoothList(ListView list, IReadOnlyList<LinuxBluetoothDevice> devices, bool compact)
+    {
+        if (list.IsDisposed)
+        {
+            return;
+        }
+
+        list.BeginUpdate();
+        try
+        {
+            list.Items.Clear();
+            foreach (var device in devices)
+            {
+                list.Items.Add(CreateLinuxBluetoothListItem(device, compact));
+            }
+        }
+        finally
+        {
+            try
+            {
+                list.EndUpdate();
+            }
+            catch (InvalidOperationException)
+            {
+            }
+        }
+    }
+
+    private static ListViewItem CreateLinuxBluetoothListItem(LinuxBluetoothDevice device, bool compact)
+    {
+        var item = new ListViewItem(LinuxDeviceStateText(device))
+        {
+            Tag = device,
+            ToolTipText = $"{device.Name} {device.Mac} connected={EmptyAsDash(device.Connected)} paired={EmptyAsDash(device.Paired)} trusted={EmptyAsDash(device.Trusted)}",
+            ForeColor = LinuxDeviceColor(device)
+        };
+        item.SubItems.Add(device.Name);
+        item.SubItems.Add(device.Mac);
+        if (compact)
+        {
+            item.SubItems.Add(BatteryCellText(device));
+            return item;
+        }
+
+        item.SubItems.Add(YesNoText(device.Paired));
+        item.SubItems.Add(YesNoText(device.Trusted));
+        item.SubItems.Add(BatteryCellText(device));
+        item.SubItems.Add(LinuxDeviceSourceText(device));
+        return item;
+    }
+
+    private static string BatteryCellText(LinuxBluetoothDevice device)
+    {
+        return device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%";
+    }
+
+    private static Color LinuxDeviceColor(LinuxBluetoothDevice device)
+    {
+        if (!NativeControlServices.IsBluetoothMac(device.Mac))
+        {
+            return Color.FromArgb(45, 91, 150);
+        }
+
+        return device.IsStadia ? Color.FromArgb(34, 120, 72) : Color.FromArgb(70, 70, 70);
+    }
+
+    private void ResizeLinuxBluetoothColumns()
+    {
+        if (_linuxBluetoothList.Columns.Count < 7 || _linuxBluetoothList.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var available = Math.Max(620, _linuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var fixedWidth = 82 + 170 + 72 + 72 + 72 + 90;
+        _linuxBluetoothList.Columns[0].Width = 82;
+        _linuxBluetoothList.Columns[2].Width = 170;
+        _linuxBluetoothList.Columns[3].Width = 72;
+        _linuxBluetoothList.Columns[4].Width = 72;
+        _linuxBluetoothList.Columns[5].Width = 72;
+        _linuxBluetoothList.Columns[6].Width = 90;
+        _linuxBluetoothList.Columns[1].Width = Math.Max(260, available - fixedWidth);
+    }
+
+    private void ResizeWizardLinuxBluetoothColumns()
+    {
+        if (_wizardLinuxBluetoothList.Columns.Count < 4 || _wizardLinuxBluetoothList.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var available = Math.Max(520, _wizardLinuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var fixedWidth = 82 + 170 + 72;
+        _wizardLinuxBluetoothList.Columns[0].Width = 82;
+        _wizardLinuxBluetoothList.Columns[2].Width = 170;
+        _wizardLinuxBluetoothList.Columns[3].Width = 72;
+        _wizardLinuxBluetoothList.Columns[1].Width = Math.Max(220, available - fixedWidth);
+    }
+
+    private static string LinuxDeviceStateText(LinuxBluetoothDevice device)
+    {
+        if (!NativeControlServices.IsBluetoothMac(device.Mac))
+        {
+            return "Receiver";
+        }
+
+        return device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "Connected" : "Seen";
+    }
+
+    private static string LinuxDeviceSourceText(LinuxBluetoothDevice device)
+    {
+        if (!NativeControlServices.IsBluetoothMac(device.Mac))
+        {
+            return "Receiver";
+        }
+
+        return device.IsStadia ? "Stadia" : "BlueZ";
+    }
+
+    private static string YesNoText(string value)
+    {
+        return value.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "yes" :
+            value.Equals("no", StringComparison.OrdinalIgnoreCase) ? "no" :
+            "-";
+    }
+
+    private static string EmptyAsDash(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "-" : value;
     }
 
     private void AddReceiverFallbackDevices(List<LinuxBluetoothDevice> devices)
@@ -751,6 +1412,7 @@ internal sealed class MainForm : Form
         {
             _batteryLabel.Text = "Battery: not available yet. Start the bridge and connect a controller.";
             HideBatteryOverlay();
+            RefreshDashboardUi();
             return;
         }
 
@@ -768,12 +1430,15 @@ internal sealed class MainForm : Form
         {
             HideBatteryOverlay();
         }
+        RefreshDashboardUi();
     }
 
     private void RefreshProfiles()
     {
         _profilesList.Items.Clear();
-        foreach (var profile in _native.GetProfiles())
+        var profiles = _native.GetProfiles().ToArray();
+        _lastProfiles = profiles;
+        foreach (var profile in profiles)
         {
             var item = new ListViewItem(profile.Name);
             item.SubItems.Add(profile.Mac);
@@ -783,6 +1448,7 @@ internal sealed class MainForm : Form
             _profilesList.Items.Add(item);
         }
         RefreshSelectionLabels();
+        RefreshDashboardUi();
     }
 
     private void LoadMacroConfig()
@@ -810,12 +1476,16 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            _lastTelemetrySnapshot = null;
             AddListRow(_controllerList, "-", "ERROR", ex.Message, Color.FromArgb(180, 45, 45));
             _controllerVisualizer.SetTelemetry(null, "Controller telemetry could not be read.");
             _controllerVisualStatusLabel.Text = "Telemetry read failed";
+            RefreshDashboardUi();
+            RefreshPairingWizardStatus();
             return;
         }
 
+        _lastTelemetrySnapshot = snapshot;
         foreach (var controller in snapshot.Controllers)
         {
             var pressed = controller.Buttons.Where(pair => pair.Value).Select(pair => pair.Key).DefaultIfEmpty("-").ToArray();
@@ -832,6 +1502,8 @@ internal sealed class MainForm : Form
         }
 
         UpdateControllerVisualizer(snapshot);
+        RefreshDashboardUi();
+        RefreshPairingWizardStatus();
     }
 
     private void UpdateControllerVisualizer(ControllerTelemetrySnapshot snapshot)
@@ -860,14 +1532,180 @@ internal sealed class MainForm : Form
         _controllerVisualStatusLabel.Text = status;
     }
 
+    private void RefreshDashboardUi()
+    {
+        if (_dashboardPadNameLabels[0] is null)
+        {
+            return;
+        }
+
+        var profiles = _lastProfiles;
+        var controllers = _lastTelemetrySnapshot?.Controllers ?? Array.Empty<ControllerTelemetryRow>();
+        var stadiaDevices = _lastLinuxBluetoothDevices
+            .Where(IsLikelyControllerDevice)
+            .OrderByDescending(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var activeCount = controllers.Count(controller => controller.Active || controller.PacketsPerSecond > 0);
+        var connectedCount = stadiaDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var pairedCount = stadiaDevices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
+
+        _dashboardStatusLabel.Text = activeCount > 0
+            ? $"{activeCount} controller(s) sending input"
+            : connectedCount > 0
+                ? $"{connectedCount} controller(s) connected"
+                : pairedCount > 0
+                    ? $"{pairedCount} controller(s) paired"
+                    : "No active controller yet";
+        _dashboardDetailLabel.Text = $"Linux devices {stadiaDevices.Length} - profiles {profiles.Count} - bridge data {(_lastTelemetrySnapshot is null ? "not read" : _lastTelemetrySnapshot.ReadAt.ToLocalTime().ToString("HH:mm:ss"))}";
+
+        for (var slot = 1; slot <= 4; slot++)
+        {
+            var profile = profiles.FirstOrDefault(item => item.Slot == slot);
+            var device = FindDashboardDevice(slot, stadiaDevices, profile);
+            var controller = controllers.FirstOrDefault(item => item.Index == slot);
+            var hasInput = controller is not null && (controller.Active || controller.PacketsPerSecond > 0);
+            var state = hasInput
+                ? "Active"
+                : device?.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) == true
+                    ? "Connected"
+                    : device?.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase) == true
+                        ? "Paired"
+                        : profile is not null
+                            ? "Profile saved"
+                            : "Waiting";
+
+            _dashboardPadNameLabels[slot - 1].Text = ShortPadName(device?.Name ?? profile?.Name ?? "Pad P" + slot);
+            _dashboardPadStatusLabels[slot - 1].Text = state;
+            _dashboardPadStatusLabels[slot - 1].ForeColor = DashboardStateColor(state);
+            _dashboardPadBatteryLabels[slot - 1].Text = device?.BatteryPercent is null ? "Battery --" : "Battery " + device.BatteryPercent.Value + "%";
+            _dashboardPadBatteryBars[slot - 1].Value = device?.BatteryPercent is null ? 0 : Math.Clamp(device.BatteryPercent.Value, 0, 100);
+            _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
+            _dashboardPadMacLabels[slot - 1].Text = device?.Mac ?? profile?.Mac ?? "Automatic";
+        }
+    }
+
+    private void RefreshPairingWizardStatus()
+    {
+        if (_wizardStepLabels[0] is null)
+        {
+            return;
+        }
+
+        var requirementsKnown = _setupChecksList.Items.Count > 0;
+        var missingRequirements = _setupChecksList.Items.Cast<ListViewItem>()
+            .Count(item => SubItemText(item, 1).Equals("MISSING", StringComparison.OrdinalIgnoreCase));
+        var warningRequirements = _setupChecksList.Items.Cast<ListViewItem>()
+            .Count(item => SubItemText(item, 1).Equals("WARN", StringComparison.OrdinalIgnoreCase));
+        var requirementsOk = requirementsKnown && missingRequirements == 0;
+        var wslOk = _wslCombo.Items.Count > 1 || !string.IsNullOrWhiteSpace(_native.GetSelectedWslDistro());
+        var adapterOk = !string.IsNullOrWhiteSpace(_selectedBusText.Text) ||
+                        _usbipdList.Items.Cast<ListViewItem>().Any(item => item.Tag is UsbipdDevice device && device.IsBluetooth);
+        var bridgeOk = IsControllerStateFresh() || _lastLinuxBluetoothDevices.Count > 0;
+        var scanOk = _lastLinuxBluetoothDevices.Count > 0;
+        var selectedDevices = SelectedLinuxBluetoothDevices();
+        var selectionOk = selectedDevices.Count > 0;
+        var inputOk = _lastTelemetrySnapshot?.Controllers.Any(controller => controller.Active || controller.PacketsPerSecond > 0) == true;
+
+        var stepNames = PairingWizardStepNames();
+        var states = new[]
+        {
+            (Done: requirementsOk, Warn: requirementsKnown && missingRequirements > 0, Detail: !requirementsKnown ? "" : missingRequirements > 0 ? $" - {missingRequirements} missing" : warningRequirements > 0 ? $" - {warningRequirements} warning(s)" : ""),
+            (Done: wslOk, Warn: false, Detail: ""),
+            (Done: adapterOk, Warn: false, Detail: string.IsNullOrWhiteSpace(_selectedBusText.Text) ? "" : " - " + _selectedBusText.Text.Trim()),
+            (Done: bridgeOk, Warn: false, Detail: ""),
+            (Done: scanOk, Warn: false, Detail: scanOk ? " - " + _lastLinuxBluetoothDevices.Count + " visible" : ""),
+            (Done: selectionOk, Warn: false, Detail: selectionOk ? " - " + selectedDevices.Count + " selected" : ""),
+            (Done: inputOk, Warn: false, Detail: "")
+        };
+
+        var completed = 0;
+        for (var i = 0; i < stepNames.Length; i++)
+        {
+            var state = states[i];
+            if (state.Done)
+            {
+                completed++;
+            }
+
+            var prefix = state.Done ? "OK" : state.Warn ? "WARN" : "WAIT";
+            var label = _wizardStepLabels[i];
+            label.Text = $"{prefix} {i + 1}. {stepNames[i]}{state.Detail}";
+            label.ForeColor = state.Done
+                ? Color.FromArgb(34, 120, 72)
+                : state.Warn
+                    ? Color.FromArgb(180, 45, 45)
+                    : Color.FromArgb(92, 106, 126);
+        }
+
+        _wizardProgress.Value = Math.Clamp((int)Math.Round(completed * 100.0 / stepNames.Length), 0, 100);
+        _wizardStatusLabel.Text = inputOk
+            ? "Input received"
+            : selectionOk
+                ? "Ready for pair/connect"
+                : scanOk
+                    ? "Select a Linux device"
+                    : bridgeOk
+                        ? "Scan for devices"
+                        : adapterOk
+                            ? "Start the bridge"
+                            : "Complete setup";
+        _wizardSelectionLabel.Text = selectionOk
+            ? "Selected: " + string.Join("   ", selectedDevices.Take(3).Select(device => $"{device.Name} {device.Mac}"))
+            : "Selected: none";
+    }
+
+    private static bool IsLikelyControllerDevice(LinuxBluetoothDevice device)
+    {
+        return device.IsStadia ||
+               device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase) ||
+               device.Mac.StartsWith("P", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static LinuxBluetoothDevice? FindDashboardDevice(int slot, IReadOnlyList<LinuxBluetoothDevice> devices, ControllerProfile? profile)
+    {
+        if (profile is not null)
+        {
+            var byProfile = devices.FirstOrDefault(device => device.Mac.Equals(profile.Mac, StringComparison.OrdinalIgnoreCase));
+            if (byProfile is not null)
+            {
+                return byProfile;
+            }
+        }
+
+        return devices.Count >= slot ? devices[slot - 1] : null;
+    }
+
+    private static string ShortPadName(string value)
+    {
+        value = string.IsNullOrWhiteSpace(value) ? "Controller" : value.Trim();
+        return value.Length <= 28 ? value : value[..25] + "...";
+    }
+
+    private static Color DashboardStateColor(string state)
+    {
+        return state switch
+        {
+            "Active" or "Connected" => Color.FromArgb(34, 120, 72),
+            "Paired" => Color.FromArgb(45, 91, 150),
+            "Profile saved" => Color.FromArgb(170, 104, 0),
+            _ => Color.FromArgb(92, 106, 126)
+        };
+    }
+
     private void RefreshLogs()
     {
         var statusText = LogReader.Tail(_paths.StatusLog, 140);
         var linuxText = LogReader.Tail(_paths.LinuxLog, 180);
+        var actionText = LogReader.Tail(_paths.UserActionLog, 160);
         _controlStatusLogBox.Text = statusText;
+        _dashboardActionLogBox.Text = actionText;
         _statusLogBox.Text = statusText;
         _controlLinuxLogBox.Text = linuxText;
         _linuxLogBox.Text = linuxText;
+        _userActionLogBox.Text = actionText;
     }
 
     private void RefreshSelectionLabels()
@@ -882,8 +1720,242 @@ internal sealed class MainForm : Form
         _selectionLabel.Text = $"Bluetooth BUSID: {bus}   WSL: {(string.IsNullOrWhiteSpace(distro) ? "automatic" : distro)}   Controllers: {(macs.Count == 0 ? "automatic" : string.Join(", ", macs))}";
     }
 
+    private void LogUserAction(string action, params (string Key, string? Value)[] details)
+    {
+        try
+        {
+            var selectedMacs = _native.GetSelectedControllerMacs();
+            var context = new List<(string Key, string? Value)>
+            {
+                ("tab", _tabs.SelectedTab?.Text),
+                ("visibleBusId", _selectedBusText.Text),
+                ("savedBusId", _native.GetSelectedBluetoothBusId()),
+                ("wslSelection", _wslCombo.SelectedItem?.ToString()),
+                ("savedWsl", _native.GetSelectedWslDistro()),
+                ("selectedControllers", selectedMacs.Count == 0 ? "automatic" : string.Join(",", selectedMacs)),
+                ("usbipdSelected", SelectedListText(_usbipdList)),
+                ("linuxSelected", SelectedListText(_linuxBluetoothList)),
+                ("wizardLinuxSelected", SelectedListText(_wizardLinuxBluetoothList)),
+                ("windowsBtSelected", SelectedListText(_windowsBluetoothList)),
+                ("profileSelected", SelectedListText(_profilesList))
+            };
+            context.AddRange(details);
+            _actionLogger.Record(action, context.ToArray());
+        }
+        catch
+        {
+            // User action logging must never block the control flow it is observing.
+        }
+    }
+
+    private void LogUserSelection(string action, params (string Key, string? Value)[] details)
+    {
+        if (_suppressSelectionLogging || !Visible)
+        {
+            return;
+        }
+
+        LogUserAction(action, details);
+    }
+
+    private static string SelectedListText(ListView list, int maxItems = 3)
+    {
+        if (list.SelectedItems.Count == 0)
+        {
+            return "";
+        }
+
+        var values = list.SelectedItems
+            .Cast<ListViewItem>()
+            .Take(maxItems)
+            .Select(item => item.Text)
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .ToArray();
+        return values.Length == 0 ? "" : string.Join(",", values);
+    }
+
+    private static string SubItemText(ListViewItem item, int index)
+    {
+        return item.SubItems.Count > index ? item.SubItems[index].Text.Trim() : "";
+    }
+
+    private IReadOnlyList<LinuxBluetoothDevice> SelectedLinuxBluetoothDevices()
+    {
+        var primary = _tabs.SelectedTab?.Name == "Pairing" ? _wizardLinuxBluetoothList : _linuxBluetoothList;
+        var selected = SelectedLinuxBluetoothDevices(primary);
+        if (selected.Count > 0)
+        {
+            return selected;
+        }
+
+        var fallback = ReferenceEquals(primary, _wizardLinuxBluetoothList) ? _linuxBluetoothList : _wizardLinuxBluetoothList;
+        return SelectedLinuxBluetoothDevices(fallback);
+    }
+
+    private static IReadOnlyList<LinuxBluetoothDevice> SelectedLinuxBluetoothDevices(ListView list)
+    {
+        return list.SelectedItems
+            .Cast<ListViewItem>()
+            .Select(item => item.Tag as LinuxBluetoothDevice)
+            .Where(device => device is not null)
+            .Select(device => device!)
+            .ToArray();
+    }
+
+    private void SelectTabIfExists(string name)
+    {
+        var page = _tabs.TabPages[name];
+        if (page is not null)
+        {
+            _tabs.SelectedTab = page;
+        }
+    }
+
+    private void BeginOperationProgress(string title, string detail, int percent = 0)
+    {
+        SetOperationProgress(title, detail, percent);
+    }
+
+    private void SetOperationProgress(string title, string detail, int percent)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(new Action(() => SetOperationProgress(title, detail, percent)));
+            return;
+        }
+
+        _operationProgress.Style = ProgressBarStyle.Continuous;
+        _operationProgress.MarqueeAnimationSpeed = 0;
+        _operationProgress.Value = ClampProgress(percent);
+        _operationTitleLabel.Text = title;
+        _operationDetailLabel.Text = detail;
+        ResetOperationDetailColor();
+        if (!string.IsNullOrWhiteSpace(detail))
+        {
+            _statusLabel.Text = detail;
+        }
+    }
+
+    private void CompleteOperationProgress(string title, string detail)
+    {
+        SetOperationProgress(title, detail, 100);
+    }
+
+    private void FailOperationProgress(string title, string detail)
+    {
+        SetOperationProgress(title, detail, 100);
+        _operationDetailLabel.ForeColor = Color.FromArgb(180, 45, 45);
+    }
+
+    private void ResetOperationDetailColor()
+    {
+        _operationDetailLabel.ForeColor = Color.FromArgb(92, 106, 126);
+    }
+
+    private async Task<T> AwaitWithTimedProgressAsync<T>(Task<T> operation, int startPercent, int maxPercent, TimeSpan expectedDuration, string title, string detail)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var animation = AnimateOperationProgressAsync(startPercent, maxPercent, expectedDuration, title, detail, cancellation.Token);
+        try
+        {
+            return await operation.ConfigureAwait(true);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try
+            {
+                await animation.ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+    }
+
+    private async Task AnimateOperationProgressAsync(int startPercent, int maxPercent, TimeSpan expectedDuration, string title, string detail, CancellationToken cancellationToken)
+    {
+        var started = DateTimeOffset.Now;
+        var durationMs = Math.Max(1, expectedDuration.TotalMilliseconds);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var elapsed = DateTimeOffset.Now - started;
+            var fraction = Math.Clamp(elapsed.TotalMilliseconds / durationMs, 0, 1);
+            var percent = startPercent + (int)Math.Round((maxPercent - startPercent) * fraction);
+            var remaining = Math.Max(0, expectedDuration.TotalSeconds - elapsed.TotalSeconds);
+            SetOperationProgress(title, $"{detail} - about {remaining:0}s left", Math.Min(maxPercent, percent));
+            await Task.Delay(500, cancellationToken).ConfigureAwait(true);
+        }
+    }
+
+    private async Task WaitWithProgressAsync(TimeSpan waitTime, int startPercent, int endPercent, string title, string detail)
+    {
+        var started = DateTimeOffset.Now;
+        var durationMs = Math.Max(1, waitTime.TotalMilliseconds);
+        while (DateTimeOffset.Now - started < waitTime)
+        {
+            var elapsed = DateTimeOffset.Now - started;
+            var fraction = Math.Clamp(elapsed.TotalMilliseconds / durationMs, 0, 1);
+            var percent = startPercent + (int)Math.Round((endPercent - startPercent) * fraction);
+            var remaining = Math.Max(0, waitTime.TotalSeconds - elapsed.TotalSeconds);
+            SetOperationProgress(title, $"{detail} - {remaining:0}s", Math.Min(endPercent, percent));
+            await Task.Delay(500).ConfigureAwait(true);
+        }
+
+        SetOperationProgress(title, detail, endPercent);
+    }
+
+    private static int ClampProgress(int percent)
+    {
+        return Math.Clamp(percent, 0, 100);
+    }
+
+    private static int StagePercent(int stageIndex, int stageCount)
+    {
+        return 5 + (int)Math.Round(Math.Clamp(stageIndex, 0, stageCount) * 88.0 / Math.Max(1, stageCount));
+    }
+
+    private static string LinuxCommandTitle(string command)
+    {
+        return command.ToLowerInvariant() switch
+        {
+            "pair" => "Pairing Linux Bluetooth",
+            "connect" => "Connecting Linux Bluetooth",
+            "disconnect" => "Disconnecting Linux Bluetooth",
+            _ => "Linux Bluetooth command"
+        };
+    }
+
+    private static string LinuxCommandStageName(string command)
+    {
+        return command.ToLowerInvariant() switch
+        {
+            "pair" => "Pairing",
+            "connect" => "Connecting",
+            "disconnect" => "Disconnecting",
+            _ => "Running command"
+        };
+    }
+
+    private static TimeSpan LinuxCommandExpectedDuration(string command)
+    {
+        return command.ToLowerInvariant() switch
+        {
+            "connect" => TimeSpan.FromSeconds(22),
+            "disconnect" => TimeSpan.FromSeconds(8),
+            _ => TimeSpan.FromSeconds(12)
+        };
+    }
+
     private async Task CheckUpdatesAsync()
     {
+        LogUserAction("Check updates requested");
         try
         {
             var release = await _releaseChecker.GetLatestAsync();
@@ -900,6 +1972,7 @@ internal sealed class MainForm : Form
 
     private async Task RunSelfTestAsync()
     {
+        LogUserAction("Self-test requested");
         _statusLabel.Text = "Running self-test...";
         var result = await _selfTestService.RunAsync(json: true);
         _diagnosticsBox.Text = result.Text;
@@ -909,6 +1982,7 @@ internal sealed class MainForm : Form
 
     private async Task CreateSessionReportAsync()
     {
+        LogUserAction("Session report requested");
         var path = await _native.CreateSessionReportAsync();
         _diagnosticsBox.Text = "Session report created:" + Environment.NewLine + path;
         _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
@@ -916,6 +1990,7 @@ internal sealed class MainForm : Form
 
     private async Task CreateSupportBundleAsync()
     {
+        LogUserAction("Support bundle requested");
         var path = await _native.CreateSupportBundleAsync();
         _diagnosticsBox.Text = "Support bundle created:" + Environment.NewLine + path;
         _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
@@ -923,41 +1998,72 @@ internal sealed class MainForm : Form
 
     private void StartBridge()
     {
+        LogUserAction("Start bridge requested");
+        BeginOperationProgress("Starting bridge", "Saving selected Bluetooth adapter", 6);
         if (!string.IsNullOrWhiteSpace(_selectedBusText.Text))
         {
             try { _native.SaveSelectedBluetoothBusId(_selectedBusText.Text); } catch { }
         }
         RefreshSelectionLabels();
+        SetOperationProgress("Starting bridge", "Launching bridge process", 24);
         LaunchSelfCommand("--start-bridge", elevateWhenNeeded: true, "Stadia X start requested. Watch Live Logs for progress.");
+        SetOperationProgress("Starting bridge", "Bridge launch requested; waiting for Linux devices", 38);
         _ = RefreshLinuxListAfterBridgeStartAsync();
         _tabs.SelectedTab = _tabs.TabPages["Control"];
     }
 
     private async Task RefreshLinuxListAfterBridgeStartAsync()
     {
-        foreach (var delay in new[] { 4000, 8000, 15000 })
+        var waits = new[]
         {
-            await Task.Delay(delay);
+            (Wait: TimeSpan.FromSeconds(4), Before: 38, After: 52),
+            (Wait: TimeSpan.FromSeconds(8), Before: 58, After: 72),
+            (Wait: TimeSpan.FromSeconds(15), Before: 78, After: 92)
+        };
+
+        for (var attempt = 0; attempt < waits.Length; attempt++)
+        {
+            var wait = waits[attempt];
+            await WaitWithProgressAsync(wait.Wait, wait.Before, wait.After, "Starting bridge", $"Waiting for bridge device pass {attempt + 1}");
             if (IsDisposed)
             {
                 return;
             }
 
-            await RunActionWithDialogAsync(() => RefreshLinuxBluetoothDevicesAsync(0));
+            try
+            {
+                SetOperationProgress("Starting bridge", $"Checking Linux Bluetooth devices ({attempt + 1}/{waits.Length})", Math.Min(96, wait.After + 3));
+                var devices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false).ConfigureAwait(true);
+                if (devices.Count > 0)
+                {
+                    CompleteOperationProgress("Starting bridge", $"{devices.Count} Linux device(s) visible after bridge start");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                FailOperationProgress("Starting bridge", "Could not refresh Linux Bluetooth devices");
+                MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
         }
+
+        CompleteOperationProgress("Starting bridge", "Bridge launch requested; no Linux devices visible yet. Press Scan after pairing mode starts.");
     }
 
     private void UpdateBatteryIndicator(IReadOnlyList<LinuxBluetoothDevice> devices)
     {
-        var replacement = CreateBatteryIndicatorIcon(devices);
-        var previous = _batteryIndicatorIcon;
-        _batteryIndicatorIcon = replacement;
-        Icon = replacement;
-        _trayIcon.Icon = replacement;
+        if (_batteryIndicatorIcon is not null)
+        {
+            _batteryIndicatorIcon.Dispose();
+            _batteryIndicatorIcon = null;
+            Icon = (Icon)_baseIcon.Clone();
+            _trayIcon.Icon = (Icon)_baseIcon.Clone();
+        }
+
         _trayIcon.Text = BatteryTooltip(devices);
         _batteryStatusLabel.Text = BatteryHeaderText(devices);
         Text = devices.Count == 0 ? "Stadia X" : "Stadia X - " + BatteryShortText(devices);
-        previous?.Dispose();
     }
 
     private static string BatteryHeaderText(IReadOnlyList<LinuxBluetoothDevice> devices)
@@ -1045,14 +2151,18 @@ internal sealed class MainForm : Form
 
     private void StopBridge()
     {
+        LogUserAction("Stop bridge requested");
+        BeginOperationProgress("Stopping bridge", "Requesting bridge stop and Bluetooth restore", 20);
         LaunchSelfCommand("--stop-bridge", elevateWhenNeeded: true, "Stadia X stop requested. Watch Live Logs for progress.");
         UpdateBatteryIndicator(Array.Empty<LinuxBluetoothDevice>());
         HideBatteryOverlay();
+        CompleteOperationProgress("Stopping bridge", "Stop requested; watch Live Logs for restore details");
         _tabs.SelectedTab = _tabs.TabPages["Control"];
     }
 
     private void SaveSelectedBluetoothBusId()
     {
+        LogUserAction("Save Bluetooth BUSID requested", ("candidateBusId", _selectedBusText.Text));
         try
         {
             _native.SaveSelectedBluetoothBusId(_selectedBusText.Text);
@@ -1067,6 +2177,7 @@ internal sealed class MainForm : Form
 
     private void ClearSelectedBluetoothBusId()
     {
+        LogUserAction("Clear Bluetooth BUSID requested");
         if (File.Exists(_paths.SelectedBluetoothBusId))
         {
             File.Delete(_paths.SelectedBluetoothBusId);
@@ -1080,6 +2191,7 @@ internal sealed class MainForm : Form
     {
         var selected = _wslCombo.SelectedItem?.ToString() ?? "Automatic";
         var name = selected == "Automatic" ? "" : selected.Split("  ", StringSplitOptions.None)[0];
+        LogUserAction("Save WSL distro requested", ("candidateDistro", string.IsNullOrWhiteSpace(name) ? "automatic" : name));
         try
         {
             _native.SaveSelectedWslDistro(name);
@@ -1094,70 +2206,129 @@ internal sealed class MainForm : Form
 
     private void UseSelectedLinuxControllers()
     {
-        var macs = _linuxBluetoothList.SelectedItems.Cast<ListViewItem>()
-            .Select(item => item.Tag as LinuxBluetoothDevice)
+        LogUserAction("Use selected Linux controllers requested");
+        var macs = SelectedLinuxBluetoothDevices()
             .Where(device => device is not null && NativeControlServices.IsBluetoothMac(device.Mac))
-            .Select(device => device!.Mac)
+            .Select(device => device.Mac)
             .Take(4)
             .ToArray();
         _native.SaveSelectedControllerMacs(macs);
         RefreshSelectionLabels();
+        RefreshPairingWizardStatus();
         _statusLabel.Text = macs.Length == 0 ? "Controller selection returned to automatic" : "Manual controller selection saved";
     }
 
     private void ClearSelectedLinuxControllers()
     {
+        LogUserAction("Clear selected Linux controllers requested");
         _native.SaveSelectedControllerMacs(Array.Empty<string>());
         RefreshSelectionLabels();
+        RefreshPairingWizardStatus();
         _statusLabel.Text = "Controller selection returned to automatic";
     }
 
     private async Task RunLinuxCommandForSelectedAsync(string command)
     {
-        if (_linuxBluetoothList.SelectedItems.Count == 0)
+        LogUserAction("Linux Bluetooth command requested", ("command", command));
+        var devices = SelectedLinuxBluetoothDevices();
+        if (devices.Count == 0)
         {
             MessageBox.Show("Select one or more Linux Bluetooth devices first.", "Linux Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         var lines = new List<string>();
-        foreach (ListViewItem item in _linuxBluetoothList.SelectedItems)
+        var validDevices = devices.Where(device => NativeControlServices.IsBluetoothMac(device.Mac)).ToArray();
+        var stageCount = Math.Max(1, validDevices.Length * (command.Equals("pair", StringComparison.OrdinalIgnoreCase) ? 3 : 1) + 1);
+        var stageIndex = 0;
+        var title = LinuxCommandTitle(command);
+        BeginOperationProgress(title, "Preparing selected Linux devices", 4);
+
+        async Task RunStageAsync(LinuxBluetoothDevice device, string serviceCommand, string stageName, TimeSpan expectedDuration)
         {
-            if (item.Tag is not LinuxBluetoothDevice device)
-            {
-                continue;
-            }
-
-            if (!NativeControlServices.IsBluetoothMac(device.Mac))
-            {
-                lines.Add($"== {device.Mac} {device.Name} ==");
-                lines.Add("This row comes from the Windows receiver telemetry. Refresh or Scan until BlueZ reports the Bluetooth MAC before using pair/connect commands.");
-                lines.Add("");
-                continue;
-            }
-
-            var result = await _native.RunLinuxBluetoothCommandAsync(device.Mac, command);
-            lines.Add($"== {command} {device.Mac} {device.Name} ==");
+            stageIndex++;
+            var start = StagePercent(stageIndex - 1, stageCount);
+            var end = Math.Max(start + 1, StagePercent(stageIndex, stageCount) - 2);
+            SetOperationProgress(title, $"{stageName}: {device.Name}", start);
+            var result = await AwaitWithTimedProgressAsync(
+                _native.RunLinuxBluetoothCommandAsync(device.Mac, serviceCommand),
+                start,
+                end,
+                expectedDuration,
+                title,
+                $"{stageName}: {device.Mac}").ConfigureAwait(true);
+            lines.Add($"== {stageName} {device.Mac} {device.Name} ==");
             lines.Add(result.Output.Trim());
             lines.Add(result.Error.Trim());
             lines.Add("");
         }
 
-        _diagnosticsBox.Text = string.Join(Environment.NewLine, lines);
-        _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
-        await RefreshLinuxBluetoothDevicesAsync(0);
+        try
+        {
+            foreach (var device in devices)
+            {
+                if (!NativeControlServices.IsBluetoothMac(device.Mac))
+                {
+                    lines.Add($"== {device.Mac} {device.Name} ==");
+                    lines.Add("This row comes from the Windows receiver telemetry. Refresh or Scan until BlueZ reports the Bluetooth MAC before using pair/connect commands.");
+                    lines.Add("");
+                    continue;
+                }
+
+                if (command.Equals("pair", StringComparison.OrdinalIgnoreCase))
+                {
+                    await RunStageAsync(device, "trust", "Trusting", TimeSpan.FromSeconds(5));
+                    await RunStageAsync(device, "pair-only", "Pairing", TimeSpan.FromSeconds(22));
+                    await RunStageAsync(device, "connect", "Connecting", TimeSpan.FromSeconds(22));
+                }
+                else
+                {
+                    await RunStageAsync(device, command, LinuxCommandStageName(command), LinuxCommandExpectedDuration(command));
+                }
+            }
+
+            _diagnosticsBox.Text = string.Join(Environment.NewLine, lines);
+            _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+            SetOperationProgress(title, "Refreshing Linux device list", 94);
+            await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
+            CompleteOperationProgress(title, validDevices.Length == 0 ? "No valid BlueZ MAC selected" : $"{LinuxCommandStageName(command)} completed");
+        }
+        catch
+        {
+            FailOperationProgress(title, $"{LinuxCommandStageName(command)} failed");
+            throw;
+        }
     }
 
     private async Task RepairLinuxBluetoothAsync()
     {
-        var result = await _native.RunLinuxBluetoothRepairAsync();
-        _diagnosticsBox.Text = "Linux Bluetooth repair" + Environment.NewLine + Environment.NewLine + result.Output + Environment.NewLine + result.Error;
-        _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
-        await RefreshLinuxBluetoothDevicesAsync(0);
+        LogUserAction("Linux Bluetooth repair requested");
+        BeginOperationProgress("Repairing Linux Bluetooth", "Resetting BlueZ adapter state", 10);
+        try
+        {
+            var result = await AwaitWithTimedProgressAsync(
+                _native.RunLinuxBluetoothRepairAsync(),
+                15,
+                78,
+                TimeSpan.FromSeconds(30),
+                "Repairing Linux Bluetooth",
+                "Running repair commands").ConfigureAwait(true);
+            _diagnosticsBox.Text = "Linux Bluetooth repair" + Environment.NewLine + Environment.NewLine + result.Output + Environment.NewLine + result.Error;
+            _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+            SetOperationProgress("Repairing Linux Bluetooth", "Refreshing Linux device list", 90);
+            await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
+            CompleteOperationProgress("Repairing Linux Bluetooth", "Repair completed");
+        }
+        catch
+        {
+            FailOperationProgress("Repairing Linux Bluetooth", "Repair failed");
+            throw;
+        }
     }
 
     private async Task CreateCapacityReportAsync()
     {
+        LogUserAction("Capacity report requested");
         var path = await _native.CreateCapacityReportAsync();
         _diagnosticsBox.Text = "Capacity report created:" + Environment.NewLine + path;
         _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
@@ -1165,6 +2336,7 @@ internal sealed class MainForm : Form
 
     private async Task SetSelectedWindowsBluetoothEnabledAsync(bool enabled)
     {
+        LogUserAction(enabled ? "Enable Windows Bluetooth requested" : "Disable Windows Bluetooth requested");
         if (_windowsBluetoothList.SelectedItems.Count == 0 || _windowsBluetoothList.SelectedItems[0].Tag is not WindowsBluetoothDevice device)
         {
             MessageBox.Show("Select a Windows Bluetooth device first.", "Windows Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1198,6 +2370,7 @@ internal sealed class MainForm : Form
 
     private void SaveProfile()
     {
+        LogUserAction("Save controller profile requested", ("name", _profileNameText.Text), ("mac", _profileMacText.Text), ("slot", (_profileSlotCombo.SelectedIndex + 1).ToString()));
         var profiles = _native.GetProfiles().ToList();
         var slot = _profileSlotCombo.SelectedIndex + 1;
         var profile = new ControllerProfile(_profileNameText.Text.Trim(), _profileMacText.Text.Trim().ToUpperInvariant(), slot, _profileAutoConnectCheck.Checked);
@@ -1217,6 +2390,7 @@ internal sealed class MainForm : Form
 
     private void DeleteSelectedProfile()
     {
+        LogUserAction("Delete controller profile requested");
         if (_profilesList.SelectedItems.Count == 0 || _profilesList.SelectedItems[0].Tag is not ControllerProfile selected)
         {
             return;
@@ -1228,6 +2402,7 @@ internal sealed class MainForm : Form
 
     private void ApplyAutoProfiles()
     {
+        LogUserAction("Apply auto profiles requested");
         _native.ApplyAutoConnectProfiles();
         RefreshSelectionLabels();
         _statusLabel.Text = "Auto-connect profiles applied to startup";
@@ -1235,7 +2410,9 @@ internal sealed class MainForm : Form
 
     private void UseLinuxSelectedAsProfile()
     {
-        if (_linuxBluetoothList.SelectedItems.Count == 0 || _linuxBluetoothList.SelectedItems[0].Tag is not LinuxBluetoothDevice device)
+        LogUserAction("Use Linux selected as profile requested");
+        var device = SelectedLinuxBluetoothDevices().FirstOrDefault();
+        if (device is null)
         {
             MessageBox.Show("Select a Linux Bluetooth device first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
@@ -1267,6 +2444,7 @@ internal sealed class MainForm : Form
 
     private void SaveMacroConfig()
     {
+        LogUserAction("Save macro config requested", ("macroTextLength", _macroBox.TextLength.ToString()));
         _native.SaveMacroText(_macroBox.Text);
         RefreshMacroMappings();
         _statusLabel.Text = "Macro config saved";
@@ -1276,6 +2454,7 @@ internal sealed class MainForm : Form
     {
         var code = _macroChordCombo.SelectedItem?.ToString();
         var shortcut = _macroShortcutText.Text.Trim();
+        LogUserAction("Apply macro chord requested", ("chord", code), ("shortcut", shortcut));
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(shortcut))
         {
             MessageBox.Show("Choose a chord and type a shortcut first.", "Macro editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1344,6 +2523,7 @@ internal sealed class MainForm : Form
 
     private void LaunchSelfCommand(string argument, bool elevateWhenNeeded, string message)
     {
+        LogUserAction("Launch self command requested", ("argument", argument), ("elevateWhenNeeded", elevateWhenNeeded.ToString()));
         var executable = File.Exists(_paths.AppExecutable) ? _paths.AppExecutable : Environment.ProcessPath;
         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
         {
@@ -1384,32 +2564,38 @@ internal sealed class MainForm : Form
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 TopMost = true,
-                Opacity = 0.94,
-                Size = new Size(280, 64)
+                Opacity = 0.52,
+                Size = new Size(76, 28)
             };
             _batteryOverlayLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                Padding = new Padding(12, 8, 12, 8),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                Padding = new Padding(7, 2, 7, 2),
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 8, FontStyle.Bold),
                 ForeColor = Color.White
             };
             _batteryOverlay.Controls.Add(_batteryOverlayLabel);
         }
 
-        _batteryOverlay.BackColor = warning ? Color.FromArgb(180, 45, 45) : Color.FromArgb(18, 35, 54);
-        var title = warning ? "Low battery" : "Controller batteries";
-        var rows = devices.Select((device, index) =>
+        var critical = devices.Any(device => device.BatteryPercent is < 10);
+        _batteryOverlay.Opacity = critical ? 0.62 : 0.52;
+        _batteryOverlay.BackColor = Color.FromArgb(8, 18, 30);
+        var rows = devices.Take(4).Select((device, index) =>
         {
-            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
-            var connected = string.IsNullOrWhiteSpace(device.Connected) ? "?" : device.Connected;
-            return $"P{index + 1}: {battery} ({connected})";
-        });
-        _batteryOverlayLabel!.Text = title + Environment.NewLine + string.Join("   ", rows);
-        _batteryOverlay.Size = new Size(300, devices.Count > 2 ? 82 : 64);
+            var battery = device.BatteryPercent is null ? "?" : device.BatteryPercent + "%";
+            return $"P{index + 1} {battery}";
+        }).ToArray();
+        var firstLine = string.Join("  ", rows.Take(2));
+        var secondLine = rows.Length > 2 ? string.Join("  ", rows.Skip(2)) : "";
+        _batteryOverlayLabel!.Text = string.IsNullOrWhiteSpace(secondLine)
+            ? firstLine
+            : firstLine + Environment.NewLine + secondLine;
+        _batteryOverlayLabel.ForeColor = critical ? Color.FromArgb(255, 78, 78) : Color.White;
+        _batteryOverlay.Size = MeasureBatteryOverlaySize(_batteryOverlayLabel);
+        ApplyPillRegion(_batteryOverlay);
         var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
-        _batteryOverlay.Location = new Point(area.Right - _batteryOverlay.Width - 16, area.Top + 16);
+        _batteryOverlay.Location = new Point(area.Right - _batteryOverlay.Width - 10, area.Top + 10);
         if (!_batteryOverlay.Visible)
         {
             _batteryOverlay.Show();
@@ -1427,6 +2613,43 @@ internal sealed class MainForm : Form
         }
     }
 
+    private static void ApplyPillRegion(Form overlay)
+    {
+        if (overlay.Width <= 0 || overlay.Height <= 0)
+        {
+            return;
+        }
+
+        var radius = Math.Min(overlay.Height, overlay.Width) - 1;
+        var bounds = new Rectangle(0, 0, overlay.Width, overlay.Height);
+        using var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, radius, radius, 180, 90);
+        path.AddArc(bounds.Right - radius, bounds.Top, radius, radius, 270, 90);
+        path.AddArc(bounds.Right - radius, bounds.Bottom - radius, radius, radius, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - radius, radius, radius, 90, 90);
+        path.CloseFigure();
+        var previous = overlay.Region;
+        overlay.Region = new Region(path);
+        previous?.Dispose();
+    }
+
+    private static Size MeasureBatteryOverlaySize(Label label)
+    {
+        var lines = label.Text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        var flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine;
+        var maxWidth = lines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(line => TextRenderer.MeasureText(line, label.Font, Size.Empty, flags).Width)
+            .DefaultIfEmpty(48)
+            .Max();
+        var lineHeight = TextRenderer.MeasureText("P1 100%", label.Font, Size.Empty, flags).Height;
+        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 8, 68, 138);
+        var height = lines.Length > 1
+            ? Math.Clamp((lineHeight * lines.Length) + label.Padding.Vertical + 6, 40, 48)
+            : Math.Clamp(lineHeight + label.Padding.Vertical + 6, 26, 30);
+        return new Size(width, height);
+    }
+
     private UsbipdDevice? SelectedUsbipdDevice()
     {
         if (_usbipdList.SelectedItems.Count > 0 && _usbipdList.SelectedItems[0].Tag is UsbipdDevice selected)
@@ -1442,7 +2665,8 @@ internal sealed class MainForm : Form
         {
             Name = name,
             BackColor = Color.FromArgb(248, 250, 252),
-            Padding = new Padding(0)
+            Padding = new Padding(0),
+            AutoScroll = true
         };
     }
 
@@ -1452,8 +2676,113 @@ internal sealed class MainForm : Form
         {
             Text = text,
             Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 9, FontStyle.Bold),
-            Padding = new Padding(10)
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold),
+            Padding = IsCompactUi() ? new Padding(8) : new Padding(10)
+        };
+    }
+
+    private Control BuildOperationProgressPanel()
+    {
+        var group = CreateGroup("Current operation");
+        group.Dock = DockStyle.Fill;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = IsCompactUi() ? new Padding(8, 9, 8, 8) : new Padding(10, 12, 10, 10)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 24 : 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        group.Controls.Add(layout);
+
+        _operationTitleLabel.Text = "Ready";
+        _operationTitleLabel.Dock = DockStyle.Fill;
+        _operationTitleLabel.AutoEllipsis = true;
+        _operationTitleLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _operationTitleLabel.Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold);
+        layout.Controls.Add(_operationTitleLabel, 0, 0);
+
+        _operationProgress.Dock = DockStyle.Fill;
+        _operationProgress.Minimum = 0;
+        _operationProgress.Maximum = 100;
+        _operationProgress.Value = 0;
+        _operationProgress.Style = ProgressBarStyle.Continuous;
+        layout.Controls.Add(_operationProgress, 0, 1);
+
+        _operationDetailLabel.Text = "No active request";
+        _operationDetailLabel.Dock = DockStyle.Fill;
+        _operationDetailLabel.AutoEllipsis = true;
+        _operationDetailLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _operationDetailLabel.Font = new Font("Segoe UI", IsCompactUi() ? 7.75F : 8);
+        _operationDetailLabel.ForeColor = Color.FromArgb(92, 106, 126);
+        layout.Controls.Add(_operationDetailLabel, 0, 2);
+
+        return group;
+    }
+
+    private Control BuildWindowsBluetoothActionsPanel()
+    {
+        var flow = CreateFullWidthToolbarFlow();
+        AddFlowButton(flow, "Refresh", async () => await RefreshWindowsBluetoothAsync());
+        AddFlowButton(flow, "Enable", async () => await SetSelectedWindowsBluetoothEnabledAsync(true));
+        AddFlowButton(flow, "Disable", async () => await SetSelectedWindowsBluetoothEnabledAsync(false), Color.FromArgb(178, 62, 62), Color.White);
+        return flow;
+    }
+
+    private Control BuildLinuxBluetoothActionsPanel()
+    {
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = IsCompactUi() ? new Padding(8, 5, 8, 4) : new Padding(12, 8, 12, 6)
+        };
+        panel.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        panel.Controls.Add(new Label
+        {
+            Text = "Linux / BlueZ devices",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold),
+            AutoEllipsis = true
+        }, 0, 0);
+
+        var flow = CreateFullWidthToolbarFlow();
+        flow.Padding = new Padding(0);
+        ConfigureBatteryOverlayToggle();
+        flow.Controls.Add(_batteryOverlayCheck);
+        AddFlowButton(flow, "Refresh", async () => await RefreshLinuxBluetoothDevicesAsync(0));
+        AddFlowButton(flow, "Scan", async () => await RefreshLinuxBluetoothDevicesAsync(8));
+        AddFlowButton(flow, "Use selected", UseSelectedLinuxControllers);
+        AddFlowButton(flow, "Automatic", ClearSelectedLinuxControllers);
+        AddFlowButton(flow, "Pair", async () => await RunLinuxCommandForSelectedAsync("pair"));
+        AddFlowButton(flow, "Connect", async () => await RunLinuxCommandForSelectedAsync("connect"));
+        AddFlowButton(flow, "Disconnect", async () => await RunLinuxCommandForSelectedAsync("disconnect"));
+        AddFlowButton(flow, "Repair", async () => await RepairLinuxBluetoothAsync());
+        AddFlowButton(flow, "Capacity", async () => await CreateCapacityReportAsync());
+        panel.Controls.Add(flow, 0, 1);
+        return panel;
+    }
+
+    private static FlowLayoutPanel CreateFullWidthToolbarFlow()
+    {
+        return new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Padding = IsCompactUi() ? new Padding(8, 5, 8, 5) : new Padding(12, 8, 12, 8),
+            MinimumSize = new Size(0, IsCompactUi() ? 36 : 46)
         };
     }
 
@@ -1466,6 +2795,7 @@ internal sealed class MainForm : Form
         _batteryOverlayCheck.Margin = new Padding(4, 8, 10, 2);
         _batteryOverlayCheck.CheckedChanged += (_, _) =>
         {
+            LogUserSelection("Battery overlay toggled", ("enabled", _batteryOverlayCheck.Checked.ToString()));
             if (_batteryOverlayCheck.Checked)
             {
                 _ = RunActionWithDialogAsync(() => UpdateBatteryAsync());
@@ -1486,14 +2816,16 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static Control BuildTopPanel(string title, params (string Text, Action Action)[] buttons)
+    private Control BuildTopPanel(string title, params (string Text, Action Action)[] buttons)
     {
         var panel = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 64,
-            MinimumSize = new Size(0, 64),
-            Padding = new Padding(12, 10, 12, 10),
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Height = IsCompactUi() ? 58 : 72,
+            MinimumSize = new Size(0, IsCompactUi() ? 52 : 64),
+            Padding = IsCompactUi() ? new Padding(10, 7, 10, 7) : new Padding(12, 10, 12, 10),
             ColumnCount = 2,
             RowCount = 1
         };
@@ -1506,7 +2838,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 9, FontStyle.Bold)
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold)
         };
 
         var flow = new FlowLayoutPanel
@@ -1515,9 +2847,9 @@ internal sealed class MainForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
+            WrapContents = true,
             Margin = new Padding(8, 0, 0, 0),
-            MinimumSize = new Size(0, 40)
+            MinimumSize = new Size(0, IsCompactUi() ? 32 : 40)
         };
         foreach (var button in buttons)
         {
@@ -1529,9 +2861,9 @@ internal sealed class MainForm : Form
         return panel;
     }
 
-    private static Control BuildTopPanel(string title, params (string Text, Func<Task> Action)[] buttons)
+    private Control BuildTopPanel(string title, params (string Text, Func<Task> Action)[] buttons)
     {
-        return BuildTopPanel(title, buttons.Select(b => (b.Text, Action: new Action(() => { _ = RunActionWithDialogAsync(b.Action); }))).ToArray());
+        return BuildTopPanel(title, buttons.Select(b => (b.Text, Action: new Action(() => { _ = RunLoggedActionWithDialogAsync(b.Text, b.Action); }))).ToArray());
     }
 
     private static void ConfigureList(ListView list, params (string Text, int Width)[] columns)
@@ -1548,66 +2880,107 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static void ConfigureLogBox(TextBox box, string text)
+    private static void ConfigureLogBox(TextBox box, string text, bool readOnly = true)
     {
         box.Multiline = true;
-        box.ReadOnly = false;
+        box.ReadOnly = readOnly;
         box.ScrollBars = ScrollBars.Both;
         box.WordWrap = false;
-        box.Font = new Font("Consolas", 9);
+        box.Font = new Font("Consolas", IsCompactUi() ? 8.25F : 9);
         box.BackColor = Color.FromArgb(20, 24, 32);
         box.ForeColor = Color.FromArgb(220, 230, 240);
         box.Dock = DockStyle.Fill;
         box.Text = text;
     }
 
-    private static void AddButton(Control parent, string text, int x, int y, int width, Action action, Color? backColor = null, Color? foreColor = null)
+    private void AddActionGridButton(TableLayoutPanel parent, string text, int column, int row, int columnSpan, Action action, Color? backColor = null, Color? foreColor = null)
     {
         var button = new Button
         {
             Text = text,
-            Size = new Size(width, 34),
+            Dock = DockStyle.Fill,
+            MinimumSize = new Size(0, IsCompactUi() ? 30 : 36),
+            Margin = new Padding(4),
+            BackColor = backColor ?? SystemColors.Control,
+            ForeColor = foreColor ?? SystemColors.ControlText,
+            UseVisualStyleBackColor = backColor is null
+        };
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            action();
+        };
+        parent.Controls.Add(button, column, row);
+        if (columnSpan > 1)
+        {
+            parent.SetColumnSpan(button, columnSpan);
+        }
+    }
+
+    private void AddActionGridButton(TableLayoutPanel parent, string text, int column, int row, int columnSpan, Func<Task> action, Color? backColor = null, Color? foreColor = null)
+    {
+        AddActionGridButton(parent, text, column, row, columnSpan, () => { _ = RunLoggedActionWithDialogAsync(text, action); }, backColor, foreColor);
+    }
+
+    private void AddButton(Control parent, string text, int x, int y, int width, Action action, Color? backColor = null, Color? foreColor = null)
+    {
+        var button = new Button
+        {
+            Text = text,
+            Size = new Size(width, IsCompactUi() ? 30 : 34),
             Location = new Point(x, y),
             BackColor = backColor ?? SystemColors.Control,
             ForeColor = foreColor ?? SystemColors.ControlText
         };
-        button.Click += (_, _) => action();
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            action();
+        };
         parent.Controls.Add(button);
     }
 
-    private static void AddButton(Control parent, string text, int x, int y, int width, Func<Task> action)
+    private void AddButton(Control parent, string text, int x, int y, int width, Func<Task> action)
     {
-        AddButton(parent, text, x, y, width, () => { _ = RunActionWithDialogAsync(action); });
+        AddButton(parent, text, x, y, width, () => { _ = RunLoggedActionWithDialogAsync(text, action); });
     }
 
-    private static void AddButton(TableLayoutPanel parent, string text, int column, int row, Action action)
+    private void AddButton(TableLayoutPanel parent, string text, int column, int row, Action action)
     {
-        var button = new Button { Text = text, Dock = DockStyle.Left, Width = 140 };
-        button.Click += (_, _) => action();
+        var button = new Button { Text = text, Dock = DockStyle.Fill, MinimumSize = new Size(IsCompactUi() ? 116 : 140, IsCompactUi() ? 30 : 34), Margin = new Padding(4) };
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            action();
+        };
         parent.Controls.Add(button, column, row);
     }
 
-    private static void AddFlowButton(FlowLayoutPanel parent, string text, Action action, Color? backColor = null, Color? foreColor = null)
+    private void AddFlowButton(FlowLayoutPanel parent, string text, Action action, Color? backColor = null, Color? foreColor = null)
     {
         var button = new Button
         {
             Text = text,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            MinimumSize = new Size(112, 36),
-            Padding = new Padding(10, 0, 10, 0),
+            MinimumSize = new Size(IsCompactUi() ? 92 : 112, IsCompactUi() ? 30 : 36),
+            Padding = IsCompactUi() ? new Padding(7, 0, 7, 0) : new Padding(10, 0, 10, 0),
             BackColor = backColor ?? SystemColors.Control,
             ForeColor = foreColor ?? SystemColors.ControlText,
             Margin = new Padding(4, 2, 4, 2),
             UseVisualStyleBackColor = backColor is null
         };
-        button.Click += (_, _) => action();
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            action();
+        };
         parent.Controls.Add(button);
     }
 
-    private static void AddFlowButton(FlowLayoutPanel parent, string text, Func<Task> action)
+    private void AddFlowButton(FlowLayoutPanel parent, string text, Func<Task> action)
     {
-        AddFlowButton(parent, text, () => { _ = RunActionWithDialogAsync(action); });
+        AddFlowButton(parent, text, () => { _ = RunLoggedActionWithDialogAsync(text, action); });
     }
 
     private static async Task RunActionWithDialogAsync(Func<Task> action)
@@ -1620,6 +2993,12 @@ internal sealed class MainForm : Form
         {
             MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private async Task RunLoggedActionWithDialogAsync(string actionName, Func<Task> action)
+    {
+        LogUserAction($"Async action started: {actionName}");
+        await RunActionWithDialogAsync(action).ConfigureAwait(true);
     }
 
     private static void AddEditorRow(TableLayoutPanel panel, int row, string labelText, Control editor)
@@ -1699,6 +3078,7 @@ internal sealed class MainForm : Form
         }
     }
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 

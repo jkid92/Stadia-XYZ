@@ -20,7 +20,6 @@ function Test-DistroName {
 function Get-WslDistros {
     $raw = (& wsl.exe -l -v 2>$null) -join "`n"
     $raw = $raw -replace [char]0, ""
-    $distros = New-Object System.Collections.Generic.List[object]
 
     foreach ($line in ($raw -split "`r?`n")) {
         $trimmed = $line.Trim()
@@ -31,16 +30,17 @@ function Get-WslDistros {
             $trimmed = $trimmed.Substring(1).Trim()
         }
         if ($trimmed -match '^(?<name>\S+)\s+(?<state>Running|Stopped)\s+(?<version>[12])$') {
-            [void]$distros.Add([pscustomobject]@{
-                Name = $Matches.name
-                State = $Matches.state
-                Version = [int]$Matches.version
-                IsUbuntu = ($Matches.name -match '(?i)^Ubuntu')
-            })
+            $name = $Matches["name"]
+            $state = $Matches["state"]
+            $version = [int]$Matches["version"]
+            [pscustomobject]@{
+                Name = $name
+                State = $state
+                Version = $version
+                IsUbuntu = ($name -match '(?i)^Ubuntu')
+            }
         }
     }
-
-    return @($distros)
 }
 
 $distros = @(Get-WslDistros)

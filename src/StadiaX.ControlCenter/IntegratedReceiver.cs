@@ -731,6 +731,7 @@ internal static class KeyboardSender
         }
     }
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint numberOfInputs, NativeInput[] inputs, int sizeOfInputStructure);
 
@@ -796,36 +797,47 @@ internal static class VigemNative
         public short ThumbRY;
     }
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr vigem_alloc();
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern void vigem_free(IntPtr vigem);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint vigem_connect(IntPtr vigem);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern void vigem_disconnect(IntPtr vigem);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr vigem_target_x360_alloc();
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern void vigem_target_free(IntPtr target);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint vigem_target_add(IntPtr vigem, IntPtr target);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint vigem_target_remove(IntPtr vigem, IntPtr target);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint vigem_target_x360_register_notification(IntPtr vigem, IntPtr target, X360Notification notification, IntPtr userData);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern void vigem_target_x360_unregister_notification(IntPtr target);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.ApplicationDirectory | DllImportSearchPath.AssemblyDirectory)]
     [DllImport("ViGEmClient.dll", CallingConvention = CallingConvention.Cdecl)]
     public static extern uint vigem_target_x360_update(IntPtr vigem, IntPtr target, XusbReport report);
 }

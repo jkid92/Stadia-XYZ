@@ -12,6 +12,7 @@ internal static class BrandLogo
     private static readonly Color Orange = Color.FromArgb(255, 123, 38);
     private static readonly Color Graphite = Color.FromArgb(26, 32, 40);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr handle);
 

@@ -341,8 +341,8 @@ internal sealed class BridgeOrchestrator
         }
 
         var script = "mkdir -p /opt/stadia-x && " +
-                     $"cp '{wslRoot}/start.sh' /opt/stadia-x/start.sh && " +
-                     $"cp '{wslRoot}/stadia_bridge' /opt/stadia-x/stadia_bridge && " +
+                     $"cp {BashQuote(wslRoot + "/start.sh")} /opt/stadia-x/start.sh && " +
+                     $"cp {BashQuote(wslRoot + "/stadia_bridge")} /opt/stadia-x/stadia_bridge && " +
                      "sed -i 's/\\r//g' /opt/stadia-x/start.sh && chmod +x /opt/stadia-x/start.sh /opt/stadia-x/stadia_bridge";
         var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "-u", "root", "bash", "-lc", script }, _paths.Root, 30000).ConfigureAwait(false);
         if (result.ExitCode != 0)
@@ -367,11 +367,12 @@ internal sealed class BridgeOrchestrator
 
         Directory.CreateDirectory(_paths.LogDirectory);
         var controllerMacs = ReadSelectedControllerMacs();
-        var command = $"STADIA_X_STATUS_LOG='{wslLogDir}/linux-status.log' " +
-                      $"STADIA_X_LINUX_LOG='{wslLogDir}/linux.log' " +
-                      $"STADIA_X_BT_DIAG_LOG='{wslLogDir}/bluetooth-diagnostics.txt' " +
-                      $"STADIA_X_CONTROLLER_MACS='{controllerMacs}' " +
-                      "/opt/stadia-x/start.sh 2>&1 | tee -a '" + wslLogDir + "/linux.log'";
+        var linuxLog = wslLogDir + "/linux.log";
+        var command = $"STADIA_X_STATUS_LOG={BashQuote(wslLogDir + "/linux-status.log")} " +
+                      $"STADIA_X_LINUX_LOG={BashQuote(linuxLog)} " +
+                      $"STADIA_X_BT_DIAG_LOG={BashQuote(wslLogDir + "/bluetooth-diagnostics.txt")} " +
+                      $"STADIA_X_CONTROLLER_MACS={BashQuote(controllerMacs)} " +
+                      $"/opt/stadia-x/start.sh 2>&1 | tee -a {BashQuote(linuxLog)}";
 
         var startInfo = new ProcessStartInfo
         {
@@ -517,6 +518,11 @@ internal sealed class BridgeOrchestrator
     private static string EscapeWslConfigPath(string path)
     {
         return path.Replace("\\", "\\\\", StringComparison.Ordinal);
+    }
+
+    private static string BashQuote(string value)
+    {
+        return "'" + value.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
     }
 
     private static void KillProcess(string processName)

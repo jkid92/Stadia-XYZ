@@ -9,6 +9,7 @@ internal sealed class AppPaths
         StatusLog = Path.Combine(LogDirectory, "status.log");
         LinuxStatusLog = Path.Combine(LogDirectory, "linux-status.log");
         LinuxLog = Path.Combine(LogDirectory, "linux.log");
+        UserActionLog = Path.Combine(LogDirectory, "user-actions.log");
         ControllerState = Path.Combine(LogDirectory, "controller-state.json");
         BluetoothDiagnostics = Path.Combine(LogDirectory, "bluetooth-diagnostics.txt");
         ReceiverLog = Path.Combine(LogDirectory, "receiver.log");
@@ -32,6 +33,7 @@ internal sealed class AppPaths
     public string StatusLog { get; }
     public string LinuxStatusLog { get; }
     public string LinuxLog { get; }
+    public string UserActionLog { get; }
     public string ControllerState { get; }
     public string BluetoothDiagnostics { get; }
     public string ReceiverLog { get; }

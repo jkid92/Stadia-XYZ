@@ -1,10 +1,15 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "..")
+    [string]$OutputDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
+    $scriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $OutputDirectory = Join-Path $scriptRoot ".."
+}
 
 $outDir = New-Item -ItemType Directory -Force -Path $OutputDirectory
 $destination = Join-Path $outDir.FullName "ViGEmClient.dll"

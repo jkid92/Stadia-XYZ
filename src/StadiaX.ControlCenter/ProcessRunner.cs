@@ -22,32 +22,7 @@ internal sealed class ProcessRunner
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        var output = new StringBuilder();
-        var error = new StringBuilder();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) error.AppendLine(e.Data); };
-
-        if (!TryStart(process, out var startError))
-        {
-            return new CommandResult(-1, "", startError);
-        }
-
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
-
-        using var timeout = new CancellationTokenSource(timeoutMilliseconds);
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(entireProcessTree: true); } catch { }
-            return new CommandResult(-1, output.ToString(), $"Timed out after {timeoutMilliseconds} ms.");
-        }
-
-        return new CommandResult(process.ExitCode, output.ToString(), error.ToString());
+        return await RunProcessAsync(startInfo, timeoutMilliseconds).ConfigureAwait(false);
     }
 
     public async Task<CommandResult> RunAsync(
@@ -81,6 +56,11 @@ internal sealed class ProcessRunner
             }
         }
 
+        return await RunProcessAsync(startInfo, timeoutMilliseconds).ConfigureAwait(false);
+    }
+
+    private static async Task<CommandResult> RunProcessAsync(ProcessStartInfo startInfo, int timeoutMilliseconds)
+    {
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var output = new StringBuilder();
         var error = new StringBuilder();
@@ -99,10 +79,20 @@ internal sealed class ProcessRunner
         try
         {
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            process.WaitForExit();
         }
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { }
+            try
+            {
+                await process.WaitForExitAsync().ConfigureAwait(false);
+                process.WaitForExit();
+            }
+            catch
+            {
+                // Preserve the original timeout result even if cleanup cannot observe process exit.
+            }
             return new CommandResult(-1, output.ToString(), $"Timed out after {timeoutMilliseconds} ms.");
         }
 

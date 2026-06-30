@@ -39,7 +39,7 @@ internal static class LogReader
 
             using var reader = new StreamReader(stream);
             var text = reader.ReadToEnd();
-            var lines = text.Replace("\r\n", "\n").Split('\n');
+            var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
             var startIndex = startsMidFile && lines.Length > 0 ? 1 : 0;
             var usableCount = text.EndsWith('\n') ? lines.Length - 1 : lines.Length;
 

@@ -9,4 +9,7 @@
     <RootNamespace>StadiaX.ControlCenter</RootNamespace>
     <ApplicationIcon>..\..\assets\StadiaX.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="..\..\ViGEmClient.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\ViGEmClient.dll')" />
+  </ItemGroup>
 </Project>

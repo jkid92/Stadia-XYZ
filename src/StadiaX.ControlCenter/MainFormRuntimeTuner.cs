@@ -23,6 +23,8 @@ internal static class MainFormRuntimeTuner
     private static readonly Color Success = Color.FromArgb(36, 132, 85);
     private static readonly Color Danger = Color.FromArgb(184, 64, 64);
 
+    private static bool CompactUi => MainForm.IsCompactUi();
+
     [ModuleInitializer]
     internal static void Initialize()
     {
@@ -48,20 +50,7 @@ internal static class MainFormRuntimeTuner
     private static void PatchVisualDesign(Form form)
     {
         form.BackColor = AppBackground;
-        form.Font = new Font("Segoe UI", 9F);
-
-        try
-        {
-            form.Icon = BrandLogo.CreateIcon(64);
-            if (ReadPrivate<NotifyIcon>(form, "_trayIcon") is { } tray)
-            {
-                tray.Icon = BrandLogo.CreateIcon(64);
-            }
-        }
-        catch
-        {
-            // The default executable icon remains available if runtime icon creation fails.
-        }
+        form.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9F);
 
         PatchHeader(form);
         foreach (Control control in form.Controls)
@@ -79,7 +68,8 @@ internal static class MainFormRuntimeTuner
             return;
         }
 
-        header.Height = 88;
+        var compact = CompactUi;
+        header.Height = compact ? 80 : 96;
         header.BackColor = HeaderTop;
         header.Paint += (_, e) =>
         {
@@ -96,15 +86,16 @@ internal static class MainFormRuntimeTuner
 
         if (!header.Controls.ContainsKey("StadiaXBrandLogo"))
         {
-            var logoBitmap = BrandLogo.CreateBitmap(54);
+            var logoSize = compact ? 44 : 54;
+            var logoBitmap = LoadHeaderLogoBitmap(form, logoSize);
             var logo = new PictureBox
             {
                 Name = "StadiaXBrandLogo",
                 Image = logoBitmap,
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent,
-                Location = new Point(20, 14),
-                Size = new Size(54, 54)
+                Location = compact ? new Point(22, 12) : new Point(20, 14),
+                Size = new Size(logoSize, logoSize)
             };
             OwnedBitmaps[logo] = logoBitmap;
             logo.Disposed += (_, _) =>
@@ -118,27 +109,62 @@ internal static class MainFormRuntimeTuner
             logo.BringToFront();
         }
 
-        foreach (var label in header.Controls.OfType<Label>())
+        void ArrangeHeaderLabels()
         {
-            label.BackColor = Color.Transparent;
-            if (label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
+            foreach (var label in header.Controls.OfType<Label>())
             {
-                label.Location = new Point(100, 12);
-                label.Font = new Font("Segoe UI", 22, FontStyle.Bold);
-                label.ForeColor = Color.White;
-            }
-            else if (label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase))
-            {
-                label.Text = "Bluetooth controller bridge";
-                label.Location = new Point(102, 54);
-                label.ForeColor = Color.FromArgb(202, 213, 225);
-            }
-            else
-            {
-                label.Location = new Point(Math.Max(label.Left, header.Width - label.Width - 40), 30);
-                label.ForeColor = Color.White;
+                label.BackColor = Color.Transparent;
+                if (label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
+                {
+                    label.AutoSize = true;
+                    label.Location = compact ? new Point(86, 8) : new Point(100, 8);
+                    label.Font = new Font("Segoe UI", compact ? 18 : 21, FontStyle.Bold);
+                    label.ForeColor = Color.White;
+                }
+                else if (label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase) ||
+                         label.Text.Contains("Bluetooth controller bridge", StringComparison.OrdinalIgnoreCase))
+                {
+                    label.Text = "Bluetooth controller bridge";
+                    label.AutoSize = true;
+                    label.Location = compact ? new Point(88, 50) : new Point(102, 60);
+                    label.Font = new Font("Segoe UI", compact ? 8.25F : 9F);
+                    label.ForeColor = Color.FromArgb(202, 213, 225);
+                }
+                else if (label.Text.StartsWith("Battery:", StringComparison.OrdinalIgnoreCase))
+                {
+                    label.AutoSize = false;
+                    label.Size = new Size(Math.Min(compact ? 440 : 520, Math.Max(compact ? 220 : 260, header.Width - (compact ? 360 : 430))), compact ? 20 : 22);
+                    label.Location = new Point(header.Width - label.Width - 28, compact ? 50 : 56);
+                    label.Font = new Font("Segoe UI", compact ? 8.25F : 9F, FontStyle.Bold);
+                    label.ForeColor = Color.FromArgb(202, 213, 225);
+                    label.TextAlign = ContentAlignment.MiddleRight;
+                }
+                else
+                {
+                    label.AutoSize = false;
+                    label.Size = new Size(Math.Min(compact ? 440 : 520, Math.Max(compact ? 220 : 260, header.Width - (compact ? 360 : 430))), compact ? 24 : 28);
+                    label.Location = new Point(header.Width - label.Width - 28, compact ? 16 : 18);
+                    label.Font = new Font("Segoe UI", compact ? 9.5F : 11F, FontStyle.Bold);
+                    label.ForeColor = Color.White;
+                    label.TextAlign = ContentAlignment.MiddleRight;
+                }
             }
         }
+
+        ArrangeHeaderLabels();
+        header.Resize += (_, _) => ArrangeHeaderLabels();
+    }
+
+    private static Bitmap LoadHeaderLogoBitmap(Form form, int size)
+    {
+        var paths = ReadPrivate<AppPaths>(form, "_paths");
+        var logoPath = paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-icon.png");
+        if (File.Exists(logoPath))
+        {
+            return new Bitmap(logoPath);
+        }
+
+        return BrandLogo.CreateBitmap(size);
     }
 
     private static void PatchBluetoothLayout(Form form)
@@ -169,14 +195,19 @@ internal static class MainFormRuntimeTuner
         {
             layout.Controls.Remove(linuxActions);
             linuxActions.Dock = DockStyle.Top;
-            linuxActions.Height = 58;
+            linuxActions.AutoSize = true;
+            if (linuxActions is Panel linuxActionsPanel)
+            {
+                linuxActionsPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            }
+            linuxActions.MinimumSize = new Size(0, 72);
             linuxGroup.Controls.Add(linuxActions);
             linuxActions.BringToFront();
         }
 
         if (layout.RowStyles.Count > 0)
         {
-            layout.RowStyles[0] = new RowStyle(SizeType.Absolute, 220);
+            layout.RowStyles[0] = new RowStyle(SizeType.Absolute, CompactUi ? 190 : 220);
         }
     }
 
@@ -196,10 +227,10 @@ internal static class MainFormRuntimeTuner
         {
             Name = "LinuxBluetoothSummaryLabel",
             Dock = DockStyle.Top,
-            Height = 30,
+            Height = CompactUi ? 26 : 30,
             Padding = new Padding(8, 6, 0, 0),
             TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 9, FontStyle.Regular),
+            Font = new Font("Segoe UI", CompactUi ? 8.25F : 9, FontStyle.Regular),
             ForeColor = TextMuted,
             Text = "Linux devices: not refreshed yet"
         };
@@ -277,18 +308,19 @@ internal static class MainFormRuntimeTuner
             case GroupBox group:
                 group.BackColor = Surface;
                 group.ForeColor = TextPrimary;
-                group.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+                group.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9, FontStyle.Bold);
                 break;
             case ListView list:
                 list.GridLines = false;
                 list.BackColor = Surface;
                 list.ForeColor = TextPrimary;
                 list.BorderStyle = BorderStyle.FixedSingle;
-                list.Font = new Font("Segoe UI", 9);
+                list.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9);
                 break;
             case TabControl tabs:
-                tabs.Font = new Font("Segoe UI", 9);
-                tabs.Padding = new Point(14, 8);
+                tabs.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9);
+                tabs.Padding = CompactUi ? new Point(10, 5) : new Point(14, 8);
+                tabs.Multiline = false;
                 break;
             case TextBox textBox when textBox.Multiline && textBox.BackColor.ToArgb() == Color.FromArgb(20, 24, 32).ToArgb():
                 textBox.BorderStyle = BorderStyle.FixedSingle;
@@ -326,12 +358,18 @@ internal static class MainFormRuntimeTuner
         button.FlatStyle = FlatStyle.Flat;
         button.BackColor = back;
         button.ForeColor = fore;
-        button.Font = new Font("Segoe UI", 9, FontStyle.Bold);
+        button.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9, FontStyle.Bold);
         button.Cursor = Cursors.Hand;
         button.FlatAppearance.BorderSize = back == NeutralButton ? 1 : 0;
         button.FlatAppearance.BorderColor = Border;
         button.FlatAppearance.MouseOverBackColor = back == NeutralButton ? NeutralButtonHover : ControlPaint.Light(back);
         button.FlatAppearance.MouseDownBackColor = back == NeutralButton ? Border : ControlPaint.Dark(back);
+        if (CompactUi)
+        {
+            var width = button.MinimumSize.Width == 0 ? 0 : Math.Min(button.MinimumSize.Width, 96);
+            button.MinimumSize = new Size(width, Math.Max(button.MinimumSize.Height, 34));
+            button.Padding = new Padding(7, 0, 7, 0);
+        }
         if (button.Height < 34)
         {
             button.Height = 34;

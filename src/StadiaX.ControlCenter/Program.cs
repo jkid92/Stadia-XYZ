@@ -5,6 +5,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Contains("--compact-ui", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--dpi-preview=100", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
+        }
+
         if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase))
         {
             Environment.Exit(RunBridgeCommand(start: true));
