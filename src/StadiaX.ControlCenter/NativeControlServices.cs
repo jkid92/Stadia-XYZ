@@ -198,6 +198,9 @@ internal sealed class NativeControlServices
         }
 
         scanSeconds = Math.Clamp(scanSeconds, 0, 20);
+        var infoTimeoutSeconds = scanSeconds > 0 ? 3 : 1;
+        var listTimeoutSeconds = scanSeconds > 0 ? 4 : 2;
+        var commandTimeoutMs = scanSeconds > 0 ? Math.Max(15000, (scanSeconds + 8) * 1000) : 7000;
         var scanCommand = scanSeconds > 0
             ? $"timeout {scanSeconds + 2} bluetoothctl --timeout {scanSeconds} scan on >/dev/null 2>&1 || true; "
             : "";
@@ -216,7 +219,7 @@ internal sealed class NativeControlServices
             scanCommand +
             "emit_device() { " +
             "mac=\"$1\"; name=\"$2\"; [ -z \"$mac\" ] && return; " +
-            "info=\"$(timeout 3 bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
+            $"info=\"$(timeout {infoTimeoutSeconds}s bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
             "printf \"%s\\n\" \"$info\" | grep -Eiq \"Name:|Alias:|Connected:|UUID:\" || [ -n \"$name\" ] || return; " +
             "[ -z \"$name\" ] && name=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Name:/ {print $2; exit}')\"; " +
             "paired=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Paired:/ {print $2; exit}')\"; " +
@@ -227,7 +230,7 @@ internal sealed class NativeControlServices
             "}; " +
             "emit_list() { " +
             "filter=\"$1\"; " +
-            "if [ -z \"$filter\" ]; then bluetoothctl devices 2>/dev/null; else bluetoothctl devices \"$filter\" 2>/dev/null; fi | while IFS= read -r line; do " +
+            $"if [ -z \"$filter\" ]; then timeout {listTimeoutSeconds}s bluetoothctl devices 2>/dev/null; else timeout {listTimeoutSeconds}s bluetoothctl devices \"$filter\" 2>/dev/null; fi | while IFS= read -r line; do " +
             "mac=\"$(printf '%s\\n' \"$line\" | grep -Eo '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -n 1)\"; " +
             "[ -z \"$mac\" ] && continue; " +
             "name=\"${line#*$mac}\"; name=\"${name# }\"; " +
@@ -237,7 +240,7 @@ internal sealed class NativeControlServices
             "emit_list \"\"; emit_list Connected; emit_list Paired; emit_list Trusted; emit_list Bonded; " +
             knownMacLoop;
 
-        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, Math.Max(15000, (scanSeconds + 8) * 1000)).ConfigureAwait(false);
+        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, commandTimeoutMs).ConfigureAwait(false);
         var devices = new List<LinuxBluetoothDevice>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in result.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
@@ -885,9 +888,9 @@ bluetoothctl devices 2>&1 || true
 
         var result = await _runner.RunAsync(
             "wsl",
-            new[] { "-d", distro, "--", "bash", "-lc", $"timeout 8s bluetoothctl info '{mac}' 2>/dev/null || true" },
+            new[] { "-d", distro, "--", "bash", "-lc", $"timeout 3s bluetoothctl info '{mac}' 2>/dev/null || true" },
             _paths.Root,
-            12000).ConfigureAwait(false);
+            5000).ConfigureAwait(false);
 
         return ParseLinuxBluetoothInfo(mac, result.Output);
     }
