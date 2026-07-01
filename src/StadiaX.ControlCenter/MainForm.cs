@@ -70,6 +70,8 @@ internal sealed class MainForm : Form
     private readonly ProgressBar _operationProgress = new();
     private readonly Label _linuxBluetoothSummaryLabel = new();
     private readonly TabControl _tabs = new();
+    private readonly FlowLayoutPanel _tabNavPanel = new();
+    private readonly Dictionary<TabPage, ModernTabButton> _tabButtons = new();
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
     private readonly NotifyIcon _trayIcon = new();
@@ -283,11 +285,37 @@ internal sealed class MainForm : Form
 
     private Control BuildTabs()
     {
+        var shell = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            BackColor = Color.FromArgb(248, 250, 252)
+        };
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 38 : 42));
+        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var navHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(248, 250, 252),
+            Padding = IsCompactUi() ? new Padding(7, 5, 7, 3) : new Padding(9, 6, 9, 4)
+        };
+        _tabNavPanel.Dock = DockStyle.Fill;
+        _tabNavPanel.AutoScroll = false;
+        _tabNavPanel.WrapContents = false;
+        _tabNavPanel.FlowDirection = FlowDirection.LeftToRight;
+        _tabNavPanel.BackColor = Color.Transparent;
+        navHost.Controls.Add(_tabNavPanel);
+        shell.Controls.Add(navHost, 0, 0);
+
         _tabs.Dock = DockStyle.Fill;
-        _tabs.Font = new Font("Segoe UI", 9);
-        _tabs.Appearance = TabAppearance.FlatButtons;
-        _tabs.Padding = new Point(12, 7);
+        _tabs.Appearance = TabAppearance.Buttons;
+        _tabs.SizeMode = TabSizeMode.Fixed;
+        _tabs.ItemSize = new Size(1, 1);
+        _tabs.Padding = new Point(0, 0);
         _tabs.Multiline = false;
+        _tabs.TabStop = false;
 
         _tabs.TabPages.Add(BuildDashboardPage());
         _tabs.TabPages.Add(BuildControllerDoctorPage());
@@ -300,13 +328,68 @@ internal sealed class MainForm : Form
         _tabs.TabPages.Add(BuildLogsPage());
         _tabs.TabPages.Add(BuildSetupPage());
         _tabs.TabPages.Add(BuildDiagnosticsPage());
-        _tabs.SelectedIndexChanged += (_, _) => LogUserSelection("Tab selected", ("name", _tabs.SelectedTab?.Text));
-        return _tabs;
+        if (_tabs.TabPages.Count > 0)
+        {
+            _tabs.SelectedIndex = 0;
+        }
+        BuildTabNavigation();
+        _tabs.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateTabNavigation();
+            LogUserSelection("Tab selected", ("name", _tabs.SelectedTab?.Text));
+        };
+        UpdateTabNavigation();
+        shell.Controls.Add(_tabs, 0, 1);
+        return shell;
+    }
+
+    private void BuildTabNavigation()
+    {
+        _tabButtons.Clear();
+        _tabNavPanel.Controls.Clear();
+        foreach (TabPage page in _tabs.TabPages)
+        {
+            var button = new ModernTabButton
+            {
+                Text = page.Text,
+                AccessibleName = page.Text,
+                AccessibleRole = AccessibleRole.PushButton,
+                Tag = page,
+                Width = ModernTabWidth(page.Text),
+                Height = IsCompactUi() ? 27 : 30,
+                Margin = new Padding(2, 0, 2, 0),
+                Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Regular)
+            };
+            button.Click += (_, _) =>
+            {
+                if (button.Tag is TabPage target)
+                {
+                    _tabs.SelectedTab = target;
+                }
+            };
+            _tabButtons[page] = button;
+            _tabNavPanel.Controls.Add(button);
+        }
+    }
+
+    private void UpdateTabNavigation()
+    {
+        foreach (var pair in _tabButtons)
+        {
+            pair.Value.IsSelected = ReferenceEquals(pair.Key, _tabs.SelectedTab);
+        }
+    }
+
+    private static int ModernTabWidth(string text)
+    {
+        using var font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Regular);
+        var measured = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width;
+        return Math.Clamp(measured + (IsCompactUi() ? 20 : 24), IsCompactUi() ? 52 : 60, IsCompactUi() ? 70 : 84);
     }
 
     private TabPage BuildDashboardPage()
     {
-        var page = CreatePage("Dashboard");
+        var page = CreatePage("Home", "Dashboard");
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -2956,6 +3039,19 @@ internal sealed class MainForm : Form
         previous?.Dispose();
     }
 
+    private static GraphicsPath RoundedRectPath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        var diameter = Math.Max(1, radius * 2);
+        var rect = new Rectangle(bounds.Left, bounds.Top, bounds.Width, bounds.Height);
+        path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
+        path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
+        path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     private static Size MeasureBatteryOverlaySize(Label label)
     {
         var lines = label.Text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
@@ -3429,5 +3525,112 @@ internal sealed class MainForm : Form
         using var identity = WindowsIdentity.GetCurrent();
         var principal = new WindowsPrincipal(identity);
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+}
+
+internal sealed class ModernTabButton : Control
+{
+    private bool _hover;
+    private bool _isSelected;
+
+    public ModernTabButton()
+    {
+        SetStyle(ControlStyles.UserPaint |
+                 ControlStyles.AllPaintingInWmPaint |
+                 ControlStyles.OptimizedDoubleBuffer |
+                 ControlStyles.ResizeRedraw |
+                 ControlStyles.SupportsTransparentBackColor, true);
+        Cursor = Cursors.Hand;
+        TabStop = false;
+        BackColor = Color.Transparent;
+    }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected == value)
+            {
+                return;
+            }
+
+            _isSelected = value;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        _hover = true;
+        Invalidate();
+        base.OnMouseEnter(e);
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        _hover = false;
+        Invalidate();
+        base.OnMouseLeave(e);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var bounds = ClientRectangle;
+        bounds.Inflate(-1, -2);
+        if (bounds.Width <= 0 || bounds.Height <= 0)
+        {
+            return;
+        }
+
+        var fillColor = _isSelected
+            ? Color.FromArgb(16, 38, 59)
+            : _hover
+                ? Color.FromArgb(244, 248, 252)
+                : Color.FromArgb(233, 239, 246);
+        var borderColor = _isSelected
+            ? Color.FromArgb(16, 38, 59)
+            : _hover
+                ? Color.FromArgb(198, 210, 224)
+                : Color.FromArgb(226, 234, 243);
+        using (var path = CreateRoundedPath(bounds, 9))
+        using (var fill = new SolidBrush(fillColor))
+        using (var border = new Pen(borderColor, _isSelected ? 1.4F : 1F))
+        {
+            e.Graphics.FillPath(fill, path);
+            e.Graphics.DrawPath(border, path);
+        }
+
+        if (_isSelected)
+        {
+            var accent = new Rectangle(bounds.Left + 10, bounds.Bottom - 4, Math.Max(10, bounds.Width - 20), 3);
+            using var accentPath = CreateRoundedPath(accent, 2);
+            using var accentBrush = new SolidBrush(Color.FromArgb(88, 218, 210));
+            e.Graphics.FillPath(accentBrush, accentPath);
+        }
+
+        using var selectedFont = _isSelected ? new Font(Font, FontStyle.Bold) : null;
+        var textColor = _isSelected ? Color.White : Color.FromArgb(56, 67, 82);
+        var textBounds = Rectangle.Inflate(bounds, -5, 0);
+        TextRenderer.DrawText(
+            e.Graphics,
+            Text,
+            selectedFont ?? Font,
+            textBounds,
+            textColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+    }
+
+    private static GraphicsPath CreateRoundedPath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
+        var diameter = Math.Max(1, radius * 2);
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 }

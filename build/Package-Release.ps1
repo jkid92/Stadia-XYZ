@@ -99,6 +99,10 @@ if (Test-Path (Join-Path $repoRoot "src")) {
         Remove-Item -Recurse -Force
 }
 
+if (Test-Path (Join-Path $repoRoot "docs")) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot "docs") -Destination $packageRoot -Recurse -Force
+}
+
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal
 $hash = Get-FileHash -Algorithm SHA256 -Path $zipPath
 "$($hash.Hash)  $(Split-Path -Leaf $zipPath)" | Set-Content -Encoding ASCII -Path $shaPath
