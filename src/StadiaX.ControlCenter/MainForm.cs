@@ -85,6 +85,7 @@ internal sealed class MainForm : Form
     private bool _linuxRefreshInProgress;
     private bool _suppressSelectionLogging;
     private IReadOnlyList<LinuxBluetoothDevice> _lastLinuxBluetoothDevices = Array.Empty<LinuxBluetoothDevice>();
+    private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
 
@@ -1200,14 +1201,14 @@ internal sealed class MainForm : Form
         SetOperationProgress("Refreshing app state", "Reading Windows Bluetooth devices", 46);
         await RefreshWindowsBluetoothAsync();
         SetOperationProgress("Refreshing app state", "Reading Linux Bluetooth devices", 62);
-        await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
+        var linuxDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
         SetOperationProgress("Refreshing app state", "Loading profiles and macros", 78);
         RefreshProfiles();
         LoadMacroConfig();
         RefreshControllerTelemetry();
         RefreshLogs();
         SetOperationProgress("Refreshing app state", "Updating battery status", 90);
-        await UpdateBatteryAsync();
+        await UpdateBatteryAsync(linuxDevices);
         RefreshSelectionLabels();
         RefreshDashboardUi();
         RefreshPairingWizardStatus();
@@ -1378,6 +1379,7 @@ internal sealed class MainForm : Form
             PopulateLinuxBluetoothList(_linuxBluetoothList, visibleDevices, compact: false);
             PopulateLinuxBluetoothList(_wizardLinuxBluetoothList, visibleDevices, compact: true);
             _lastLinuxBluetoothDevices = visibleDevices;
+            _lastLinuxBluetoothRefreshUtc = DateTime.UtcNow;
             LogLinuxBluetoothRefresh(scanSeconds, visibleDevices, nativeDevices);
             ResizeLinuxBluetoothColumns();
             ResizeWizardLinuxBluetoothColumns();
@@ -1702,11 +1704,21 @@ internal sealed class MainForm : Form
     private async Task UpdateBatteryAsync(IReadOnlyList<LinuxBluetoothDevice>? knownDevices = null)
     {
         var usedKnownDevices = knownDevices is not null;
+        var usedCache = false;
+        if (knownDevices is null && IsLinuxBluetoothCacheFresh())
+        {
+            knownDevices = _lastLinuxBluetoothDevices;
+            usedKnownDevices = true;
+            usedCache = true;
+        }
+
         if (knownDevices is null)
         {
             var devices = (await _native.GetLinuxBluetoothDevicesAsync(0)).ToList();
             AddReceiverFallbackDevices(devices);
             knownDevices = devices;
+            _lastLinuxBluetoothDevices = knownDevices;
+            _lastLinuxBluetoothRefreshUtc = DateTime.UtcNow;
         }
 
         var stadia = knownDevices.Where(d => d.IsStadia || d.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -1714,6 +1726,7 @@ internal sealed class MainForm : Form
         AppDiagnosticsLogger.Record(
             "BATTERY_REFRESH",
             ("usedKnownDevices", usedKnownDevices.ToString()),
+            ("usedCache", usedCache.ToString()),
             ("visibleCount", knownDevices.Count.ToString()),
             ("stadiaCount", stadia.Length.ToString()),
             ("overlayChecked", _batteryOverlayCheck.Checked.ToString()),
@@ -1747,6 +1760,12 @@ internal sealed class MainForm : Form
             ("overlayVisible", (_batteryOverlay?.Visible == true).ToString()),
             ("tray", BatteryShortText(stadia)));
         RefreshDashboardUi();
+    }
+
+    private bool IsLinuxBluetoothCacheFresh()
+    {
+        return _lastLinuxBluetoothDevices.Count > 0 &&
+               _lastLinuxBluetoothRefreshUtc >= DateTime.UtcNow - TimeSpan.FromSeconds(60);
     }
 
     private void RefreshProfiles()
