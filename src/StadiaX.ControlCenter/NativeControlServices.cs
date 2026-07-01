@@ -37,6 +37,8 @@ internal sealed class NativeControlServices
 {
     private static readonly Regex BusIdPattern = new(@"^\d+-\d+$", RegexOptions.Compiled);
     private static readonly Regex MacPattern = new(@"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", RegexOptions.Compiled);
+    private static bool IsBluetoothDemoMode =>
+        string.Equals(Environment.GetEnvironmentVariable("STADIAX_DEMO_BLUETOOTH"), "1", StringComparison.OrdinalIgnoreCase);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -51,6 +53,11 @@ internal sealed class NativeControlServices
 
     public async Task<IReadOnlyList<UsbipdDevice>> GetUsbipdDevicesAsync()
     {
+        if (IsBluetoothDemoMode)
+        {
+            return DemoUsbipdDevices();
+        }
+
         var result = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
         if (result.ExitCode != 0)
         {
@@ -145,6 +152,11 @@ internal sealed class NativeControlServices
 
     public async Task<IReadOnlyList<WindowsBluetoothDevice>> GetWindowsBluetoothDevicesAsync()
     {
+        if (IsBluetoothDemoMode)
+        {
+            return DemoWindowsBluetoothDevices();
+        }
+
         const string script = "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | ForEach-Object { " +
                               "$name=($_.FriendlyName -replace '\\|','/'); $status=($_.Status -replace '\\|','/'); " +
                               "$id=($_.InstanceId -replace '\\|','/'); \"$name|$status|$id\" }";
@@ -164,6 +176,16 @@ internal sealed class NativeControlServices
 
     public async Task<IReadOnlyList<LinuxBluetoothDevice>> GetLinuxBluetoothDevicesAsync(int scanSeconds = 0)
     {
+        if (IsBluetoothDemoMode)
+        {
+            if (scanSeconds > 0)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(1200, scanSeconds * 120))).ConfigureAwait(false);
+            }
+
+            return DemoLinuxBluetoothDevices();
+        }
+
         var distro = await _wslResolver.ResolveAsync().ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(distro))
         {
@@ -269,6 +291,14 @@ internal sealed class NativeControlServices
             return new CommandResult(-1, "", "Invalid Bluetooth MAC.");
         }
 
+        if (IsBluetoothDemoMode)
+        {
+            return new CommandResult(
+                0,
+                $"Demo Bluetooth command '{command}' completed for {mac}.{Environment.NewLine}No real Bluetooth device was changed.",
+                "");
+        }
+
         var distro = await _wslResolver.ResolveAsync().ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(distro))
         {
@@ -287,6 +317,35 @@ internal sealed class NativeControlServices
         };
 
         return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<UsbipdDevice> DemoUsbipdDevices()
+    {
+        return new[]
+        {
+            new UsbipdDevice("2-4", "8087:0032", "Intel Wireless Bluetooth", "Shared", true),
+            new UsbipdDevice("3-1", "045E:02EA", "Xbox Wireless Adapter", "Not shared", false)
+        };
+    }
+
+    private static IReadOnlyList<WindowsBluetoothDevice> DemoWindowsBluetoothDevices()
+    {
+        return new[]
+        {
+            new WindowsBluetoothDevice("Intel Wireless Bluetooth", "OK", @"USB\VID_8087&PID_0032\DEMO-BT-ADAPTER"),
+            new WindowsBluetoothDevice("Bluetooth Device (RFCOMM Protocol TDI)", "OK", @"BTH\MS_RFCOMM\DEMO-RFCOMM"),
+            new WindowsBluetoothDevice("Microsoft Bluetooth Enumerator", "OK", @"BTH\MS_BTHBRB\DEMO-ENUM")
+        };
+    }
+
+    private static IReadOnlyList<LinuxBluetoothDevice> DemoLinuxBluetoothDevices()
+    {
+        return new[]
+        {
+            new LinuxBluetoothDevice("E4:17:D8:42:7A:01", "Stadia Controller P1", "yes", "yes", "yes", 84, true),
+            new LinuxBluetoothDevice("E4:17:D8:42:7A:02", "Stadia Controller P2", "no", "yes", "yes", 9, true),
+            new LinuxBluetoothDevice("A8:6B:AD:12:44:90", "8BitDo SN30 Pro", "no", "no", "no", 56, false)
+        };
     }
 
     private void AddBluetoothDiagnosticsDevices(List<LinuxBluetoothDevice> devices, HashSet<string> seen)

@@ -45,6 +45,10 @@ internal sealed class MainForm : Form
     private readonly TextBox _controlStatusLogBox = new();
     private readonly TextBox _controlLinuxLogBox = new();
     private readonly TextBox _dashboardActionLogBox = new();
+    private readonly ListView _doctorList = new();
+    private readonly TextBox _doctorDetailsBox = new();
+    private readonly Label _doctorStatusLabel = new();
+    private readonly ProgressBar _doctorProgress = new();
     private readonly TextBox _statusLogBox = new();
     private readonly TextBox _linuxLogBox = new();
     private readonly TextBox _userActionLogBox = new();
@@ -90,7 +94,7 @@ internal sealed class MainForm : Form
         _actionLogger = new UserActionLogger(paths);
 
         Text = "Stadia X";
-        _baseIcon = LoadApplicationIcon();
+        _baseIcon = LoadApplicationIcon(paths);
         Icon = (Icon)_baseIcon.Clone();
         var compactUi = IsCompactUi();
         MinimumSize = compactUi ? new Size(1040, 660) : new Size(1180, 760);
@@ -150,7 +154,14 @@ internal sealed class MainForm : Form
 
     internal static bool IsCompactUi()
     {
-        return string.Equals(Environment.GetEnvironmentVariable("STADIAX_UI_DENSITY"), "compact", StringComparison.OrdinalIgnoreCase);
+        var density = Environment.GetEnvironmentVariable("STADIAX_UI_DENSITY");
+        return !string.Equals(density, "comfortable", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(density, "classic", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBluetoothDemoMode()
+    {
+        return string.Equals(Environment.GetEnvironmentVariable("STADIAX_DEMO_BLUETOOTH"), "1", StringComparison.OrdinalIgnoreCase);
     }
 
     private Control BuildHeader()
@@ -234,7 +245,7 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 4,
+            RowCount = 5,
             Padding = IsCompactUi() ? new Padding(10, 14, 10, 10) : new Padding(14, 18, 14, 14)
         };
         actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -243,14 +254,17 @@ internal sealed class MainForm : Form
         actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         actions.Controls.Add(actionGrid);
 
         AddActionGridButton(actionGrid, "Start bridge", 0, 0, 2, StartBridge, Color.FromArgb(45, 125, 90), Color.White);
         AddActionGridButton(actionGrid, "Stop and restore", 0, 1, 2, StopBridge, Color.FromArgb(178, 62, 62), Color.White);
         AddActionGridButton(actionGrid, "Refresh all", 0, 2, 1, async () => await RefreshEverythingAsync());
         AddActionGridButton(actionGrid, "Self-test", 1, 2, 1, async () => await RunSelfTestAsync());
-        AddActionGridButton(actionGrid, "Support bundle", 0, 3, 1, async () => await CreateSupportBundleAsync());
-        AddActionGridButton(actionGrid, "Releases", 1, 3, 1, async () => await CheckUpdatesAsync());
+        AddActionGridButton(actionGrid, "Doctor", 0, 3, 1, async () => await RunControllerDoctorAsync());
+        AddActionGridButton(actionGrid, "Support", 1, 3, 1, () => SelectTabIfExists("Support"));
+        AddActionGridButton(actionGrid, "Bundle", 0, 4, 1, async () => await CreateSupportBundleAsync());
+        AddActionGridButton(actionGrid, "Releases", 1, 4, 1, async () => await CheckUpdatesAsync());
 
         var summary = new TextBox
         {
@@ -260,7 +274,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(248, 250, 252),
             Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
-            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Daily flow:{Environment.NewLine}Dashboard -> Pairing -> Test"
+            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Daily flow:{Environment.NewLine}Dashboard -> Doctor -> Pairing -> Test"
         };
         sidebarLayout.Controls.Add(BuildOperationProgressPanel(), 0, 1);
         sidebarLayout.Controls.Add(summary, 0, 2);
@@ -271,10 +285,12 @@ internal sealed class MainForm : Form
     {
         _tabs.Dock = DockStyle.Fill;
         _tabs.Font = new Font("Segoe UI", 9);
-        _tabs.Padding = new Point(14, 8);
+        _tabs.Appearance = TabAppearance.FlatButtons;
+        _tabs.Padding = new Point(12, 7);
         _tabs.Multiline = false;
 
         _tabs.TabPages.Add(BuildDashboardPage());
+        _tabs.TabPages.Add(BuildControllerDoctorPage());
         _tabs.TabPages.Add(BuildPairingWizardPage());
         _tabs.TabPages.Add(BuildControlPage());
         _tabs.TabPages.Add(BuildBluetoothPage());
@@ -282,9 +298,8 @@ internal sealed class MainForm : Form
         _tabs.TabPages.Add(BuildControllerTestPage());
         _tabs.TabPages.Add(BuildMacrosPage());
         _tabs.TabPages.Add(BuildLogsPage());
-        _tabs.TabPages.Add(BuildDiagnosticsPage());
         _tabs.TabPages.Add(BuildSetupPage());
-        _tabs.TabPages.Add(BuildFirstRunPage());
+        _tabs.TabPages.Add(BuildDiagnosticsPage());
         _tabs.SelectedIndexChanged += (_, _) => LogUserSelection("Tab selected", ("name", _tabs.SelectedTab?.Text));
         return _tabs;
     }
@@ -346,6 +361,7 @@ internal sealed class MainForm : Form
         AddFlowButton(actionFlow, "Start bridge", StartBridge, Color.FromArgb(45, 125, 90), Color.White);
         AddFlowButton(actionFlow, "Stop", StopBridge, Color.FromArgb(178, 62, 62), Color.White);
         AddFlowButton(actionFlow, "Pairing wizard", () => SelectTabIfExists("Pairing"));
+        AddFlowButton(actionFlow, "Doctor", async () => await RunControllerDoctorAsync());
         AddFlowButton(actionFlow, "Scan devices", async () => await RefreshLinuxBluetoothDevicesAsync(8));
         overviewLayout.Controls.Add(actionFlow, 1, 0);
         layout.Controls.Add(overview, 0, 0);
@@ -435,6 +451,85 @@ internal sealed class MainForm : Form
             Font = new Font("Segoe UI", size, style),
             ForeColor = foreColor ?? Color.FromArgb(24, 33, 48)
         };
+    }
+
+    private TabPage BuildControllerDoctorPage()
+    {
+        var page = CreatePage("Doctor");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(14)
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 330 : 370));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        page.Controls.Add(layout);
+
+        var summaryGroup = CreateGroup("Controller Doctor");
+        var summaryLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 5,
+            Padding = IsCompactUi() ? new Padding(12, 14, 12, 10) : new Padding(14, 16, 14, 12)
+        };
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 44 : 52));
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 32 : 38));
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 120));
+        summaryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        summaryGroup.Controls.Add(summaryLayout);
+
+        _doctorStatusLabel.Text = "Run Doctor to check bridge readiness";
+        _doctorStatusLabel.Dock = DockStyle.Fill;
+        _doctorStatusLabel.AutoEllipsis = true;
+        _doctorStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _doctorStatusLabel.Font = new Font("Segoe UI", IsCompactUi() ? 10.5F : 12, FontStyle.Bold);
+        _doctorStatusLabel.ForeColor = Color.FromArgb(24, 33, 48);
+        summaryLayout.Controls.Add(_doctorStatusLabel, 0, 0);
+
+        _doctorProgress.Dock = DockStyle.Fill;
+        _doctorProgress.Minimum = 0;
+        _doctorProgress.Maximum = 100;
+        _doctorProgress.Value = 0;
+        _doctorProgress.Style = ProgressBarStyle.Continuous;
+        summaryLayout.Controls.Add(_doctorProgress, 0, 1);
+
+        var doctorActions = CreateFullWidthToolbarFlow();
+        doctorActions.Padding = new Padding(0, 4, 0, 4);
+        AddFlowButton(doctorActions, "Run doctor", async () => await RunControllerDoctorAsync());
+        AddFlowButton(doctorActions, "Scan", async () => await RunDoctorScanAsync());
+        AddFlowButton(doctorActions, "Repair", async () => await RepairLinuxBluetoothAsync());
+        AddFlowButton(doctorActions, "Logs", () => SelectTabIfExists("Logs"));
+        AddFlowButton(doctorActions, "Bundle", async () => await CreateSupportBundleAsync());
+        summaryLayout.Controls.Add(doctorActions, 0, 2);
+
+        var hint = new TextBox
+        {
+            Multiline = true,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(248, 250, 252),
+            Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
+            Text = "Doctor checks the path a controller follows: Windows adapter, USB/IP bridge, BlueZ visibility, pairing state, saved profile, and input telemetry."
+        };
+        summaryLayout.Controls.Add(hint, 0, 3);
+
+        ConfigureLogBox(_doctorDetailsBox, "Doctor details will appear here.");
+        summaryLayout.Controls.Add(_doctorDetailsBox, 0, 4);
+        layout.Controls.Add(summaryGroup, 0, 0);
+
+        var checklistGroup = CreateGroup("Readiness checklist");
+        ConfigureList(_doctorList, ("Step", 190), ("State", 80), ("Details", 520));
+        _doctorList.ShowItemToolTips = true;
+        _doctorList.Resize += (_, _) => ResizeDoctorColumns();
+        checklistGroup.Controls.Add(_doctorList);
+        layout.Controls.Add(checklistGroup, 1, 0);
+
+        return page;
     }
 
     private TabPage BuildPairingWizardPage()
@@ -580,7 +675,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildFirstRunPage()
     {
-        var page = CreatePage("First Run");
+        var page = CreatePage("Checks", "First Run");
         _firstRunList.Dock = DockStyle.Fill;
         ConfigureList(_firstRunList, ("Step", 210), ("State", 90), ("Details", 650));
         page.Controls.Add(_firstRunList);
@@ -590,7 +685,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildControlPage()
     {
-        var page = CreatePage("Control");
+        var page = CreatePage("Bridge", "Control");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -638,7 +733,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildSetupPage()
     {
-        var page = CreatePage("Setup");
+        var page = CreatePage("Settings", "Setup");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
@@ -689,7 +784,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildBluetoothPage()
     {
-        var page = CreatePage("Bluetooth");
+        var page = CreatePage("Devices", "Bluetooth");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 220));
@@ -708,6 +803,7 @@ internal sealed class MainForm : Form
         windowsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         windowsGroup.Controls.Add(windowsLayout);
         ConfigureList(_windowsBluetoothList, ("Name", 300), ("Status", 90), ("Instance ID", 480));
+        _windowsBluetoothList.Resize += (_, _) => ResizeWindowsBluetoothColumns();
         _windowsBluetoothList.SelectedIndexChanged += (_, _) =>
         {
             if (_windowsBluetoothList.SelectedItems.Count > 0)
@@ -804,7 +900,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildControllerTestPage()
     {
-        var page = CreatePage("Controller Test");
+        var page = CreatePage("Test", "Controller Test");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -947,7 +1043,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildDiagnosticsPage()
     {
-        var page = CreatePage("Diagnostics");
+        var page = CreatePage("Support", "Diagnostics");
         ConfigureLogBox(_diagnosticsBox, "Run self-test, update check, session report, or support bundle to see output here.");
         page.Controls.Add(_diagnosticsBox);
         page.Controls.Add(BuildTopPanel("Diagnostics",
@@ -1008,15 +1104,25 @@ internal sealed class MainForm : Form
         RefreshSelectionLabels();
         RefreshDashboardUi();
         RefreshPairingWizardStatus();
-        _statusLabel.Text = $"Ready - {_paths.Version}";
-        CompleteOperationProgress("Refreshing app state", $"Ready - {_paths.Version}");
+        var readyText = IsBluetoothDemoMode() ? $"Ready demo Bluetooth - {_paths.Version}" : $"Ready - {_paths.Version}";
+        _statusLabel.Text = readyText;
+        CompleteOperationProgress("Refreshing app state", readyText);
     }
 
     private async Task RefreshChecksAsync()
     {
+        var checks = await _requirementChecker.RunAsync();
+        PopulateRequirementLists(checks);
+        var missing = checks.Count(c => c.State == CheckState.Missing);
+        var warn = checks.Count(c => c.State == CheckState.Warn);
+        _statusLabel.Text = missing > 0 ? $"{missing} missing requirement(s)" : warn > 0 ? $"{warn} warning(s)" : $"Ready - {_paths.Version}";
+        RefreshPairingWizardStatus();
+    }
+
+    private void PopulateRequirementLists(IReadOnlyList<CheckResult> checks)
+    {
         _firstRunList.Items.Clear();
         _setupChecksList.Items.Clear();
-        var checks = await _requirementChecker.RunAsync();
         foreach (var check in checks)
         {
             var state = check.State.ToString().ToUpperInvariant();
@@ -1024,11 +1130,6 @@ internal sealed class MainForm : Form
             AddListRow(_firstRunList, check.Name, state, check.Details, color);
             AddListRow(_setupChecksList, check.Name, state, check.Details, color);
         }
-
-        var missing = checks.Count(c => c.State == CheckState.Missing);
-        var warn = checks.Count(c => c.State == CheckState.Warn);
-        _statusLabel.Text = missing > 0 ? $"{missing} missing requirement(s)" : warn > 0 ? $"{warn} warning(s)" : $"Ready - {_paths.Version}";
-        RefreshPairingWizardStatus();
     }
 
     private async Task RefreshWslDistrosAsync()
@@ -1108,6 +1209,7 @@ internal sealed class MainForm : Form
             item.SubItems.Add(device.InstanceId);
             _windowsBluetoothList.Items.Add(item);
         }
+        ResizeWindowsBluetoothColumns();
 
         var selectedDevice = SelectedUsbipdDevice();
         _capacityLabel.Text = NativeControlServices.EstimateCapacity(selectedDevice, devices);
@@ -1262,7 +1364,7 @@ internal sealed class MainForm : Form
             ForeColor = LinuxDeviceColor(device)
         };
         item.SubItems.Add(device.Name);
-        item.SubItems.Add(device.Mac);
+        item.SubItems.Add(compact ? CompactMacText(device.Mac) : device.Mac);
         if (compact)
         {
             item.SubItems.Add(BatteryCellText(device));
@@ -1279,6 +1381,16 @@ internal sealed class MainForm : Form
     private static string BatteryCellText(LinuxBluetoothDevice device)
     {
         return device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%";
+    }
+
+    private static string CompactMacText(string value)
+    {
+        if (!NativeControlServices.IsBluetoothMac(value))
+        {
+            return value;
+        }
+
+        return "..." + value[^8..];
     }
 
     private static Color LinuxDeviceColor(LinuxBluetoothDevice device)
@@ -1298,15 +1410,20 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var available = Math.Max(620, _linuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
-        var fixedWidth = 82 + 170 + 72 + 72 + 72 + 90;
-        _linuxBluetoothList.Columns[0].Width = 82;
-        _linuxBluetoothList.Columns[2].Width = 170;
-        _linuxBluetoothList.Columns[3].Width = 72;
-        _linuxBluetoothList.Columns[4].Width = 72;
-        _linuxBluetoothList.Columns[5].Width = 72;
-        _linuxBluetoothList.Columns[6].Width = 90;
-        _linuxBluetoothList.Columns[1].Width = Math.Max(260, available - fixedWidth);
+        var available = Math.Max(520, _linuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var sourceWidth = available >= 760 ? 84 : 0;
+        var stateWidth = available >= 700 ? 82 : 74;
+        var macWidth = available >= 700 ? 164 : 148;
+        var yesNoWidth = available >= 700 ? 70 : 58;
+        var batteryWidth = available >= 700 ? 68 : 58;
+        var fixedWidth = stateWidth + macWidth + yesNoWidth + yesNoWidth + batteryWidth + sourceWidth;
+        _linuxBluetoothList.Columns[0].Width = stateWidth;
+        _linuxBluetoothList.Columns[2].Width = macWidth;
+        _linuxBluetoothList.Columns[3].Width = yesNoWidth;
+        _linuxBluetoothList.Columns[4].Width = yesNoWidth;
+        _linuxBluetoothList.Columns[5].Width = batteryWidth;
+        _linuxBluetoothList.Columns[6].Width = sourceWidth;
+        _linuxBluetoothList.Columns[1].Width = Math.Max(170, available - fixedWidth);
     }
 
     private void ResizeWizardLinuxBluetoothColumns()
@@ -1316,12 +1433,45 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var available = Math.Max(520, _wizardLinuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
-        var fixedWidth = 82 + 170 + 72;
-        _wizardLinuxBluetoothList.Columns[0].Width = 82;
-        _wizardLinuxBluetoothList.Columns[2].Width = 170;
-        _wizardLinuxBluetoothList.Columns[3].Width = 72;
-        _wizardLinuxBluetoothList.Columns[1].Width = Math.Max(220, available - fixedWidth);
+        var available = Math.Max(320, _wizardLinuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var stateWidth = available >= 430 ? 82 : 70;
+        var macWidth = available >= 430 ? 128 : 92;
+        var batteryWidth = available >= 430 ? 64 : 48;
+        var fixedWidth = stateWidth + macWidth + batteryWidth;
+        _wizardLinuxBluetoothList.Columns[0].Width = stateWidth;
+        _wizardLinuxBluetoothList.Columns[2].Width = macWidth;
+        _wizardLinuxBluetoothList.Columns[3].Width = batteryWidth;
+        _wizardLinuxBluetoothList.Columns[1].Width = Math.Max(110, available - fixedWidth);
+    }
+
+    private void ResizeWindowsBluetoothColumns()
+    {
+        if (_windowsBluetoothList.Columns.Count < 3 || _windowsBluetoothList.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var available = Math.Max(360, _windowsBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var statusWidth = 70;
+        var nameWidth = Math.Clamp((int)(available * 0.42), 190, 310);
+        _windowsBluetoothList.Columns[0].Width = nameWidth;
+        _windowsBluetoothList.Columns[1].Width = statusWidth;
+        _windowsBluetoothList.Columns[2].Width = Math.Max(120, available - nameWidth - statusWidth);
+    }
+
+    private void ResizeDoctorColumns()
+    {
+        if (_doctorList.Columns.Count < 3 || _doctorList.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var available = Math.Max(330, _doctorList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var stateWidth = 76;
+        var stepWidth = Math.Clamp((int)(available * 0.36), 150, 210);
+        _doctorList.Columns[0].Width = stepWidth;
+        _doctorList.Columns[1].Width = stateWidth;
+        _doctorList.Columns[2].Width = Math.Max(100, available - stepWidth - stateWidth);
     }
 
     private static string LinuxDeviceStateText(LinuxBluetoothDevice device)
@@ -1354,6 +1504,11 @@ internal sealed class MainForm : Form
     private static string EmptyAsDash(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "-" : value;
+    }
+
+    private static string EmptyAsNone(string value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "none" : value;
     }
 
     private void AddReceiverFallbackDevices(List<LinuxBluetoothDevice> devices)
@@ -1657,6 +1812,171 @@ internal sealed class MainForm : Form
             : "Selected: none";
     }
 
+    private async Task RunDoctorScanAsync()
+    {
+        SelectTabIfExists("Doctor");
+        await RefreshLinuxBluetoothDevicesAsync(8);
+        await RunControllerDoctorAsync();
+    }
+
+    private async Task RunControllerDoctorAsync()
+    {
+        LogUserAction("Controller Doctor requested");
+        SelectTabIfExists("Doctor");
+        BeginOperationProgress("Controller Doctor", "Checking requirements", 5);
+        _doctorList.Items.Clear();
+        _doctorDetailsBox.Text = "Running Controller Doctor..." + Environment.NewLine;
+        SetDoctorStatus("Checking requirements", 5, Color.FromArgb(45, 91, 150));
+
+        var details = new List<string>
+        {
+            "Controller Doctor",
+            "Created: " + DateTimeOffset.Now.ToString("o"),
+            "Mode: " + (IsBluetoothDemoMode() ? "demo Bluetooth" : "real devices"),
+            ""
+        };
+
+        try
+        {
+            var checks = await _requirementChecker.RunAsync().ConfigureAwait(true);
+            PopulateRequirementLists(checks);
+            var missing = checks.Count(check => check.State == CheckState.Missing);
+            var warnings = checks.Count(check => check.State == CheckState.Warn);
+            AddDoctorRow(
+                "Requirements",
+                missing > 0 ? CheckState.Missing : warnings > 0 ? CheckState.Warn : CheckState.Ok,
+                missing > 0 ? $"{missing} missing, {warnings} warning(s)" : warnings > 0 ? $"{warnings} warning(s)" : "All required pieces found");
+            details.Add($"Requirements: missing={missing}, warnings={warnings}");
+
+            SetDoctorStatus("Checking WSL", 18, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading WSL distros", 18);
+            await RefreshWslDistrosAsync().ConfigureAwait(true);
+            var savedWsl = _native.GetSelectedWslDistro();
+            var wslReady = _wslCombo.Items.Count > 1 || !string.IsNullOrWhiteSpace(savedWsl);
+            AddDoctorRow(
+                "WSL distro",
+                wslReady ? CheckState.Ok : CheckState.Warn,
+                wslReady ? (string.IsNullOrWhiteSpace(savedWsl) ? "Automatic distro available" : "Saved distro: " + savedWsl) : "No WSL distro resolved yet");
+            details.Add($"WSL: saved={EmptyAsNone(savedWsl)}, items={Math.Max(0, _wslCombo.Items.Count - 1)}");
+
+            SetDoctorStatus("Checking Bluetooth adapter", 32, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading USB/IP devices", 32);
+            await RefreshUsbipdDevicesAsync().ConfigureAwait(true);
+            var adapter = SelectedUsbipdDevice();
+            AddDoctorRow(
+                "Bluetooth adapter",
+                adapter is null ? CheckState.Missing : CheckState.Ok,
+                adapter is null ? "No Bluetooth adapter selected or auto-detected" : adapter.Display);
+            details.Add("Adapter: " + (adapter is null ? "none" : adapter.Display));
+
+            SetDoctorStatus("Checking Windows Bluetooth", 46, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading Windows Bluetooth devices", 46);
+            await RefreshWindowsBluetoothAsync().ConfigureAwait(true);
+            var windowsCount = _windowsBluetoothList.Items.Count;
+            var windowsOk = _windowsBluetoothList.Items.Cast<ListViewItem>()
+                .Count(item => SubItemText(item, 1).Equals("OK", StringComparison.OrdinalIgnoreCase));
+            AddDoctorRow(
+                "Windows Bluetooth",
+                windowsCount == 0 ? CheckState.Warn : windowsOk > 0 ? CheckState.Ok : CheckState.Warn,
+                windowsCount == 0 ? "No Windows Bluetooth devices listed" : $"{windowsOk}/{windowsCount} device(s) OK");
+            details.Add($"Windows Bluetooth: ok={windowsOk}, total={windowsCount}");
+
+            SetDoctorStatus("Checking Linux visibility", 62, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading Linux Bluetooth devices", 62);
+            var linuxDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false).ConfigureAwait(true);
+            var stadia = linuxDevices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+            var connected = linuxDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+            var paired = linuxDevices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
+            var lowBattery = linuxDevices.Count(device => device.BatteryPercent is < 10);
+            AddDoctorRow(
+                "BlueZ devices",
+                linuxDevices.Count == 0 ? CheckState.Warn : CheckState.Ok,
+                linuxDevices.Count == 0 ? "No Linux Bluetooth devices visible" : $"{linuxDevices.Count} visible, {connected} connected, {paired} paired, {stadia} Stadia");
+            AddDoctorRow(
+                "Battery",
+                lowBattery > 0 ? CheckState.Warn : linuxDevices.Any(device => device.BatteryPercent.HasValue) ? CheckState.Ok : CheckState.Info,
+                lowBattery > 0 ? $"{lowBattery} controller(s) below 10%" : linuxDevices.Any(device => device.BatteryPercent.HasValue) ? "Battery data available" : "No battery data yet");
+            details.Add($"Linux devices: visible={linuxDevices.Count}, connected={connected}, paired={paired}, stadia={stadia}, lowBattery={lowBattery}");
+
+            SetDoctorStatus("Checking saved profiles", 76, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Loading profiles and macros", 76);
+            RefreshProfiles();
+            LoadMacroConfig();
+            var autoProfiles = _lastProfiles.Count(profile => profile.AutoConnect);
+            AddDoctorRow(
+                "Profiles",
+                _lastProfiles.Count == 0 ? CheckState.Info : CheckState.Ok,
+                _lastProfiles.Count == 0 ? "No saved controller profiles yet" : $"{_lastProfiles.Count} profile(s), {autoProfiles} auto-connect");
+            details.Add($"Profiles: total={_lastProfiles.Count}, auto={autoProfiles}");
+
+            SetDoctorStatus("Checking input telemetry", 88, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading controller telemetry", 88);
+            RefreshControllerTelemetry();
+            var activeInput = _lastTelemetrySnapshot?.Controllers.Count(controller => controller.Active || controller.PacketsPerSecond > 0) ?? 0;
+            AddDoctorRow(
+                "Input telemetry",
+                activeInput > 0 ? CheckState.Ok : CheckState.Info,
+                activeInput > 0 ? $"{activeInput} pad(s) sending input" : "No input yet; expected until a controller is connected and moved");
+            details.Add($"Input telemetry: active={activeInput}");
+
+            RefreshLogs();
+            var actionLogReady = File.Exists(_paths.UserActionLog);
+            AddDoctorRow(
+                "Action log",
+                actionLogReady ? CheckState.Ok : CheckState.Info,
+                actionLogReady ? "User action trail is available" : "User action trail will appear after interaction");
+            details.Add("Action log: " + (actionLogReady ? _paths.UserActionLog : "not created yet"));
+
+            var missingRows = _doctorList.Items.Cast<ListViewItem>().Count(item => SubItemText(item, 1).Equals("MISSING", StringComparison.OrdinalIgnoreCase));
+            var warnRows = _doctorList.Items.Cast<ListViewItem>().Count(item => SubItemText(item, 1).Equals("WARN", StringComparison.OrdinalIgnoreCase));
+            var infoRows = _doctorList.Items.Cast<ListViewItem>().Count(item => SubItemText(item, 1).Equals("INFO", StringComparison.OrdinalIgnoreCase));
+            var finalState = missingRows > 0 ? CheckState.Missing : warnRows > 0 ? CheckState.Warn : CheckState.Ok;
+            var finalText = missingRows > 0
+                ? $"{missingRows} issue(s) need fixing"
+                : warnRows > 0
+                    ? $"{warnRows} warning(s), usable but not perfect"
+                    : "Ready for controller test";
+            SetDoctorStatus(finalText, 100, StateColor(finalState));
+            _doctorDetailsBox.Text = string.Join(Environment.NewLine, details) + Environment.NewLine + Environment.NewLine +
+                                     $"Summary: missing={missingRows}, warnings={warnRows}, info={infoRows}";
+            CompleteOperationProgress("Controller Doctor", finalText);
+        }
+        catch (Exception ex)
+        {
+            AddDoctorRow("Doctor run", CheckState.Missing, ex.Message);
+            _doctorDetailsBox.Text = string.Join(Environment.NewLine, details) + Environment.NewLine + Environment.NewLine + ex;
+            SetDoctorStatus("Doctor failed", 100, Color.FromArgb(180, 45, 45));
+            FailOperationProgress("Controller Doctor", "Doctor failed");
+            throw;
+        }
+    }
+
+    private void SetDoctorStatus(string text, int percent, Color color)
+    {
+        if (_doctorStatusLabel.IsDisposed || _doctorProgress.IsDisposed)
+        {
+            return;
+        }
+
+        _doctorStatusLabel.Text = text;
+        _doctorStatusLabel.ForeColor = color;
+        _doctorProgress.Value = Math.Clamp(percent, 0, 100);
+    }
+
+    private void AddDoctorRow(string step, CheckState state, string details)
+    {
+        var stateText = state.ToString().ToUpperInvariant();
+        var item = new ListViewItem(step)
+        {
+            ForeColor = StateColor(state),
+            ToolTipText = details
+        };
+        item.SubItems.Add(stateText);
+        item.SubItems.Add(details);
+        _doctorList.Items.Add(item);
+        ResizeDoctorColumns();
+    }
+
     private static bool IsLikelyControllerDevice(LinuxBluetoothDevice device)
     {
         return device.IsStadia ||
@@ -1804,7 +2124,10 @@ internal sealed class MainForm : Form
 
     private void SelectTabIfExists(string name)
     {
-        var page = _tabs.TabPages[name];
+        var page = _tabs.TabPages[name] ??
+                   _tabs.TabPages.Cast<TabPage>().FirstOrDefault(tab =>
+                       tab.Text.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                       tab.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (page is not null)
         {
             _tabs.SelectedTab = page;
@@ -2661,8 +2984,14 @@ internal sealed class MainForm : Form
 
     private static TabPage CreatePage(string name)
     {
+        return CreatePage(name, name);
+    }
+
+    private static TabPage CreatePage(string text, string name)
+    {
         return new TabPage(name)
         {
+            Text = text,
             Name = name,
             BackColor = Color.FromArgb(248, 250, 252),
             Padding = new Padding(0),
@@ -3066,8 +3395,21 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static Icon LoadApplicationIcon()
+    private static Icon LoadApplicationIcon(AppPaths paths)
     {
+        var assetIcon = Path.Combine(paths.Root, "assets", "StadiaX.ico");
+        if (File.Exists(assetIcon))
+        {
+            try
+            {
+                using var icon = new Icon(assetIcon);
+                return (Icon)icon.Clone();
+            }
+            catch
+            {
+            }
+        }
+
         try
         {
             return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? (Icon)SystemIcons.Application.Clone();

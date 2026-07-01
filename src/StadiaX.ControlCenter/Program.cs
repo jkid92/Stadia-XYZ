@@ -10,6 +10,15 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
         }
+        if (args.Contains("--comfortable-ui", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--classic-ui", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "comfortable");
+        }
+        if (args.Contains("--demo-bluetooth", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("STADIAX_DEMO_BLUETOOTH", "1");
+        }
 
         if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase))
         {
