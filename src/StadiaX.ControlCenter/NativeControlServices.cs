@@ -40,6 +40,7 @@ internal sealed class NativeControlServices
     private const int BridgeRumblePort = 45494;
     private const byte PacketMagic = 0x53;
     private const byte PacketVersion = 1;
+    private static readonly TimeSpan LiveFallbackMaxAge = TimeSpan.FromSeconds(90);
     private static readonly Regex BusIdPattern = new(@"^\d+-\d+$", RegexOptions.Compiled);
     private static readonly Regex MacPattern = new(@"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", RegexOptions.Compiled);
     private static bool IsBluetoothDemoMode =>
@@ -397,6 +398,12 @@ internal sealed class NativeControlServices
             return;
         }
 
+        if (!IsFreshLiveFallbackFile(_paths.BluetoothDiagnostics))
+        {
+            AppDiagnosticsLogger.Record("LIVE_FALLBACK_SKIPPED", ("source", "bluetooth-diagnostics"), ("age", FileAgeText(_paths.BluetoothDiagnostics)));
+            return;
+        }
+
         var text = ReadFileBestEffort(_paths.BluetoothDiagnostics);
         foreach (Match match in Regex.Matches(text, @"(?ms)^--\s*(?<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s*--\r?\n(?<info>.*?)(?=^--\s*(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\s*--|^==|\z)"))
         {
@@ -415,6 +422,12 @@ internal sealed class NativeControlServices
             return;
         }
 
+        if (!IsFreshLiveFallbackFile(_paths.LinuxLog))
+        {
+            AppDiagnosticsLogger.Record("LIVE_FALLBACK_SKIPPED", ("source", "linux-log"), ("age", FileAgeText(_paths.LinuxLog)));
+            return;
+        }
+
         var text = ReadFileBestEffort(_paths.LinuxLog);
         foreach (Match match in Regex.Matches(text, @"Controller\s+(?<mac>(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2})\s+(?:already\s+)?connected", RegexOptions.IgnoreCase))
         {
@@ -427,6 +440,34 @@ internal sealed class NativeControlServices
                 "",
                 null,
                 true));
+        }
+    }
+
+    private static bool IsFreshLiveFallbackFile(string path)
+    {
+        try
+        {
+            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
+            return age >= TimeSpan.Zero && age <= LiveFallbackMaxAge;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string FileAgeText(string path)
+    {
+        try
+        {
+            var age = DateTime.UtcNow - File.GetLastWriteTimeUtc(path);
+            return age.TotalSeconds < 120
+                ? $"{Math.Max(0, (int)age.TotalSeconds)}s"
+                : $"{Math.Max(0, (int)age.TotalMinutes)}m";
+        }
+        catch
+        {
+            return "unknown";
         }
     }
 
