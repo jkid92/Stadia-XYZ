@@ -119,15 +119,36 @@ struct ControllerRuntime {
     std::atomic<int> evdev_fd{-1};
     std::mutex state_mtx;
     std::mutex meta_mtx;
+    std::mutex rumble_mtx;
     ControllerState state{};
     std::string path;
     std::string name;
+    std::string rumble_hidraw_path;
+    int rumble_hid_fd{-1};
+    int ff_effect_id{-1};
+    bool native_ff_available{false};
+    bool rumble_warning_logged{false};
+    uint8_t last_rumble_strong{0};
+    uint8_t last_rumble_weak{0};
+    std::chrono::steady_clock::time_point last_rumble_sent{};
     std::atomic<bool> connected{false};
 };
 
 struct StadiaDeviceInfo {
     std::string path;
     std::string name;
+};
+
+struct HidrawDeviceInfo {
+    std::string path;
+    std::string sysfs_key;
+};
+
+enum class RumbleBackendPreference {
+    Auto,
+    Hidraw,
+    Evdev,
+    Off
 };
 
 static std::array<ControllerRuntime, MAX_CONTROLLERS> g_controllers;
@@ -261,43 +282,311 @@ static std::vector<StadiaDeviceInfo> find_stadia_evdevs() {
     return devices;
 }
 
-static int ff_effect_id = -1;
-static int rumble_hid_fd = -1;
-static void ensure_rumble_hid_fd() {
-    if (rumble_hid_fd >= 0) return;
-    for (int i = 0; i < 15; ++i) {
-        char path[256]; snprintf(path, sizeof(path), "/dev/hidraw%d", i);
-        int test_fd = open(path, O_RDWR | O_NONBLOCK);
-        if (test_fd >= 0) {
-            struct hidraw_devinfo info;
-            if (ioctl(test_fd, HIDIOCGRAWINFO, &info) == 0) {
-                if ((uint16_t)info.vendor == 0x18d1 && (uint16_t)info.product == 0x9400) { rumble_hid_fd = test_fd; break; }
-            }
-            close(test_fd);
-        }
-    }
-}
-static void send_rumble(uint8_t strong, uint8_t weak) {
-    ensure_rumble_hid_fd();
-    if (rumble_hid_fd >= 0) {
-        uint8_t report[5] = { 0x05, strong, strong, weak, weak };
-        if (write(rumble_hid_fd, report, 5) < 0) { close(rumble_hid_fd); rumble_hid_fd = -1; }
-    }
-}
 static bool rumble_enabled() {
     const char* enable_rumble = std::getenv("STADIA_X_ENABLE_RUMBLE");
     return enable_rumble != nullptr && std::strcmp(enable_rumble, "1") == 0;
 }
-static void ff_upload_and_play(int, uint8_t strong, uint8_t weak) {
-    if (!rumble_enabled()) return;
-    send_rumble(strong, weak);
+
+static std::string upper_ascii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return value;
 }
-static void ff_stop(int fd) {
-    if (ff_effect_id < 0) return;
-    struct input_event stop{}; stop.type = EV_FF; stop.code = static_cast<uint16_t>(ff_effect_id); stop.value = 0;
-    if (write(fd, &stop, sizeof(stop)) < 0) {
-        log_err("failed to stop force-feedback effect: %s", strerror(errno));
+
+static RumbleBackendPreference rumble_backend_preference() {
+    const char* value = std::getenv("STADIA_X_RUMBLE_BACKEND");
+    if (value == nullptr) return RumbleBackendPreference::Auto;
+    std::string text = upper_ascii(value);
+    if (text == "HIDRAW" || text == "RAW") return RumbleBackendPreference::Hidraw;
+    if (text == "EVDEV" || text == "FF" || text == "NATIVE") return RumbleBackendPreference::Evdev;
+    if (text == "OFF" || text == "0" || text == "FALSE") return RumbleBackendPreference::Off;
+    return RumbleBackendPreference::Auto;
+}
+
+static int rumble_dedupe_ms() {
+    const char* value = std::getenv("STADIA_X_RUMBLE_DEDUPE_MS");
+    if (value == nullptr || *value == '\0') return 4;
+    char* end = nullptr;
+    long parsed = std::strtol(value, &end, 10);
+    if (end == value) return 4;
+    return static_cast<int>(std::clamp(parsed, 0L, 25L));
+}
+
+static bool sysfs_component_is_stadia_key(const std::string& component) {
+    const std::string upper = upper_ascii(component);
+    return upper.find(":18D1:9400") != std::string::npos;
+}
+
+static std::string stadia_sysfs_key_from_class_device(const std::string& class_device_path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::path resolved = fs::weakly_canonical(class_device_path, ec);
+    if (ec) return {};
+
+    for (const auto& part : resolved) {
+        const std::string component = part.string();
+        if (sysfs_component_is_stadia_key(component)) {
+            return upper_ascii(component);
+        }
     }
+
+    return {};
+}
+
+static std::string sysfs_key_for_evdev(const std::string& evpath) {
+    namespace fs = std::filesystem;
+    const std::string event_name = fs::path(evpath).filename().string();
+    if (event_name.empty()) return {};
+    return stadia_sysfs_key_from_class_device("/sys/class/input/" + event_name + "/device");
+}
+
+static std::string sysfs_key_for_hidraw(const std::string& hidraw_path) {
+    namespace fs = std::filesystem;
+    const std::string hidraw_name = fs::path(hidraw_path).filename().string();
+    if (hidraw_name.empty()) return {};
+    return stadia_sysfs_key_from_class_device("/sys/class/hidraw/" + hidraw_name + "/device");
+}
+
+static int open_stadia_hidraw(const std::string& path) {
+    int fd = open(path.c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+
+    struct hidraw_devinfo info {};
+    if (ioctl(fd, HIDIOCGRAWINFO, &info) != 0 ||
+        static_cast<uint16_t>(info.vendor) != STADIA_VID ||
+        static_cast<uint16_t>(info.product) != STADIA_PID) {
+        close(fd);
+        return -1;
+    }
+
+    return fd;
+}
+
+static std::vector<HidrawDeviceInfo> find_stadia_hidraws() {
+    namespace fs = std::filesystem;
+    std::vector<HidrawDeviceInfo> devices;
+    std::error_code ec;
+    if (!fs::exists("/sys/class/hidraw", ec)) return devices;
+
+    for (const auto& entry : fs::directory_iterator("/sys/class/hidraw", ec)) {
+        if (ec) break;
+        const std::string name = entry.path().filename().string();
+        if (name.empty()) continue;
+
+        const std::string path = "/dev/" + name;
+        int fd = open_stadia_hidraw(path);
+        if (fd < 0) continue;
+        close(fd);
+
+        devices.push_back({path, sysfs_key_for_hidraw(path)});
+    }
+
+    std::sort(devices.begin(), devices.end(), [](const HidrawDeviceInfo& a, const HidrawDeviceInfo& b) {
+        return a.path < b.path;
+    });
+    return devices;
+}
+
+static std::optional<HidrawDeviceInfo> find_hidraw_for_evdev(const std::string& evpath) {
+    const std::string evdev_key = sysfs_key_for_evdev(evpath);
+    const auto hidraws = find_stadia_hidraws();
+    if (hidraws.empty()) return std::nullopt;
+
+    if (!evdev_key.empty()) {
+        for (const auto& hidraw : hidraws) {
+            if (!hidraw.sysfs_key.empty() && hidraw.sysfs_key == evdev_key) {
+                return hidraw;
+            }
+        }
+    }
+
+    if (hidraws.size() == 1) {
+        return hidraws.front();
+    }
+
+    return std::nullopt;
+}
+
+static bool test_bit(unsigned int bit, const unsigned long* bits) {
+    constexpr unsigned int bits_per_word = static_cast<unsigned int>(sizeof(unsigned long) * 8);
+    return (bits[bit / bits_per_word] & (1UL << (bit % bits_per_word))) != 0;
+}
+
+static bool evdev_supports_native_rumble(int fd) {
+    if (fd < 0) return false;
+    constexpr unsigned int bits_per_word = static_cast<unsigned int>(sizeof(unsigned long) * 8);
+    unsigned long ev_bits[(EV_MAX / bits_per_word) + 1] = {};
+    if (ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits) < 0 || !test_bit(EV_FF, ev_bits)) {
+        return false;
+    }
+
+    unsigned long ff_bits[(FF_MAX / bits_per_word) + 1] = {};
+    if (ioctl(fd, EVIOCGBIT(EV_FF, sizeof(ff_bits)), ff_bits) < 0) {
+        return false;
+    }
+
+    return test_bit(FF_RUMBLE, ff_bits);
+}
+
+static bool play_evdev_rumble_locked(ControllerRuntime& slot, int fd, uint8_t strong, uint8_t weak) {
+    if (fd < 0) return false;
+
+    if (strong == 0 && weak == 0) {
+        if (slot.ff_effect_id >= 0) {
+            struct input_event stop {};
+            stop.type = EV_FF;
+            stop.code = static_cast<uint16_t>(slot.ff_effect_id);
+            stop.value = 0;
+            if (write(fd, &stop, sizeof(stop)) < 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    struct ff_effect effect {};
+    effect.type = FF_RUMBLE;
+    effect.id = slot.ff_effect_id;
+    effect.u.rumble.strong_magnitude = static_cast<uint16_t>(strong) * 257;
+    effect.u.rumble.weak_magnitude = static_cast<uint16_t>(weak) * 257;
+    effect.replay.length = 250;
+    effect.replay.delay = 0;
+
+    if (ioctl(fd, EVIOCSFF, &effect) < 0) {
+        return false;
+    }
+
+    slot.ff_effect_id = effect.id;
+    struct input_event play {};
+    play.type = EV_FF;
+    play.code = static_cast<uint16_t>(slot.ff_effect_id);
+    play.value = 1;
+    return write(fd, &play, sizeof(play)) >= 0;
+}
+
+static bool write_hidraw_rumble_report(int fd, uint8_t strong, uint8_t weak) {
+    uint8_t report[5] = { 0x05, strong, strong, weak, weak };
+    return write(fd, report, sizeof(report)) == static_cast<ssize_t>(sizeof(report));
+}
+
+static bool play_hidraw_rumble_locked(ControllerRuntime& slot, uint8_t strong, uint8_t weak) {
+    if (slot.rumble_hidraw_path.empty()) return false;
+    if (slot.rumble_hid_fd < 0) {
+        slot.rumble_hid_fd = open_stadia_hidraw(slot.rumble_hidraw_path);
+    }
+    if (slot.rumble_hid_fd < 0) return false;
+
+    if (write_hidraw_rumble_report(slot.rumble_hid_fd, strong, weak)) {
+        return true;
+    }
+
+    close(slot.rumble_hid_fd);
+    slot.rumble_hid_fd = -1;
+    return false;
+}
+
+static void configure_controller_rumble(ControllerRuntime& slot, int ev_fd, const std::string& evpath, int controller_index) {
+    std::lock_guard<std::mutex> lk(slot.rumble_mtx);
+    if (slot.rumble_hid_fd >= 0) {
+        close(slot.rumble_hid_fd);
+        slot.rumble_hid_fd = -1;
+    }
+    slot.rumble_hidraw_path.clear();
+    slot.ff_effect_id = -1;
+    slot.native_ff_available = evdev_supports_native_rumble(ev_fd);
+    slot.rumble_warning_logged = false;
+    slot.last_rumble_strong = 0;
+    slot.last_rumble_weak = 0;
+    slot.last_rumble_sent = {};
+
+    const auto hidraw = find_hidraw_for_evdev(evpath);
+    if (hidraw.has_value()) {
+        slot.rumble_hidraw_path = hidraw->path;
+        slot.rumble_hid_fd = open_stadia_hidraw(slot.rumble_hidraw_path);
+    }
+
+    log_info(
+        "Controller %d rumble paths: evdev force-feedback=%s, hidraw=%s%s",
+        controller_index + 1,
+        slot.native_ff_available ? "yes" : "no",
+        slot.rumble_hidraw_path.empty() ? "none" : slot.rumble_hidraw_path.c_str(),
+        slot.rumble_hid_fd >= 0 ? " open" : "");
+}
+
+static void send_controller_rumble(int controller_index, uint8_t strong, uint8_t weak) {
+    if (!rumble_enabled() || controller_index < 0 || controller_index >= MAX_CONTROLLERS) return;
+
+    ControllerRuntime& slot = g_controllers[controller_index];
+    std::lock_guard<std::mutex> lk(slot.rumble_mtx);
+    if (!slot.connected.load()) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    const int dedupe_ms = rumble_dedupe_ms();
+    if (dedupe_ms > 0 &&
+        slot.last_rumble_sent.time_since_epoch().count() != 0 &&
+        slot.last_rumble_strong == strong &&
+        slot.last_rumble_weak == weak &&
+        now - slot.last_rumble_sent < std::chrono::milliseconds(dedupe_ms)) {
+        return;
+    }
+
+    const RumbleBackendPreference preference = rumble_backend_preference();
+    if (preference == RumbleBackendPreference::Off) return;
+
+    bool sent = false;
+    int ev_fd = slot.evdev_fd.load();
+    if ((preference == RumbleBackendPreference::Auto || preference == RumbleBackendPreference::Evdev) &&
+        slot.native_ff_available) {
+        sent = play_evdev_rumble_locked(slot, ev_fd, strong, weak);
+        if (!sent) {
+            slot.native_ff_available = false;
+            log_info("Controller %d native force-feedback failed; falling back to hidraw", controller_index + 1);
+        }
+    }
+
+    if (!sent && (preference == RumbleBackendPreference::Auto || preference == RumbleBackendPreference::Hidraw)) {
+        sent = play_hidraw_rumble_locked(slot, strong, weak);
+    }
+
+    if (sent) {
+        slot.last_rumble_strong = strong;
+        slot.last_rumble_weak = weak;
+        slot.last_rumble_sent = now;
+        return;
+    }
+
+    if (!slot.rumble_warning_logged && (strong != 0 || weak != 0)) {
+        log_info("Controller %d rumble unavailable: no usable evdev force-feedback or matching hidraw path", controller_index + 1);
+        slot.rumble_warning_logged = true;
+    }
+}
+
+static void shutdown_controller_rumble(ControllerRuntime& slot, int ev_fd) {
+    std::lock_guard<std::mutex> lk(slot.rumble_mtx);
+
+    if (slot.ff_effect_id >= 0 && ev_fd >= 0) {
+        struct input_event stop {};
+        stop.type = EV_FF;
+        stop.code = static_cast<uint16_t>(slot.ff_effect_id);
+        stop.value = 0;
+        ssize_t stop_result = write(ev_fd, &stop, sizeof(stop));
+        (void)stop_result;
+        ioctl(ev_fd, EVIOCRMFF, slot.ff_effect_id);
+        slot.ff_effect_id = -1;
+    }
+
+    if (slot.rumble_hid_fd >= 0) {
+        write_hidraw_rumble_report(slot.rumble_hid_fd, 0, 0);
+        close(slot.rumble_hid_fd);
+        slot.rumble_hid_fd = -1;
+    }
+    slot.rumble_hidraw_path.clear();
+    slot.native_ff_available = false;
+    slot.rumble_warning_logged = false;
+    slot.last_rumble_strong = 0;
+    slot.last_rumble_weak = 0;
+    slot.last_rumble_sent = {};
 }
 
 static int create_udp_socket() {
@@ -407,6 +696,7 @@ static void controller_worker(int controller_index, std::string evpath, std::str
         std::memset(&slot.state, 0, sizeof(slot.state));
     }
     slot.evdev_fd.store(ev_fd);
+    configure_controller_rumble(slot, ev_fd, evpath, controller_index);
     slot.connected.store(true);
 
     if (controller_index == 0) {
@@ -417,7 +707,6 @@ static void controller_worker(int controller_index, std::string evpath, std::str
         }
         g_evdev_fd.store(ev_fd);
         g_controller_connected.store(true);
-        ff_effect_id = -1;
         mirror_primary_state(ControllerState{});
     }
 
@@ -507,7 +796,7 @@ static void controller_worker(int controller_index, std::string evpath, std::str
         }
     }
 
-    ff_stop(ev_fd);
+    shutdown_controller_rumble(slot, ev_fd);
     ioctl(ev_fd, EVIOCGRAB, 0);
     close(ev_fd);
     close(udp_fd);
@@ -562,9 +851,7 @@ static void rumble_receiver_thread() {
             continue;
         }
 
-        int fd = g_controllers[controller_index].evdev_fd.load();
-        if (fd < 0 && controller_index == 0) fd = g_evdev_fd.load();
-        if (fd >= 0) ff_upload_and_play(fd, rs.motor_left, rs.motor_right);
+        send_controller_rumble(controller_index, rs.motor_left, rs.motor_right);
     }
     close(udp_fd);
 }

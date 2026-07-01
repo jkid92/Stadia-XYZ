@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -35,6 +37,9 @@ internal sealed record ControllerTelemetrySnapshot(DateTimeOffset ReadAt, IReadO
 
 internal sealed class NativeControlServices
 {
+    private const int BridgeRumblePort = 45494;
+    private const byte PacketMagic = 0x53;
+    private const byte PacketVersion = 1;
     private static readonly Regex BusIdPattern = new(@"^\d+-\d+$", RegexOptions.Compiled);
     private static readonly Regex MacPattern = new(@"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", RegexOptions.Compiled);
     private static bool IsBluetoothDemoMode =>
@@ -282,6 +287,40 @@ internal sealed class NativeControlServices
             .ThenByDescending(d => d.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase))
             .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    public async Task SendRumbleTestAsync(int controllerIndex, byte largeMotor = 220, byte smallMotor = 180, int durationMs = 320)
+    {
+        if (controllerIndex < 1 || controllerIndex > 4)
+        {
+            throw new ArgumentOutOfRangeException(nameof(controllerIndex), "Controller index must be between 1 and 4.");
+        }
+
+        if (IsBluetoothDemoMode)
+        {
+            await Task.Delay(Math.Clamp(durationMs, 80, 1500)).ConfigureAwait(false);
+            return;
+        }
+
+        var distro = await _wslResolver.ResolveAsync().ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(distro))
+        {
+            throw new InvalidOperationException("No usable WSL distro found. Start the bridge before testing rumble.");
+        }
+
+        const string ipScript = "hostname -I 2>/dev/null | tr ' ' '\\n' | grep -m1 -E '^[0-9]+(\\.[0-9]+){3}$'";
+        var ipResult = await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", ipScript }, _paths.Root, 10000).ConfigureAwait(false);
+        var ip = ipResult.Output.Trim().Split(new[] { "\r\n", "\n", " " }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (!IPAddress.TryParse(ip, out var bridgeAddress))
+        {
+            throw new InvalidOperationException("Could not resolve the WSL bridge IP. Start the bridge, then try the rumble test again.");
+        }
+
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Connect(new IPEndPoint(bridgeAddress, BridgeRumblePort));
+        await udp.SendAsync(BuildRumblePacket(controllerIndex - 1, largeMotor, smallMotor), 6).ConfigureAwait(false);
+        await Task.Delay(Math.Clamp(durationMs, 80, 1500)).ConfigureAwait(false);
+        await udp.SendAsync(BuildRumblePacket(controllerIndex - 1, 0, 0), 6).ConfigureAwait(false);
     }
 
     public async Task<CommandResult> RunLinuxBluetoothCommandAsync(string mac, string command)
@@ -927,6 +966,19 @@ bluetoothctl devices 2>&1 || true
     }
 
     private static string EmptyAsNone(string value) => string.IsNullOrWhiteSpace(value) ? "none" : value;
+
+    private static byte[] BuildRumblePacket(int controllerIndex, byte largeMotor, byte smallMotor)
+    {
+        return new[]
+        {
+            PacketMagic,
+            PacketVersion,
+            (byte)controllerIndex,
+            (byte)0,
+            largeMotor,
+            smallMotor
+        };
+    }
 
     private static int ReadInt(JsonElement element, string property)
     {

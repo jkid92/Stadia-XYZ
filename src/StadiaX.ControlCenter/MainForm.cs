@@ -996,9 +996,10 @@ internal sealed class MainForm : Form
         layout.Controls.Add(visualGroup, 1, 0);
 
         var telemetryGroup = CreateGroup("Telemetry");
-        var telemetryLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(10) };
+        var telemetryLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(10) };
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         telemetryGroup.Controls.Add(telemetryLayout);
@@ -1017,11 +1018,24 @@ internal sealed class MainForm : Form
         padPanel.Controls.Add(_controllerPadCombo);
         telemetryLayout.Controls.Add(padPanel, 0, 0);
 
+        var rumbleGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Margin = new Padding(0) };
+        rumbleGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
+        for (var slot = 0; slot < 4; slot++)
+        {
+            rumbleGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        }
+        rumbleGrid.Controls.Add(new Label { Text = "Rumble", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        AddActionGridButton(rumbleGrid, "1", 1, 0, 1, async () => await TestRumbleAsync(1));
+        AddActionGridButton(rumbleGrid, "2", 2, 0, 1, async () => await TestRumbleAsync(2));
+        AddActionGridButton(rumbleGrid, "3", 3, 0, 1, async () => await TestRumbleAsync(3));
+        AddActionGridButton(rumbleGrid, "4", 4, 0, 1, async () => await TestRumbleAsync(4));
+        telemetryLayout.Controls.Add(rumbleGrid, 0, 1);
+
         _controllerVisualStatusLabel.AutoSize = false;
         _controllerVisualStatusLabel.Dock = DockStyle.Fill;
         _controllerVisualStatusLabel.AutoEllipsis = true;
         _controllerVisualStatusLabel.TextAlign = ContentAlignment.TopLeft;
-        telemetryLayout.Controls.Add(_controllerVisualStatusLabel, 0, 1);
+        telemetryLayout.Controls.Add(_controllerVisualStatusLabel, 0, 2);
 
         telemetryLayout.Controls.Add(new Label
         {
@@ -1029,10 +1043,10 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
-        }, 0, 2);
+        }, 0, 3);
         _controllerList.Dock = DockStyle.Fill;
         ConfigureList(_controllerList, ("Pad", 42), ("On", 38), ("P/s", 54), ("Trig", 58), ("Pressed", 96));
-        telemetryLayout.Controls.Add(_controllerList, 0, 3);
+        telemetryLayout.Controls.Add(_controllerList, 0, 4);
         layout.Controls.Add(telemetryGroup, 0, 0);
 
         page.Controls.Add(BuildTopPanel("Reads logs/controller-state.json from the native receiver",
@@ -1633,6 +1647,14 @@ internal sealed class MainForm : Form
     {
         return File.Exists(_paths.ControllerState) &&
                File.GetLastWriteTimeUtc(_paths.ControllerState) >= DateTime.UtcNow - TimeSpan.FromSeconds(10);
+    }
+
+    private async Task TestRumbleAsync(int controllerIndex)
+    {
+        LogUserAction("Rumble test requested", ("pad", $"P{controllerIndex}"));
+        BeginOperationProgress("Rumble test", $"Sending pulse to P{controllerIndex}", 25);
+        await _native.SendRumbleTestAsync(controllerIndex).ConfigureAwait(true);
+        CompleteOperationProgress("Rumble test", $"Pulse sent to P{controllerIndex}");
     }
 
     private async Task UpdateBatteryAsync(IReadOnlyList<LinuxBluetoothDevice>? knownDevices = null)

@@ -19,6 +19,7 @@ internal sealed class IntegratedReceiver
     private const int InputPacketSize = 16;
     private const int RumblePacketSize = 6;
     private const int OneShotDebounceMs = 200;
+    private const int RumbleDuplicateWindowMs = 4;
 
     private readonly AppPaths _paths;
     private readonly string _bridgeIp;
@@ -27,6 +28,9 @@ internal sealed class IntegratedReceiver
     private readonly object _telemetryLock = new();
     private readonly object _rumbleLock = new();
     private readonly ControllerTelemetryState[] _telemetry = Enumerable.Range(0, MaxControllers).Select(_ => new ControllerTelemetryState()).ToArray();
+    private readonly byte[] _lastRumbleLarge = new byte[MaxControllers];
+    private readonly byte[] _lastRumbleSmall = new byte[MaxControllers];
+    private readonly long[] _lastRumbleTick = new long[MaxControllers];
     private readonly VigemNative.X360Notification _rumbleCallback;
 
     private IntPtr _client;
@@ -118,6 +122,9 @@ internal sealed class IntegratedReceiver
                 _rumbleClient?.Dispose();
                 _rumbleClient = null;
                 _rumbleEndpoint = null;
+                Array.Clear(_lastRumbleLarge);
+                Array.Clear(_lastRumbleSmall);
+                Array.Clear(_lastRumbleTick);
             }
 
             LogInfo("Integrated receiver stopped.");
@@ -167,6 +174,7 @@ internal sealed class IntegratedReceiver
     {
         _rumbleClient = new UdpClient(AddressFamily.InterNetwork);
         _rumbleEndpoint = new IPEndPoint(bridgeAddress, PortRumble);
+        _rumbleClient.Connect(_rumbleEndpoint);
     }
 
     private async Task RunInputLoopAsync(CancellationToken cancellationToken)
@@ -332,9 +340,23 @@ internal sealed class IntegratedReceiver
                 return;
             }
 
+            var now = Environment.TickCount64;
+            var elapsed = now - _lastRumbleTick[controllerIndex];
+            if (_lastRumbleTick[controllerIndex] != 0 &&
+                elapsed >= 0 &&
+                elapsed < RumbleDuplicateWindowMs &&
+                _lastRumbleLarge[controllerIndex] == largeMotor &&
+                _lastRumbleSmall[controllerIndex] == smallMotor)
+            {
+                return;
+            }
+
             try
             {
-                _rumbleClient.Send(packet, packet.Length, _rumbleEndpoint);
+                _rumbleClient.Send(packet, packet.Length);
+                _lastRumbleLarge[controllerIndex] = largeMotor;
+                _lastRumbleSmall[controllerIndex] = smallMotor;
+                _lastRumbleTick[controllerIndex] = now;
             }
             catch (Exception ex)
             {
