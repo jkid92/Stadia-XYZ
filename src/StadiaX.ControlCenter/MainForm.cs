@@ -52,6 +52,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _statusLogBox = new();
     private readonly TextBox _linuxLogBox = new();
     private readonly TextBox _userActionLogBox = new();
+    private readonly TextBox _appDiagnosticsLogBox = new();
     private readonly TextBox _diagnosticsBox = new();
     private readonly Label _dashboardStatusLabel = new();
     private readonly Label _dashboardDetailLabel = new();
@@ -94,6 +95,7 @@ internal sealed class MainForm : Form
         _selfTestService = new SelfTestService(paths, _requirementChecker);
         _native = new NativeControlServices(paths, _runner);
         _actionLogger = new UserActionLogger(paths);
+        AppDiagnosticsLogger.Initialize(paths);
 
         Text = "Stadia X";
         _baseIcon = LoadApplicationIcon(paths);
@@ -907,7 +909,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(0, 8, 0, 0)
         };
         linuxLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        linuxLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        linuxLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         linuxLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         linuxGroup.Controls.Add(linuxLayout);
 
@@ -915,14 +917,16 @@ internal sealed class MainForm : Form
 
         _linuxBluetoothSummaryLabel.Name = "LinuxBluetoothSummaryLabel";
         _linuxBluetoothSummaryLabel.Dock = DockStyle.Fill;
-        _linuxBluetoothSummaryLabel.Padding = new Padding(8, 6, 0, 0);
+        _linuxBluetoothSummaryLabel.Margin = new Padding(0, 6, 0, 4);
+        _linuxBluetoothSummaryLabel.Padding = new Padding(8, 0, 0, 0);
         _linuxBluetoothSummaryLabel.TextAlign = ContentAlignment.MiddleLeft;
         _linuxBluetoothSummaryLabel.Font = new Font("Segoe UI", 9, FontStyle.Regular);
         _linuxBluetoothSummaryLabel.ForeColor = Color.FromArgb(92, 106, 126);
         _linuxBluetoothSummaryLabel.Text = "Linux devices: not refreshed yet";
         linuxLayout.Controls.Add(_linuxBluetoothSummaryLabel, 0, 1);
 
-        ConfigureList(_linuxBluetoothList, ("State", 82), ("Name", 340), ("MAC / Source", 170), ("Paired", 72), ("Trust", 72), ("Batt", 72), ("Source", 90));
+        ConfigureList(_linuxBluetoothList, ("State", 86), ("Name", 320), ("MAC / Source", 176), ("Paired", 64), ("Trust", 64), ("Batt", 64), ("Source", 82));
+        _linuxBluetoothList.Margin = new Padding(0, 4, 0, 0);
         _linuxBluetoothList.MultiSelect = true;
         _linuxBluetoothList.ShowItemToolTips = true;
         _linuxBluetoothList.SmallImageList = _linuxBluetoothRowSizer;
@@ -1110,17 +1114,19 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 3,
+            RowCount = 4,
             Padding = new Padding(14)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 34));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 33));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 33));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 26));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 28));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 23));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 23));
         page.Controls.Add(layout);
 
         ConfigureLogBox(_statusLogBox, "Status log not loaded yet.");
         ConfigureLogBox(_linuxLogBox, "Linux log not loaded yet.");
         ConfigureLogBox(_userActionLogBox, "User action log not loaded yet.");
+        ConfigureLogBox(_appDiagnosticsLogBox, "App diagnostics log not loaded yet.");
 
         var statusGroup = CreateGroup("Status timeline");
         statusGroup.Controls.Add(_statusLogBox);
@@ -1133,6 +1139,10 @@ internal sealed class MainForm : Form
         var userGroup = CreateGroup("User actions");
         userGroup.Controls.Add(_userActionLogBox);
         layout.Controls.Add(userGroup, 0, 2);
+
+        var appGroup = CreateGroup("App diagnostics");
+        appGroup.Controls.Add(_appDiagnosticsLogBox);
+        layout.Controls.Add(appGroup, 0, 3);
 
         page.Controls.Add(BuildTopPanel("Live logs", ("Refresh", RefreshLogs), ("Open logs", () => Process.Start("explorer.exe", $"\"{_paths.LogDirectory}\""))));
         return page;
@@ -1368,6 +1378,7 @@ internal sealed class MainForm : Form
             PopulateLinuxBluetoothList(_linuxBluetoothList, visibleDevices, compact: false);
             PopulateLinuxBluetoothList(_wizardLinuxBluetoothList, visibleDevices, compact: true);
             _lastLinuxBluetoothDevices = visibleDevices;
+            LogLinuxBluetoothRefresh(scanSeconds, visibleDevices, nativeDevices);
             ResizeLinuxBluetoothColumns();
             ResizeWizardLinuxBluetoothColumns();
             UpdateLinuxBluetoothSummary(devices);
@@ -1394,12 +1405,43 @@ internal sealed class MainForm : Form
             }
             _linuxBluetoothSummaryLabel.Text = "Linux devices: refresh failed - " + ex.Message;
             _linuxBluetoothSummaryLabel.ForeColor = Color.FromArgb(180, 45, 45);
+            AppDiagnosticsLogger.Record("LINUX_BT_REFRESH_FAILED", ("scanSeconds", scanSeconds.ToString()), ("error", ex.Message));
             throw;
         }
         finally
         {
             _linuxRefreshInProgress = false;
         }
+    }
+
+    private static void LogLinuxBluetoothRefresh(int scanSeconds, IReadOnlyList<LinuxBluetoothDevice> visibleDevices, IReadOnlyList<LinuxBluetoothDevice> nativeDevices)
+    {
+        var connected = visibleDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var stadia = visibleDevices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+        var batteries = visibleDevices
+            .Where(device => device.BatteryPercent.HasValue)
+            .Select(device => $"{device.Mac}:{device.BatteryPercent}%")
+            .ToArray();
+        var sources = visibleDevices
+            .GroupBy(LinuxDeviceSourceText)
+            .Select(group => $"{group.Key}:{group.Count()}")
+            .ToArray();
+        AppDiagnosticsLogger.Record(
+            "LINUX_BT_REFRESH_RENDERED",
+            ("scanSeconds", scanSeconds.ToString()),
+            ("nativeCount", nativeDevices.Count.ToString()),
+            ("visibleCount", visibleDevices.Count.ToString()),
+            ("connected", connected.ToString()),
+            ("stadia", stadia.ToString()),
+            ("batteries", string.Join(",", batteries)),
+            ("sources", string.Join(",", sources)),
+            ("devices", string.Join(";", visibleDevices.Take(10).Select(DeviceDebugText))));
+    }
+
+    private static string DeviceDebugText(LinuxBluetoothDevice device)
+    {
+        var battery = device.BatteryPercent is null ? "-" : device.BatteryPercent + "%";
+        return $"{device.Mac},{device.Name},connected={EmptyAsDash(device.Connected)},paired={EmptyAsDash(device.Paired)},trusted={EmptyAsDash(device.Trusted)},battery={battery},source={LinuxDeviceSourceText(device)}";
     }
 
     private void UpdateLinuxBluetoothSummary(IReadOnlyList<LinuxBluetoothDevice> devices)
@@ -1508,11 +1550,11 @@ internal sealed class MainForm : Form
         }
 
         var available = Math.Max(520, _linuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
-        var sourceWidth = available >= 760 ? 84 : 0;
-        var stateWidth = available >= 700 ? 82 : 74;
-        var macWidth = available >= 700 ? 164 : 148;
-        var yesNoWidth = available >= 700 ? 70 : 58;
-        var batteryWidth = available >= 700 ? 68 : 58;
+        var sourceWidth = available >= 780 ? 78 : 0;
+        var stateWidth = available >= 700 ? 86 : 76;
+        var macWidth = available >= 700 ? 176 : 152;
+        var yesNoWidth = available >= 700 ? 62 : 54;
+        var batteryWidth = available >= 700 ? 62 : 54;
         var fixedWidth = stateWidth + macWidth + yesNoWidth + yesNoWidth + batteryWidth + sourceWidth;
         _linuxBluetoothList.Columns[0].Width = stateWidth;
         _linuxBluetoothList.Columns[2].Width = macWidth;
@@ -1520,7 +1562,7 @@ internal sealed class MainForm : Form
         _linuxBluetoothList.Columns[4].Width = yesNoWidth;
         _linuxBluetoothList.Columns[5].Width = batteryWidth;
         _linuxBluetoothList.Columns[6].Width = sourceWidth;
-        _linuxBluetoothList.Columns[1].Width = Math.Max(170, available - fixedWidth);
+        _linuxBluetoothList.Columns[1].Width = Math.Max(190, available - fixedWidth);
     }
 
     private void ResizeWizardLinuxBluetoothColumns()
@@ -1659,6 +1701,7 @@ internal sealed class MainForm : Form
 
     private async Task UpdateBatteryAsync(IReadOnlyList<LinuxBluetoothDevice>? knownDevices = null)
     {
+        var usedKnownDevices = knownDevices is not null;
         if (knownDevices is null)
         {
             var devices = (await _native.GetLinuxBluetoothDevicesAsync(0)).ToList();
@@ -1668,10 +1711,18 @@ internal sealed class MainForm : Form
 
         var stadia = knownDevices.Where(d => d.IsStadia || d.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)).ToArray();
         UpdateBatteryIndicator(stadia);
+        AppDiagnosticsLogger.Record(
+            "BATTERY_REFRESH",
+            ("usedKnownDevices", usedKnownDevices.ToString()),
+            ("visibleCount", knownDevices.Count.ToString()),
+            ("stadiaCount", stadia.Length.ToString()),
+            ("overlayChecked", _batteryOverlayCheck.Checked.ToString()),
+            ("devices", string.Join(";", stadia.Take(4).Select(DeviceDebugText))));
         if (stadia.Length == 0)
         {
             _batteryLabel.Text = "Battery: not available yet. Start the bridge and connect a controller.";
             HideBatteryOverlay();
+            AppDiagnosticsLogger.Record("BATTERY_REFRESH_EMPTY", ("visibleCount", knownDevices.Count.ToString()));
             RefreshDashboardUi();
             return;
         }
@@ -1690,6 +1741,11 @@ internal sealed class MainForm : Form
         {
             HideBatteryOverlay();
         }
+        AppDiagnosticsLogger.Record(
+            "BATTERY_REFRESH_RENDERED",
+            ("lowCount", low.Length.ToString()),
+            ("overlayVisible", (_batteryOverlay?.Visible == true).ToString()),
+            ("tray", BatteryShortText(stadia)));
         RefreshDashboardUi();
     }
 
@@ -2125,12 +2181,14 @@ internal sealed class MainForm : Form
         var statusText = LogReader.Tail(_paths.StatusLog, 140);
         var linuxText = LogReader.Tail(_paths.LinuxLog, 180);
         var actionText = LogReader.Tail(_paths.UserActionLog, 160);
+        var appDiagnosticsText = LogReader.Tail(_paths.AppDiagnosticsLog, 180);
         _controlStatusLogBox.Text = statusText;
         _dashboardActionLogBox.Text = actionText;
         _statusLogBox.Text = statusText;
         _controlLinuxLogBox.Text = linuxText;
         _linuxLogBox.Text = linuxText;
         _userActionLogBox.Text = actionText;
+        _appDiagnosticsLogBox.Text = appDiagnosticsText;
     }
 
     private void RefreshSelectionLabels()
@@ -2166,6 +2224,9 @@ internal sealed class MainForm : Form
             };
             context.AddRange(details);
             _actionLogger.Record(action, context.ToArray());
+            var diagnosticsContext = new List<(string Key, string? Value)> { ("action", action) };
+            diagnosticsContext.AddRange(context);
+            AppDiagnosticsLogger.Record("UI_ACTION", diagnosticsContext.ToArray());
         }
         catch
         {
@@ -2193,10 +2254,40 @@ internal sealed class MainForm : Form
         var values = list.SelectedItems
             .Cast<ListViewItem>()
             .Take(maxItems)
-            .Select(item => item.Text)
+            .Select(SelectedItemDisplayText)
             .Where(text => !string.IsNullOrWhiteSpace(text))
             .ToArray();
         return values.Length == 0 ? "" : string.Join(",", values);
+    }
+
+    private static string SelectedItemDisplayText(ListViewItem item)
+    {
+        return item.Tag switch
+        {
+            LinuxBluetoothDevice device => $"{device.Name} {device.Mac}",
+            UsbipdDevice device => device.Display,
+            WindowsBluetoothDevice device => $"{device.Name} {device.Status}",
+            ControllerProfile profile => $"{profile.Name} {profile.Mac}",
+            MacroMapping mapping => $"{mapping.Code}={mapping.Shortcut}",
+            _ => FirstMeaningfulSubItem(item)
+        };
+    }
+
+    private static string FirstMeaningfulSubItem(ListViewItem item)
+    {
+        foreach (ListViewItem.ListViewSubItem subItem in item.SubItems)
+        {
+            var text = subItem.Text.Trim();
+            if (!string.IsNullOrWhiteSpace(text) &&
+                !text.Equals("Connected", StringComparison.OrdinalIgnoreCase) &&
+                !text.Equals("Disconnected", StringComparison.OrdinalIgnoreCase) &&
+                !text.Equals("Seen", StringComparison.OrdinalIgnoreCase))
+            {
+                return text;
+            }
+        }
+
+        return item.Text.Trim();
     }
 
     private static string SubItemText(ListViewItem item, int index)
@@ -2481,17 +2572,20 @@ internal sealed class MainForm : Form
 
     private void UpdateBatteryIndicator(IReadOnlyList<LinuxBluetoothDevice> devices)
     {
-        if (_batteryIndicatorIcon is not null)
-        {
-            _batteryIndicatorIcon.Dispose();
-            _batteryIndicatorIcon = null;
-            Icon = (Icon)_baseIcon.Clone();
-            _trayIcon.Icon = (Icon)_baseIcon.Clone();
-        }
+        var previousIcon = _batteryIndicatorIcon;
+        _batteryIndicatorIcon = devices.Count == 0 ? (Icon)_baseIcon.Clone() : CreateBatteryIndicatorIcon(devices);
+        Icon = _batteryIndicatorIcon;
+        _trayIcon.Icon = _batteryIndicatorIcon;
+        previousIcon?.Dispose();
 
         _trayIcon.Text = BatteryTooltip(devices);
         _batteryStatusLabel.Text = BatteryHeaderText(devices);
         Text = devices.Count == 0 ? "Stadia X" : "Stadia X - " + BatteryShortText(devices);
+        AppDiagnosticsLogger.Record(
+            "BATTERY_INDICATOR_UPDATED",
+            ("count", devices.Count.ToString()),
+            ("title", Text),
+            ("tooltip", _trayIcon.Text));
     }
 
     private static string BatteryHeaderText(IReadOnlyList<LinuxBluetoothDevice> devices)
@@ -2992,22 +3086,22 @@ internal sealed class MainForm : Form
                 StartPosition = FormStartPosition.Manual,
                 ShowInTaskbar = false,
                 TopMost = true,
-                Opacity = 0.52,
-                Size = new Size(76, 28)
+                Opacity = 0.44,
+                Size = new Size(64, 24)
             };
             _batteryOverlayLabel = new Label
             {
                 Dock = DockStyle.Fill,
-                Padding = new Padding(7, 2, 7, 2),
+                Padding = new Padding(5, 1, 5, 1),
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI", 8, FontStyle.Bold),
+                Font = new Font("Segoe UI", 7, FontStyle.Bold),
                 ForeColor = Color.White
             };
             _batteryOverlay.Controls.Add(_batteryOverlayLabel);
         }
 
         var critical = devices.Any(device => device.BatteryPercent is < 10);
-        _batteryOverlay.Opacity = critical ? 0.62 : 0.52;
+        _batteryOverlay.Opacity = critical ? 0.58 : 0.44;
         _batteryOverlay.BackColor = Color.FromArgb(8, 18, 30);
         var rows = devices.Take(4).Select((device, index) =>
         {
@@ -3031,6 +3125,12 @@ internal sealed class MainForm : Form
         _batteryOverlay.TopMost = false;
         _batteryOverlay.TopMost = true;
         _batteryOverlay.BringToFront();
+        AppDiagnosticsLogger.Record(
+            "BATTERY_OVERLAY_SHOWN",
+            ("warning", warning.ToString()),
+            ("critical", critical.ToString()),
+            ("size", $"{_batteryOverlay.Width}x{_batteryOverlay.Height}"),
+            ("text", _batteryOverlayLabel.Text));
     }
 
     private void HideBatteryOverlay()
@@ -3084,10 +3184,10 @@ internal sealed class MainForm : Form
             .DefaultIfEmpty(48)
             .Max();
         var lineHeight = TextRenderer.MeasureText("P1 100%", label.Font, Size.Empty, flags).Height;
-        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 8, 68, 138);
+        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 6, 54, 118);
         var height = lines.Length > 1
-            ? Math.Clamp((lineHeight * lines.Length) + label.Padding.Vertical + 6, 40, 48)
-            : Math.Clamp(lineHeight + label.Padding.Vertical + 6, 26, 30);
+            ? Math.Clamp((lineHeight * lines.Length) + label.Padding.Vertical + 4, 32, 40)
+            : Math.Clamp(lineHeight + label.Padding.Vertical + 4, 22, 26);
         return new Size(width, height);
     }
 

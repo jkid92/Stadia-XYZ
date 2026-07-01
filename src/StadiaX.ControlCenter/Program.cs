@@ -20,6 +20,9 @@ internal static class Program
             Environment.SetEnvironmentVariable("STADIAX_DEMO_BLUETOOTH", "1");
         }
 
+        var paths = AppPaths.Discover();
+        AppDiagnosticsLogger.Initialize(paths);
+
         if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase))
         {
             Environment.Exit(RunBridgeCommand(start: true));
@@ -39,12 +42,13 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm(AppPaths.Discover()));
+        Application.Run(new MainForm(paths));
     }
 
     private static int RunBridgeCommand(bool start)
     {
         var paths = AppPaths.Discover();
+        AppDiagnosticsLogger.Initialize(paths);
         var runner = new ProcessRunner();
         var orchestrator = new BridgeOrchestrator(paths, runner);
         return (start ? orchestrator.StartAsync() : orchestrator.StopAsync()).GetAwaiter().GetResult();

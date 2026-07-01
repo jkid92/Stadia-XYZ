@@ -61,6 +61,16 @@ internal sealed class ProcessRunner
 
     private static async Task<CommandResult> RunProcessAsync(ProcessStartInfo startInfo, int timeoutMilliseconds)
     {
+        var startedAt = Stopwatch.StartNew();
+        var commandId = Guid.NewGuid().ToString("N")[..8];
+        AppDiagnosticsLogger.Record(
+            "PROCESS_START",
+            ("id", commandId),
+            ("file", startInfo.FileName),
+            ("args", Shorten(ProcessArguments(startInfo), 700)),
+            ("cwd", startInfo.WorkingDirectory),
+            ("timeoutMs", timeoutMilliseconds.ToString()));
+
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var output = new StringBuilder();
         var error = new StringBuilder();
@@ -69,6 +79,12 @@ internal sealed class ProcessRunner
 
         if (!TryStart(process, out var startError))
         {
+            AppDiagnosticsLogger.Record(
+                "PROCESS_START_FAILED",
+                ("id", commandId),
+                ("file", startInfo.FileName),
+                ("elapsedMs", startedAt.ElapsedMilliseconds.ToString()),
+                ("error", startError));
             return new CommandResult(-1, "", startError);
         }
 
@@ -93,10 +109,27 @@ internal sealed class ProcessRunner
             {
                 // Preserve the original timeout result even if cleanup cannot observe process exit.
             }
+            AppDiagnosticsLogger.Record(
+                "PROCESS_TIMEOUT",
+                ("id", commandId),
+                ("file", startInfo.FileName),
+                ("elapsedMs", startedAt.ElapsedMilliseconds.ToString()),
+                ("outputBytes", output.Length.ToString()),
+                ("errorBytes", error.Length.ToString()));
             return new CommandResult(-1, output.ToString(), $"Timed out after {timeoutMilliseconds} ms.");
         }
 
-        return new CommandResult(process.ExitCode, output.ToString(), error.ToString());
+        var result = new CommandResult(process.ExitCode, output.ToString(), error.ToString());
+        AppDiagnosticsLogger.Record(
+            "PROCESS_EXIT",
+            ("id", commandId),
+            ("file", startInfo.FileName),
+            ("exitCode", result.ExitCode.ToString()),
+            ("elapsedMs", startedAt.ElapsedMilliseconds.ToString()),
+            ("outputBytes", output.Length.ToString()),
+            ("errorBytes", error.Length.ToString()),
+            ("errorTail", Tail(result.Error, 180)));
+        return result;
     }
 
     public async Task<bool> CommandExistsAsync(string commandName, string workingDirectory)
@@ -123,5 +156,36 @@ internal sealed class ProcessRunner
             error = ex.Message;
             return false;
         }
+    }
+
+    private static string ProcessArguments(ProcessStartInfo startInfo)
+    {
+        if (startInfo.ArgumentList.Count > 0)
+        {
+            return string.Join(" ", startInfo.ArgumentList.Select(argument => argument.Contains(' ') ? "\"" + argument + "\"" : argument));
+        }
+
+        return startInfo.Arguments;
+    }
+
+    private static string Tail(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "";
+        }
+
+        value = value.Trim();
+        return value.Length <= maxLength ? value : value[^maxLength..];
+    }
+
+    private static string Shorten(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length <= maxLength)
+        {
+            return value;
+        }
+
+        return value[..maxLength] + "...";
     }
 }
