@@ -1418,7 +1418,7 @@ internal sealed class MainForm : Form
 
     private static void LogLinuxBluetoothRefresh(int scanSeconds, IReadOnlyList<LinuxBluetoothDevice> visibleDevices, IReadOnlyList<LinuxBluetoothDevice> nativeDevices)
     {
-        var connected = visibleDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var connected = visibleDevices.Count(IsLiveBluetoothConnected);
         var stadia = visibleDevices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
         var batteries = visibleDevices
             .Where(device => device.BatteryPercent.HasValue)
@@ -1455,17 +1455,35 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var connected = devices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
-        var paired = devices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var connected = devices.Count(IsLiveBluetoothConnected);
+        var paired = devices.Count(device => NativeControlServices.IsBluetoothMac(device.Mac) && device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
         var stadia = devices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+        var historical = devices.Count(device => NativeControlServices.IsBluetoothMac(device.Mac) && IsHistoricalBluetoothSource(device));
+        var receiver = devices.Count(device => !NativeControlServices.IsBluetoothMac(device.Mac) || device.Source.Equals(BluetoothDeviceSources.Receiver, StringComparison.OrdinalIgnoreCase));
         var firstBattery = devices
             .Where(device => device.BatteryPercent.HasValue)
             .Select(device => device.BatteryPercent!.Value + "%")
             .FirstOrDefault();
 
-        _linuxBluetoothSummaryLabel.Text = $"Linux devices: {devices.Count} visible, {connected} connected, {paired} paired, {stadia} Stadia" +
+        var parts = new List<string>
+        {
+            $"Linux devices: {devices.Count} visible",
+            $"{connected} connected",
+            $"{paired} paired",
+            $"{stadia} Stadia"
+        };
+        if (historical > 0)
+        {
+            parts.Add($"{historical} last seen");
+        }
+        if (receiver > 0)
+        {
+            parts.Add($"{receiver} receiver active");
+        }
+
+        _linuxBluetoothSummaryLabel.Text = string.Join(", ", parts) +
                                            (string.IsNullOrWhiteSpace(firstBattery) ? "" : $" - battery {firstBattery}");
-        _linuxBluetoothSummaryLabel.ForeColor = connected > 0 || stadia > 0 ? Color.FromArgb(34, 120, 72) : Color.FromArgb(92, 106, 126);
+        _linuxBluetoothSummaryLabel.ForeColor = connected > 0 ? Color.FromArgb(34, 120, 72) : Color.FromArgb(92, 106, 126);
     }
 
     private static void PopulateLinuxBluetoothList(ListView list, IReadOnlyList<LinuxBluetoothDevice> devices, bool compact)
@@ -1501,7 +1519,7 @@ internal sealed class MainForm : Form
         var item = new ListViewItem(LinuxDeviceStateText(device))
         {
             Tag = device,
-            ToolTipText = $"{device.Name} {device.Mac} connected={EmptyAsDash(device.Connected)} paired={EmptyAsDash(device.Paired)} trusted={EmptyAsDash(device.Trusted)}",
+            ToolTipText = $"{device.Name} {device.Mac} source={LinuxDeviceSourceText(device)} connected={EmptyAsDash(device.Connected)} paired={EmptyAsDash(device.Paired)} trusted={EmptyAsDash(device.Trusted)}",
             ForeColor = LinuxDeviceColor(device)
         };
         item.SubItems.Add(device.Name);
@@ -1552,7 +1570,7 @@ internal sealed class MainForm : Form
         }
 
         var available = Math.Max(520, _linuxBluetoothList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
-        var sourceWidth = available >= 780 ? 78 : 0;
+        var sourceWidth = available >= 780 ? 96 : 0;
         var stateWidth = available >= 700 ? 86 : 76;
         var macWidth = available >= 700 ? 176 : 152;
         var yesNoWidth = available >= 700 ? 62 : 54;
@@ -1622,17 +1640,51 @@ internal sealed class MainForm : Form
             return "Receiver";
         }
 
-        return device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "Connected" : "Seen";
+        if (IsLiveBluetoothConnected(device))
+        {
+            return "Connected";
+        }
+
+        if (IsHistoricalBluetoothSource(device))
+        {
+            return "Last seen";
+        }
+
+        return device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "Paired" : "Seen";
     }
 
     private static string LinuxDeviceSourceText(LinuxBluetoothDevice device)
     {
         if (!NativeControlServices.IsBluetoothMac(device.Mac))
         {
-            return "Receiver";
+            return BluetoothDeviceSources.Receiver;
         }
 
-        return device.IsStadia ? "Stadia" : "BlueZ";
+        if (IsHistoricalBluetoothSource(device))
+        {
+            return device.Source;
+        }
+
+        return device.IsStadia ? "BlueZ Stadia" : BluetoothDeviceSources.BlueZ;
+    }
+
+    private static bool IsLiveBluetoothConnected(LinuxBluetoothDevice device)
+    {
+        return NativeControlServices.IsBluetoothMac(device.Mac) &&
+               IsLiveBluetoothSource(device) &&
+               device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsHistoricalBluetoothSource(LinuxBluetoothDevice device)
+    {
+        return NativeControlServices.IsBluetoothMac(device.Mac) && !IsLiveBluetoothSource(device);
+    }
+
+    private static bool IsLiveBluetoothSource(LinuxBluetoothDevice device)
+    {
+        return string.IsNullOrWhiteSpace(device.Source) ||
+               device.Source.Equals(BluetoothDeviceSources.BlueZ, StringComparison.OrdinalIgnoreCase) ||
+               device.Source.Equals(BluetoothDeviceSources.Demo, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string YesNoText(string value)
@@ -1673,17 +1725,21 @@ internal sealed class MainForm : Form
             .Where(controller => controller.Active || controller.PacketsPerSecond > 0)
             .OrderBy(controller => controller.Index)
             .ToArray();
-        var realStadiaRows = devices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
+        var realStadiaRows = devices.Count(device =>
+            NativeControlServices.IsBluetoothMac(device.Mac) &&
+            IsLiveBluetoothSource(device) &&
+            (device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)));
         foreach (var controller in activeRows.Skip(realStadiaRows))
         {
             devices.Add(new LinuxBluetoothDevice(
                 $"P{controller.Index}",
                 "Stadia Controller (receiver)",
-                "yes",
+                "",
                 "-",
                 "-",
                 null,
-                true));
+                true,
+                BluetoothDeviceSources.Receiver));
         }
     }
 
@@ -1740,7 +1796,12 @@ internal sealed class MainForm : Form
             return;
         }
 
-        _batteryLabel.Text = "Battery: " + string.Join("   ", stadia.Select((d, i) => $"P{i + 1} {(d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%")} ({d.Connected})"));
+        _batteryLabel.Text = "Battery: " + string.Join("   ", stadia.Select((d, i) =>
+        {
+            var battery = d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%";
+            var state = BatteryDeviceStateText(d);
+            return string.IsNullOrWhiteSpace(state) ? $"P{i + 1} {battery}" : $"P{i + 1} {battery} ({state})";
+        }));
         var low = stadia.Where(d => d.BatteryPercent is <= 30).ToArray();
         if (_batteryOverlayCheck.Checked)
         {
@@ -1878,13 +1939,13 @@ internal sealed class MainForm : Form
         var controllers = _lastTelemetrySnapshot?.Controllers ?? Array.Empty<ControllerTelemetryRow>();
         var stadiaDevices = _lastLinuxBluetoothDevices
             .Where(IsLikelyControllerDevice)
-            .OrderByDescending(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(IsLiveBluetoothConnected)
             .ThenByDescending(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase))
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         var activeCount = controllers.Count(controller => controller.Active || controller.PacketsPerSecond > 0);
-        var connectedCount = stadiaDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
+        var connectedCount = stadiaDevices.Count(IsLiveBluetoothConnected);
         var pairedCount = stadiaDevices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
 
         _dashboardStatusLabel.Text = activeCount > 0
@@ -1904,7 +1965,7 @@ internal sealed class MainForm : Form
             var hasInput = controller is not null && (controller.Active || controller.PacketsPerSecond > 0);
             var state = hasInput
                 ? "Active"
-                : device?.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) == true
+                : device is not null && IsLiveBluetoothConnected(device)
                     ? "Connected"
                     : device?.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase) == true
                         ? "Paired"
@@ -2065,8 +2126,8 @@ internal sealed class MainForm : Form
             SetOperationProgress("Controller Doctor", "Reading Linux Bluetooth devices", 62);
             var linuxDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false).ConfigureAwait(true);
             var stadia = linuxDevices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
-            var connected = linuxDevices.Count(device => device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase));
-            var paired = linuxDevices.Count(device => device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
+            var connected = linuxDevices.Count(IsLiveBluetoothConnected);
+            var paired = linuxDevices.Count(device => NativeControlServices.IsBluetoothMac(device.Mac) && device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
             var lowBattery = linuxDevices.Count(device => device.BatteryPercent is < 10);
             AddDoctorRow(
                 "BlueZ devices",
@@ -2617,9 +2678,26 @@ internal sealed class MainForm : Form
         return string.Join("  ", devices.Take(4).Select((device, index) =>
         {
             var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
-            var connected = device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "on" : device.Connected;
-            return $"P{index + 1} {battery} {connected}";
+            var state = BatteryDeviceStateText(device);
+            return string.IsNullOrWhiteSpace(state)
+                ? $"P{index + 1} {battery}"
+                : $"P{index + 1} {battery} {state}";
         }));
+    }
+
+    private static string BatteryDeviceStateText(LinuxBluetoothDevice device)
+    {
+        if (IsLiveBluetoothConnected(device))
+        {
+            return "on";
+        }
+
+        if (IsHistoricalBluetoothSource(device))
+        {
+            return "seen";
+        }
+
+        return device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "paired" : "";
     }
 
     private static string BatteryTooltip(IReadOnlyList<LinuxBluetoothDevice> devices)
@@ -2780,10 +2858,42 @@ internal sealed class MainForm : Form
 
         var lines = new List<string>();
         var validDevices = devices.Where(device => NativeControlServices.IsBluetoothMac(device.Mac)).ToArray();
-        var stageCount = Math.Max(1, validDevices.Length * (command.Equals("pair", StringComparison.OrdinalIgnoreCase) ? 3 : 1) + 1);
+        var isPairCommand = command.Equals("pair", StringComparison.OrdinalIgnoreCase);
+        var stageCount = Math.Max(1, validDevices.Length * (isPairCommand ? 3 : 1) + 1);
         var stageIndex = 0;
         var title = LinuxCommandTitle(command);
         BeginOperationProgress(title, "Preparing selected Linux devices", 4);
+        SelectTabIfExists("Diagnostics");
+
+        void ShowDiagnostics(string current)
+        {
+            var header = new List<string>
+            {
+                title,
+                "",
+                "Selected devices:"
+            };
+            header.AddRange(devices.Select(device => $"- {device.Name} {device.Mac} [{LinuxDeviceStateText(device)} / {LinuxDeviceSourceText(device)}]"));
+            if (isPairCommand)
+            {
+                header.Add("");
+                header.Add("Pairing tip: keep the controller in Bluetooth pairing mode until the final refresh shows connected=yes.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(current))
+            {
+                header.Add("");
+                header.Add("Current step: " + current);
+            }
+
+            header.Add("");
+            header.AddRange(lines.Where(line => !string.IsNullOrWhiteSpace(line)));
+            _diagnosticsBox.Text = string.Join(Environment.NewLine, header);
+            _diagnosticsBox.SelectionStart = _diagnosticsBox.TextLength;
+            _diagnosticsBox.ScrollToCaret();
+        }
+
+        ShowDiagnostics("Preparing command sequence");
 
         async Task RunStageAsync(LinuxBluetoothDevice device, string serviceCommand, string stageName, TimeSpan expectedDuration)
         {
@@ -2791,6 +2901,7 @@ internal sealed class MainForm : Form
             var start = StagePercent(stageIndex - 1, stageCount);
             var end = Math.Max(start + 1, StagePercent(stageIndex, stageCount) - 2);
             SetOperationProgress(title, $"{stageName}: {device.Name}", start);
+            ShowDiagnostics($"{stageName}: {device.Name} {device.Mac}");
             var result = await AwaitWithTimedProgressAsync(
                 _native.RunLinuxBluetoothCommandAsync(device.Mac, serviceCommand),
                 start,
@@ -2799,9 +2910,20 @@ internal sealed class MainForm : Form
                 title,
                 $"{stageName}: {device.Mac}").ConfigureAwait(true);
             lines.Add($"== {stageName} {device.Mac} {device.Name} ==");
-            lines.Add(result.Output.Trim());
-            lines.Add(result.Error.Trim());
+            if (result.ExitCode != 0)
+            {
+                lines.Add($"Process exit code: {result.ExitCode}");
+            }
+            var output = result.Output.Trim();
+            var error = result.Error.Trim();
+            lines.Add(string.IsNullOrWhiteSpace(output) ? "(no command output)" : output);
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                lines.Add("stderr:");
+                lines.Add(error);
+            }
             lines.Add("");
+            ShowDiagnostics($"{stageName} finished for {device.Mac}");
         }
 
         try
@@ -2816,7 +2938,7 @@ internal sealed class MainForm : Form
                     continue;
                 }
 
-                if (command.Equals("pair", StringComparison.OrdinalIgnoreCase))
+                if (isPairCommand)
                 {
                     await RunStageAsync(device, "trust", "Trusting", TimeSpan.FromSeconds(5));
                     await RunStageAsync(device, "pair-only", "Pairing", TimeSpan.FromSeconds(22));
@@ -2828,11 +2950,40 @@ internal sealed class MainForm : Form
                 }
             }
 
-            _diagnosticsBox.Text = string.Join(Environment.NewLine, lines);
-            _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
             SetOperationProgress(title, "Refreshing Linux device list", 94);
-            await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
-            CompleteOperationProgress(title, validDevices.Length == 0 ? "No valid BlueZ MAC selected" : $"{LinuxCommandStageName(command)} completed");
+            ShowDiagnostics("Refreshing BlueZ state after command");
+            var refreshedDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
+            lines.Add("== Final state after refresh ==");
+            foreach (var device in validDevices)
+            {
+                var refreshed = refreshedDevices.FirstOrDefault(current => current.Mac.Equals(device.Mac, StringComparison.OrdinalIgnoreCase));
+                if (refreshed is null)
+                {
+                    lines.Add($"{device.Mac} {device.Name}: not visible after refresh");
+                    continue;
+                }
+
+                lines.Add($"{refreshed.Mac} {refreshed.Name}: state={LinuxDeviceStateText(refreshed)}, source={LinuxDeviceSourceText(refreshed)}, connected={YesNoText(refreshed.Connected)}, paired={YesNoText(refreshed.Paired)}, trusted={YesNoText(refreshed.Trusted)}");
+            }
+
+            var connectedAfter = validDevices.Count(device =>
+                refreshedDevices.Any(current => current.Mac.Equals(device.Mac, StringComparison.OrdinalIgnoreCase) && IsLiveBluetoothConnected(current)));
+            var pairedAfter = validDevices.Count(device =>
+                refreshedDevices.Any(current => current.Mac.Equals(device.Mac, StringComparison.OrdinalIgnoreCase) && current.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase)));
+
+            if (isPairCommand && validDevices.Length > 0 && connectedAfter < validDevices.Length)
+            {
+                lines.Add("");
+                lines.Add("If the device is still not connected, press Scan while the controller is flashing, then try Pair again.");
+            }
+            ShowDiagnostics("Finished");
+
+            var completionText = validDevices.Length == 0
+                ? "No valid BlueZ MAC selected"
+                : isPairCommand
+                    ? $"Pair finished: {connectedAfter}/{validDevices.Length} connected, {pairedAfter}/{validDevices.Length} paired"
+                    : $"{LinuxCommandStageName(command)} finished: {connectedAfter}/{validDevices.Length} connected";
+            CompleteOperationProgress(title, completionText);
         }
         catch
         {

@@ -14,7 +14,16 @@ internal sealed record UsbipdDevice(string BusId, string VidPid, string Name, st
 
 internal sealed record WindowsBluetoothDevice(string Name, string Status, string InstanceId);
 
-internal sealed record LinuxBluetoothDevice(string Mac, string Name, string Connected, string Paired, string Trusted, int? BatteryPercent, bool IsStadia);
+internal sealed record LinuxBluetoothDevice(string Mac, string Name, string Connected, string Paired, string Trusted, int? BatteryPercent, bool IsStadia, string Source = BluetoothDeviceSources.BlueZ);
+
+internal static class BluetoothDeviceSources
+{
+    public const string BlueZ = "BlueZ";
+    public const string Diagnostics = "Diagnostics";
+    public const string BridgeLog = "Bridge log";
+    public const string Receiver = "Receiver";
+    public const string Demo = "Demo";
+}
 
 internal sealed record ControllerProfile(string Name, string Mac, int Slot, bool AutoConnect);
 
@@ -227,6 +236,7 @@ internal sealed class NativeControlServices
             "trusted=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Trusted:/ {print $2; exit}')\"; " +
             "connected=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Connected:/ {print $2; exit}')\"; " +
             "battery=\"$(printf \"%s\\n\" \"$info\" | awk -F'[()]' '/Battery Percentage:/ {print $2; exit}')\"; " +
+            "name=\"${name//|//}\"; paired=\"${paired//|//}\"; trusted=\"${trusted//|//}\"; connected=\"${connected//|//}\"; battery=\"${battery//|//}\"; " +
             "printf '%s|%s|%s|%s|%s|%s\\n' \"$mac\" \"$name\" \"$paired\" \"$trusted\" \"$connected\" \"$battery\"; " +
             "}; " +
             "emit_list() { " +
@@ -262,9 +272,9 @@ internal sealed class NativeControlServices
             UpsertLinuxDevice(devices, seen, new LinuxBluetoothDevice(
                 parts[0].Trim().ToUpperInvariant(),
                 name,
-                parts[4].Trim(),
-                parts[2].Trim(),
-                parts[3].Trim(),
+                NormalizeYesNo(parts[4]),
+                NormalizeYesNo(parts[2]),
+                NormalizeYesNo(parts[3]),
                 battery,
                 name.Contains("stadia", StringComparison.OrdinalIgnoreCase)));
         }
@@ -288,7 +298,7 @@ internal sealed class NativeControlServices
 
         return devices
             .OrderByDescending(d => d.IsStadia)
-            .ThenByDescending(d => d.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(IsLiveBluetoothConnected)
             .ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
@@ -350,16 +360,57 @@ internal sealed class NativeControlServices
 
         command = command.ToLowerInvariant() switch
         {
-            "pair" => $"bluetoothctl trust '{mac}'; timeout 20 bluetoothctl pair '{mac}' || true; timeout 20 bluetoothctl connect '{mac}' || true; bluetoothctl info '{mac}'",
-            "trust" => $"bluetoothctl trust '{mac}' || true; bluetoothctl info '{mac}'",
-            "pair-only" => $"timeout 20 bluetoothctl pair '{mac}' || true; bluetoothctl info '{mac}'",
-            "connect" => $"timeout 20 bluetoothctl connect '{mac}' || true; bluetoothctl info '{mac}'",
-            "disconnect" => $"bluetoothctl disconnect '{mac}' || true; bluetoothctl info '{mac}'",
-            "remove" => $"bluetoothctl remove '{mac}' || true",
-            _ => $"bluetoothctl info '{mac}' || true"
+            "pair" => BuildLinuxBluetoothCommandScript(mac, ("Trust device", "trust", 8), ("Pair device", "pair", 24), ("Connect device", "connect", 24)),
+            "trust" => BuildLinuxBluetoothCommandScript(mac, ("Trust device", "trust", 8)),
+            "pair-only" => BuildLinuxBluetoothCommandScript(mac, ("Pair device", "pair", 24)),
+            "connect" => BuildLinuxBluetoothCommandScript(mac, ("Connect device", "connect", 24)),
+            "disconnect" => BuildLinuxBluetoothCommandScript(mac, ("Disconnect device", "disconnect", 12)),
+            "remove" => BuildLinuxBluetoothCommandScript(mac, ("Remove device", "remove", 12)),
+            _ => BuildLinuxBluetoothInfoScript(mac)
         };
 
         return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
+    }
+
+    private static string BuildLinuxBluetoothInfoScript(string mac)
+    {
+        return string.Join("\n", new[]
+        {
+            "if ! command -v bluetoothctl >/dev/null 2>&1; then echo \"bluetoothctl missing\"; exit 0; fi",
+            $"mac='{mac}'",
+            "echo \"Final BlueZ info:\"",
+            "timeout 5s bluetoothctl info \"$mac\" 2>&1 || true"
+        });
+    }
+
+    private static string BuildLinuxBluetoothCommandScript(string mac, params (string Label, string Command, int TimeoutSeconds)[] stages)
+    {
+        var lines = new List<string>
+        {
+            "if ! command -v bluetoothctl >/dev/null 2>&1; then echo \"bluetoothctl missing\"; exit 0; fi",
+            $"mac='{mac}'",
+            "run_step() {",
+            "  label=\"$1\"",
+            "  timeout_s=\"$2\"",
+            "  bt_command=\"$3\"",
+            "  echo",
+            "  echo \"Step: $label\"",
+            "  timeout \"${timeout_s}s\" bluetoothctl \"$bt_command\" \"$mac\" 2>&1",
+            "  rc=$?",
+            "  echo \"Result: $label exit code $rc\"",
+            "  return 0",
+            "}"
+        };
+
+        foreach (var stage in stages)
+        {
+            lines.Add($"run_step \"{stage.Label}\" {Math.Clamp(stage.TimeoutSeconds, 1, 60)} {stage.Command}");
+        }
+
+        lines.Add("");
+        lines.Add("echo \"Final BlueZ info:\"");
+        lines.Add("timeout 5s bluetoothctl info \"$mac\" 2>&1 || true");
+        return string.Join("\n", lines);
     }
 
     private static IReadOnlyList<UsbipdDevice> DemoUsbipdDevices()
@@ -385,9 +436,9 @@ internal sealed class NativeControlServices
     {
         return new[]
         {
-            new LinuxBluetoothDevice("E4:17:D8:42:7A:01", "Stadia Controller P1", "yes", "yes", "yes", 84, true),
-            new LinuxBluetoothDevice("E4:17:D8:42:7A:02", "Stadia Controller P2", "no", "yes", "yes", 9, true),
-            new LinuxBluetoothDevice("A8:6B:AD:12:44:90", "8BitDo SN30 Pro", "no", "no", "no", 56, false)
+            new LinuxBluetoothDevice("E4:17:D8:42:7A:01", "Stadia Controller P1", "yes", "yes", "yes", 84, true, BluetoothDeviceSources.Demo),
+            new LinuxBluetoothDevice("E4:17:D8:42:7A:02", "Stadia Controller P2", "no", "yes", "yes", 9, true, BluetoothDeviceSources.Demo),
+            new LinuxBluetoothDevice("A8:6B:AD:12:44:90", "8BitDo SN30 Pro", "no", "no", "no", 56, false, BluetoothDeviceSources.Demo)
         };
     }
 
@@ -410,7 +461,11 @@ internal sealed class NativeControlServices
             var device = ParseLinuxBluetoothInfo(match.Groups["mac"].Value, match.Groups["info"].Value);
             if (device is not null)
             {
-                UpsertLinuxDevice(devices, seen, device);
+                UpsertLinuxDevice(devices, seen, device with
+                {
+                    Connected = "",
+                    Source = BluetoothDeviceSources.Diagnostics
+                });
             }
         }
     }
@@ -435,11 +490,12 @@ internal sealed class NativeControlServices
             UpsertLinuxDevice(devices, seen, new LinuxBluetoothDevice(
                 mac,
                 "Stadia Controller (bridge log)",
-                "yes",
+                "",
                 "",
                 "",
                 null,
-                true));
+                true,
+                BluetoothDeviceSources.BridgeLog));
         }
     }
 
@@ -494,15 +550,84 @@ internal sealed class NativeControlServices
 
     private static LinuxBluetoothDevice MergeLinuxDevice(LinuxBluetoothDevice existing, LinuxBluetoothDevice candidate)
     {
+        var existingLive = IsLiveBluetoothSource(existing.Source);
+        var candidateLive = IsLiveBluetoothSource(candidate.Source);
         return existing with
         {
             Name = BetterValue(existing.Name, candidate.Name, "(unknown)"),
-            Connected = BetterValue(existing.Connected, candidate.Connected, ""),
-            Paired = BetterValue(existing.Paired, candidate.Paired, ""),
-            Trusted = BetterValue(existing.Trusted, candidate.Trusted, ""),
+            Connected = BetterStateValue(existing.Connected, candidate.Connected, existingLive, candidateLive),
+            Paired = BetterStateValue(existing.Paired, candidate.Paired, existingLive, candidateLive),
+            Trusted = BetterStateValue(existing.Trusted, candidate.Trusted, existingLive, candidateLive),
             BatteryPercent = candidate.BatteryPercent ?? existing.BatteryPercent,
-            IsStadia = existing.IsStadia || candidate.IsStadia
+            IsStadia = existing.IsStadia || candidate.IsStadia,
+            Source = BetterSource(existing.Source, candidate.Source)
         };
+    }
+
+    private static string BetterSource(string existing, string candidate)
+    {
+        if (IsLiveBluetoothSource(candidate))
+        {
+            return candidate;
+        }
+
+        if (IsLiveBluetoothSource(existing))
+        {
+            return existing;
+        }
+
+        return string.IsNullOrWhiteSpace(existing) ? candidate : existing;
+    }
+
+    private static bool IsLiveBluetoothSource(string source)
+    {
+        return string.IsNullOrWhiteSpace(source) ||
+               source.Equals(BluetoothDeviceSources.BlueZ, StringComparison.OrdinalIgnoreCase) ||
+               source.Equals(BluetoothDeviceSources.Demo, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLiveBluetoothConnected(LinuxBluetoothDevice device)
+    {
+        return IsLiveBluetoothSource(device.Source) &&
+               device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BetterStateValue(string existing, string candidate, bool existingLive, bool candidateLive)
+    {
+        existing = NormalizeYesNo(existing);
+        candidate = NormalizeYesNo(candidate);
+
+        if (candidateLive && !existingLive)
+        {
+            return candidate;
+        }
+
+        if (existingLive && !candidateLive)
+        {
+            return existing;
+        }
+
+        if (candidate.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+            existing.Equals("yes", StringComparison.OrdinalIgnoreCase))
+        {
+            return "yes";
+        }
+
+        if (candidate.Equals("no", StringComparison.OrdinalIgnoreCase) ||
+            existing.Equals("no", StringComparison.OrdinalIgnoreCase))
+        {
+            return "no";
+        }
+
+        return string.IsNullOrWhiteSpace(existing) ? candidate : existing;
+    }
+
+    private static string NormalizeYesNo(string value)
+    {
+        value = value.Trim();
+        return value.Equals("yes", StringComparison.OrdinalIgnoreCase) ? "yes" :
+            value.Equals("no", StringComparison.OrdinalIgnoreCase) ? "no" :
+            value;
     }
 
     private static string BetterValue(string existing, string candidate, string emptyValue)
@@ -583,7 +708,7 @@ bluetoothctl devices 2>&1 || true
             "",
             "Linux devices:",
         };
-        lines.AddRange(linuxBt.Select(d => $"- {d.Mac} {d.Name} connected={d.Connected} paired={d.Paired} battery={(d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%")}"));
+        lines.AddRange(linuxBt.Select(d => $"- {d.Mac} {d.Name} source={d.Source} connected={d.Connected} paired={d.Paired} battery={(d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%")}"));
         await File.WriteAllTextAsync(path, string.Join(Environment.NewLine, lines) + Environment.NewLine).ConfigureAwait(false);
         return path;
     }
@@ -851,7 +976,6 @@ bluetoothctl devices 2>&1 || true
 
         var report = await CreateSessionReportAsync().ConfigureAwait(false);
         File.Copy(report, Path.Combine(workDir, "session-report.md"), overwrite: true);
-
         var commandReport = new StringBuilder();
         foreach (var command in new[]
         {
