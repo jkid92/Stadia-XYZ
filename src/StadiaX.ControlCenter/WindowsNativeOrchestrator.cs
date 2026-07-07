@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Principal;
 
 namespace StadiaX.ControlCenter;
@@ -5,6 +6,7 @@ namespace StadiaX.ControlCenter;
 internal sealed class WindowsNativeOrchestrator
 {
     private const int MaxControllers = 4;
+    private const int StartPhaseCount = 5;
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -19,29 +21,37 @@ internal sealed class WindowsNativeOrchestrator
     {
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
         ClearStopSignal();
 
         var hidHide = new HidHideManager(_paths, _runner);
         if (!await EnsureHidHideAsync(hidHide, status).ConfigureAwait(false))
         {
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "HidHide is not ready");
             return 2;
         }
 
         if (!await EnsureVigemBusAsync(status).ConfigureAwait(false))
         {
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "ViGEmBus is not ready");
             return 2;
         }
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "OK", "Required Windows drivers are ready");
 
         var scanner = new WindowsNativeHidScanner(hidHide);
+        status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "START", "Scanning Windows HID for Stadia controllers");
         status.Write("WINDOWS_NATIVE_SCAN_START", "Scanning Windows HID devices for Stadia controllers");
         var devices = (await scanner.FindStadiaControllersAsync().ConfigureAwait(false)).Take(MaxControllers).ToArray();
         status.Write("WINDOWS_NATIVE_SCAN_RESULT", $"Detected {devices.Length} Stadia HID candidate(s)");
         if (devices.Length == 0)
         {
             status.Write("WINDOWS_NATIVE_NOT_READY", "No Stadia HID controller is visible to Windows");
+            status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "WAIT", "No Stadia controller visible; opening Windows Bluetooth settings");
+            TryOpenBluetoothSettings(status);
             await WriteProbeAsync(scanner).ConfigureAwait(false);
             return 2;
         }
+        status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "OK", $"Detected {devices.Length} Stadia HID candidate(s)");
 
         for (var i = 0; i < devices.Length; i++)
         {
@@ -55,11 +65,13 @@ internal sealed class WindowsNativeOrchestrator
         if (missingHidePath.Length > 0)
         {
             status.Write("WINDOWS_NATIVE_NOT_READY", "Stadia HID was found, but HidHide did not expose a matching device path");
+            status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "FAIL", "HidHide did not expose the device instance path needed to hide physical input");
             await WriteProbeAsync(scanner).ConfigureAwait(false);
             return 2;
         }
 
         var appPath = ResolveCurrentAppPath();
+        status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "START", "Registering app and hiding physical Stadia HID input");
         status.Write("WINDOWS_NATIVE_HIDHIDE_START", $"Registering {appPath} and hiding {devices.Length} physical Stadia HID device(s)");
         var hide = await hidHide.ConfigureStadiaDevicesAsync(
             appPath,
@@ -70,77 +82,110 @@ internal sealed class WindowsNativeOrchestrator
         if (hide.ExitCode != 0)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_FAILED", FirstNonEmpty(hide.Error, hide.Output, "HidHide configuration failed"));
+            status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "FAIL", "Could not configure HidHide");
             return 1;
         }
 
+        status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "OK", "Physical Stadia input is hidden from games");
         status.Write("WINDOWS_NATIVE_HIDHIDE_OK", "Physical Stadia HID devices are hidden; HidHide cloak remains enabled");
         using var cancellation = new CancellationTokenSource();
         using var stopWatcher = StartStopWatcher(cancellation);
         var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
+        status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "START", $"Creating {devices.Length} virtual Xbox 360 controller slot(s)");
         status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
         var exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
-        status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; HidHide remains enabled");
+        await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", exitCode == 0 ? "OK" : "FAIL", $"Receiver exited with code {exitCode}");
+        status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; physical input restore requested");
         return exitCode;
     }
 
-    public Task<int> StopAsync()
+    public async Task<int> StopAsync()
     {
         var status = new StatusWriter(_paths, "windows-native.log");
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "START", "Stop requested");
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
         SignalStop();
-        status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; HidHide cloak is intentionally left enabled");
-        return Task.FromResult(0);
+        status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
+        await WaitForReceiverStopAsync().ConfigureAwait(false);
+        await RestorePhysicalInputAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "OK", "Stop completed and physical input restore requested");
+        return 0;
     }
 
     private async Task<bool> EnsureHidHideAsync(HidHideManager hidHide, StatusWriter status)
     {
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "START", "Checking HidHide CLI");
         if (hidHide.IsInstalled)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_OK", "HidHide is installed: " + await hidHide.GetVersionAsync().ConfigureAwait(false));
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "OK", "HidHide is installed");
             return true;
         }
 
         status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL", "HidHide missing; trying winget install");
-        await _runner.RunAsync(
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "INSTALL", "HidHide missing; installing with winget");
+        if (!await EnsureWingetAsync(status).ConfigureAwait(false))
+        {
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "FAIL", "winget is missing, so HidHide cannot be installed automatically");
+            return false;
+        }
+
+        var install = await _runner.RunAsync(
             "winget",
             new[] { "install", "-e", "--id", "Nefarius.HidHide", "--accept-package-agreements", "--accept-source-agreements" },
             _paths.Root,
             180000,
             createNoWindow: false).ConfigureAwait(false);
+        status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
 
         if (hidHide.IsInstalled)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_OK", "HidHide installed");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "OK", "HidHide installed");
             return true;
         }
 
         status.Write("WINDOWS_NATIVE_NOT_READY", "HidHide is required to prevent duplicate physical controller input");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "FAIL", "HidHide is still missing after install attempt");
         return false;
     }
 
     private async Task<bool> EnsureVigemBusAsync(StatusWriter status)
     {
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "START", "Checking virtual controller driver");
         if (await IsVigemBusInstalledAsync().ConfigureAwait(false))
         {
             status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
             return true;
         }
 
         status.Write("WINDOWS_NATIVE_VIGEM_INSTALL", "ViGEmBus missing; trying winget install");
-        await _runner.RunAsync(
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "INSTALL", "ViGEmBus missing; installing with winget");
+        if (!await EnsureWingetAsync(status).ConfigureAwait(false))
+        {
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "FAIL", "winget is missing, so ViGEmBus cannot be installed automatically");
+            return false;
+        }
+
+        var install = await _runner.RunAsync(
             "winget",
             new[] { "install", "-e", "--id", "Nefarius.ViGEmBus", "--accept-package-agreements", "--accept-source-agreements" },
             _paths.Root,
             180000,
             createNoWindow: false).ConfigureAwait(false);
+        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
 
         if (await IsVigemBusInstalledAsync().ConfigureAwait(false))
         {
             status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
             return true;
         }
 
         status.Write("WINDOWS_NATIVE_NOT_READY", "ViGEmBus is required for virtual Xbox 360 controllers");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "FAIL", "ViGEmBus is still missing after install attempt");
         return false;
     }
 
@@ -154,6 +199,17 @@ internal sealed class WindowsNativeOrchestrator
         return result.Output.Contains("OK", StringComparison.OrdinalIgnoreCase);
     }
 
+    private async Task<bool> EnsureWingetAsync(StatusWriter status)
+    {
+        if (await _runner.CommandExistsAsync("winget", _paths.Root).ConfigureAwait(false))
+        {
+            return true;
+        }
+
+        status.Write("WINDOWS_NATIVE_WINGET_MISSING", "winget was not found; automatic driver installation is unavailable");
+        return false;
+    }
+
     private async Task WriteProbeAsync(WindowsNativeHidScanner scanner)
     {
         try
@@ -164,6 +220,19 @@ internal sealed class WindowsNativeOrchestrator
         catch
         {
             // Probe output is helpful, but startup status should remain the source of truth.
+        }
+    }
+
+    private static void TryOpenBluetoothSettings(StatusWriter status)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("ms-settings:bluetooth") { UseShellExecute = true });
+            status.Write("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_OPENED", "Opened Windows Bluetooth settings for pairing");
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_FAILED", "Could not open Windows Bluetooth settings: " + ex.Message);
         }
     }
 
@@ -189,6 +258,35 @@ internal sealed class WindowsNativeOrchestrator
     {
         Directory.CreateDirectory(_paths.LogDirectory);
         File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+    }
+
+    private async Task WaitForReceiverStopAsync()
+    {
+        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
+        for (var attempt = 0; attempt < 20 && File.Exists(readyPath); attempt++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+        }
+    }
+
+    private async Task RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)
+    {
+        if (!hidHide.IsInstalled)
+        {
+            status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_SKIPPED", "HidHide is not installed; no cloak to disable");
+            return;
+        }
+
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "START", "Disabling HidHide cloak without prompting for elevation");
+        var restore = await hidHide.DisableCloakAsync(elevated: false).ConfigureAwait(false);
+        status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_RESULT", $"exit={restore.ExitCode} output={Shorten(FirstNonEmpty(restore.Output, restore.Error, "none"), 260)}");
+        status.WritePhase(
+            "Windows Native",
+            5,
+            StartPhaseCount,
+            "Input restore",
+            restore.ExitCode == 0 ? "OK" : "WARN",
+            restore.ExitCode == 0 ? "Physical Stadia input restored" : "Could not confirm HidHide cloak restore");
     }
 
     private void ClearStopSignal()

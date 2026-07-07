@@ -72,6 +72,7 @@ internal sealed class MainForm : Form
     private readonly ProgressBar _wizardProgress = new();
     private readonly Label[] _wizardStepLabels = new Label[7];
     private readonly Label _windowsNativeStatusLabel = new();
+    private readonly Label _windowsNativePhaseLabel = new();
     private readonly ProgressBar _windowsNativeProgress = new();
     private readonly Label _operationTitleLabel = new();
     private readonly Label _operationDetailLabel = new();
@@ -822,14 +823,15 @@ internal sealed class MainForm : Form
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 154 : 170));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 178 : 194));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
         var statusGroup = CreateGroup("Windows Native input");
-        var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
+        var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12) };
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 34 : 40));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 34));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 32));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         statusGroup.Controls.Add(statusLayout);
 
@@ -847,6 +849,14 @@ internal sealed class MainForm : Form
         _windowsNativeProgress.Style = ProgressBarStyle.Continuous;
         statusLayout.Controls.Add(_windowsNativeProgress, 0, 1);
 
+        _windowsNativePhaseLabel.Text = "Phase: waiting for Windows Native";
+        _windowsNativePhaseLabel.Dock = DockStyle.Fill;
+        _windowsNativePhaseLabel.AutoEllipsis = true;
+        _windowsNativePhaseLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _windowsNativePhaseLabel.Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9, FontStyle.Bold);
+        _windowsNativePhaseLabel.ForeColor = Color.FromArgb(92, 106, 126);
+        statusLayout.Controls.Add(_windowsNativePhaseLabel, 0, 2);
+
         var actions = CreateFullWidthToolbarFlow();
         actions.Dock = DockStyle.Fill;
         actions.Padding = new Padding(0);
@@ -855,7 +865,7 @@ internal sealed class MainForm : Form
         AddFlowButton(actions, "Stop native", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
         AddFlowButton(actions, "Test input", () => SelectTabIfExists("Controller Test"));
         AddFlowButton(actions, "Open probe", () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
-        statusLayout.Controls.Add(actions, 0, 2);
+        statusLayout.Controls.Add(actions, 0, 3);
         layout.Controls.Add(statusGroup, 0, 0);
 
         var deviceGroup = CreateGroup("Stadia HID devices");
@@ -1872,6 +1882,26 @@ internal sealed class MainForm : Form
         return string.IsNullOrWhiteSpace(value) ? "-" : value;
     }
 
+    private static string ExtractMarkedValue(string text, string marker, string? nextMarker)
+    {
+        var start = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (start < 0)
+        {
+            return "";
+        }
+
+        start += marker.Length;
+        var end = string.IsNullOrWhiteSpace(nextMarker)
+            ? text.Length
+            : text.IndexOf(nextMarker, start, StringComparison.OrdinalIgnoreCase);
+        if (end < 0)
+        {
+            end = text.Length;
+        }
+
+        return text[start..end].Trim();
+    }
+
     private static string EmptyAsNone(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "none" : value;
@@ -2452,8 +2482,37 @@ internal sealed class MainForm : Form
         _statusLogBox.Text = statusText;
         _windowsNativeLogBox.Text = string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText;
         _windowsNativeLogPageBox.Text = string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText;
+        UpdateWindowsNativePhaseLabel(string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText);
         _userActionLogBox.Text = actionText;
         _appDiagnosticsLogBox.Text = appDiagnosticsText;
+    }
+
+    private void UpdateWindowsNativePhaseLabel(string text)
+    {
+        var phaseLine = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .LastOrDefault(line =>
+                line.Contains("STATUS:PHASE|", StringComparison.OrdinalIgnoreCase) &&
+                line.Contains("flow=Windows Native", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(phaseLine))
+        {
+            _windowsNativePhaseLabel.Text = "Phase: waiting for Windows Native";
+            _windowsNativePhaseLabel.ForeColor = Color.FromArgb(92, 106, 126);
+            return;
+        }
+
+        var payload = phaseLine[(phaseLine.IndexOf('|') + 1)..];
+        var step = ExtractMarkedValue(payload, "step=", " phase=");
+        var phase = ExtractMarkedValue(payload, "phase=", " state=");
+        var state = ExtractMarkedValue(payload, "state=", " detail=");
+        var detail = ExtractMarkedValue(payload, "detail=", null);
+        _windowsNativePhaseLabel.Text = $"Phase {EmptyAsDash(step)} - {EmptyAsDash(phase)} ({EmptyAsDash(state)}): {EmptyAsDash(detail)}";
+        _windowsNativePhaseLabel.ForeColor = state.ToUpperInvariant() switch
+        {
+            "OK" => Color.FromArgb(34, 120, 72),
+            "FAIL" => Color.FromArgb(180, 45, 45),
+            "WAIT" or "WARN" or "INSTALL" => Color.FromArgb(170, 104, 0),
+            _ => Color.FromArgb(45, 91, 150)
+        };
     }
 
     private void RefreshSelectionLabels()
@@ -2826,8 +2885,9 @@ internal sealed class MainForm : Form
 
             if (latest.Contains("WINDOWS_NATIVE_NOT_READY", StringComparison.OrdinalIgnoreCase))
             {
-                FailOperationProgress("Starting Windows Native", "Not ready - check the Windows Native log");
-                SetWindowsNativeStatus("Not ready - check log", 100, warn: true);
+                var openedBluetoothSettings = latest.Contains("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_OPENED", StringComparison.OrdinalIgnoreCase);
+                FailOperationProgress("Starting Windows Native", openedBluetoothSettings ? "Pair the controller in Windows Bluetooth settings" : "Not ready - check the Windows Native log");
+                SetWindowsNativeStatus(openedBluetoothSettings ? "Waiting for Windows Bluetooth pairing" : "Not ready - check log", 100, warn: true);
                 await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false);
                 return;
             }
@@ -2841,9 +2901,9 @@ internal sealed class MainForm : Form
     {
         LogUserAction("Stop Windows Native requested");
         BeginOperationProgress("Stopping Windows Native", "Sending receiver stop signal", 35);
-        LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: false, "Windows Native stop requested. HidHide remains enabled.");
-        SetWindowsNativeStatus("Stop requested - HidHide remains enabled", 100, warn: false);
-        CompleteOperationProgress("Stopping Windows Native", "Stop requested; HidHide remains enabled");
+        LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: false, "Windows Native stop requested. Physical input will be restored.");
+        SetWindowsNativeStatus("Stop requested - restoring physical input", 100, warn: false);
+        CompleteOperationProgress("Stopping Windows Native", "Stop requested; physical input restore requested");
         RefreshLogs();
         _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
     }

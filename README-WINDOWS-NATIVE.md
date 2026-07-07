@@ -21,6 +21,10 @@ It does not use WSL, usbipd, BlueZ, or the Linux bridge. The app reads Stadia Co
 
 When HidHide or ViGEmBus is missing, `Start native` tries to install the required component with `winget`. Windows can ask for elevation because both components install drivers.
 
+If no Stadia Controller is visible, `Start native` opens Windows Bluetooth settings automatically so the user can pair the controller without hunting through system menus. Runtime logs include explicit connection phases such as prerequisites, device discovery, input isolation, virtual pads, and input restore.
+
+When `Stop native` is pressed or the receiver exits, Stadia X asks HidHide to disable cloak mode so the physical controller is restored automatically.
+
 ## Current limitations
 
 - Battery and rumble are still experimental in this variant.
