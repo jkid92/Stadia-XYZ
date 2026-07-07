@@ -196,7 +196,7 @@ internal sealed class IntegratedReceiver
                 continue;
             }
 
-            var update = VigemNative.vigem_target_x360_update(_client, target, MapToXusb(state));
+            var update = VigemNative.vigem_target_x360_update(_client, target, ControllerStateMapper.ToXusb(state));
             if (!VigemNative.Success(update))
             {
                 LogError("ViGEm update failed for pad {0}: 0x{1:X8}", controllerIndex + 1, update);
@@ -285,37 +285,6 @@ internal sealed class IntegratedReceiver
             BinaryPrimitives.ReadInt16LittleEndian(data.Slice(6, 2)),
             BinaryPrimitives.ReadInt16LittleEndian(data.Slice(8, 2)),
             BinaryPrimitives.ReadInt16LittleEndian(data.Slice(10, 2)));
-    }
-
-    private static VigemNative.XusbReport MapToXusb(ControllerState state)
-    {
-        ushort buttons = 0;
-        if (state.Has(ButtonBits.A)) buttons |= VigemNative.XusbGamepadA;
-        if (state.Has(ButtonBits.B)) buttons |= VigemNative.XusbGamepadB;
-        if (state.Has(ButtonBits.X)) buttons |= VigemNative.XusbGamepadX;
-        if (state.Has(ButtonBits.Y)) buttons |= VigemNative.XusbGamepadY;
-        if (state.Has(ButtonBits.Lb)) buttons |= VigemNative.XusbGamepadLeftShoulder;
-        if (state.Has(ButtonBits.Rb)) buttons |= VigemNative.XusbGamepadRightShoulder;
-        if (state.Has(ButtonBits.Select)) buttons |= VigemNative.XusbGamepadBack;
-        if (state.Has(ButtonBits.Start)) buttons |= VigemNative.XusbGamepadStart;
-        if (state.Has(ButtonBits.Stadia)) buttons |= VigemNative.XusbGamepadGuide;
-        if (state.Has(ButtonBits.L3)) buttons |= VigemNative.XusbGamepadLeftThumb;
-        if (state.Has(ButtonBits.R3)) buttons |= VigemNative.XusbGamepadRightThumb;
-        if (state.Has(ButtonBits.DpadUp)) buttons |= VigemNative.XusbGamepadDpadUp;
-        if (state.Has(ButtonBits.DpadDown)) buttons |= VigemNative.XusbGamepadDpadDown;
-        if (state.Has(ButtonBits.DpadLeft)) buttons |= VigemNative.XusbGamepadDpadLeft;
-        if (state.Has(ButtonBits.DpadRight)) buttons |= VigemNative.XusbGamepadDpadRight;
-
-        return new VigemNative.XusbReport
-        {
-            Buttons = buttons,
-            LeftTrigger = state.TriggerLeft,
-            RightTrigger = state.TriggerRight,
-            ThumbLX = state.StickLeftX,
-            ThumbLY = state.StickLeftY == short.MinValue + 1 ? short.MaxValue : (short)-state.StickLeftY,
-            ThumbRX = state.StickRightX,
-            ThumbRY = state.StickRightY == short.MinValue + 1 ? short.MaxValue : (short)-state.StickRightY
-        };
     }
 
     private void OnRumble(IntPtr client, IntPtr target, byte largeMotor, byte smallMotor, byte ledNumber, IntPtr userData)

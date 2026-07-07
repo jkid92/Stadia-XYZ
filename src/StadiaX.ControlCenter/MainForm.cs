@@ -26,6 +26,7 @@ internal sealed class MainForm : Form
     private readonly ListView _setupChecksList = new();
     private readonly ListView _usbipdList = new();
     private readonly ListView _windowsBluetoothList = new();
+    private readonly ListView _windowsNativeDeviceList = new();
     private readonly ListView _linuxBluetoothList = new();
     private readonly ListView _wizardLinuxBluetoothList = new();
     private readonly ListView _profilesList = new();
@@ -44,6 +45,7 @@ internal sealed class MainForm : Form
     private readonly TextBox _macroBox = new();
     private readonly TextBox _controlStatusLogBox = new();
     private readonly TextBox _controlLinuxLogBox = new();
+    private readonly TextBox _windowsNativeLogBox = new();
     private readonly TextBox _dashboardActionLogBox = new();
     private readonly ListView _doctorList = new();
     private readonly TextBox _doctorDetailsBox = new();
@@ -66,6 +68,8 @@ internal sealed class MainForm : Form
     private readonly Label _wizardSelectionLabel = new();
     private readonly ProgressBar _wizardProgress = new();
     private readonly Label[] _wizardStepLabels = new Label[7];
+    private readonly Label _windowsNativeStatusLabel = new();
+    private readonly ProgressBar _windowsNativeProgress = new();
     private readonly Label _operationTitleLabel = new();
     private readonly Label _operationDetailLabel = new();
     private readonly ProgressBar _operationProgress = new();
@@ -324,6 +328,7 @@ internal sealed class MainForm : Form
         _tabs.TabPages.Add(BuildControllerDoctorPage());
         _tabs.TabPages.Add(BuildPairingWizardPage());
         _tabs.TabPages.Add(BuildControlPage());
+        _tabs.TabPages.Add(BuildWindowsNativePage());
         _tabs.TabPages.Add(BuildBluetoothPage());
         _tabs.TabPages.Add(BuildProfilesPage());
         _tabs.TabPages.Add(BuildControllerTestPage());
@@ -445,6 +450,7 @@ internal sealed class MainForm : Form
         actionFlow.Dock = DockStyle.Fill;
         actionFlow.Padding = new Padding(0, 0, 0, 0);
         AddFlowButton(actionFlow, "Start bridge", StartBridge, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actionFlow, "Win Native", StartWindowsNative, Color.FromArgb(45, 91, 150), Color.White);
         AddFlowButton(actionFlow, "Stop", StopBridge, Color.FromArgb(178, 62, 62), Color.White);
         AddFlowButton(actionFlow, "Pairing wizard", () => SelectTabIfExists("Pairing"));
         AddFlowButton(actionFlow, "Doctor", async () => await RunControllerDoctorAsync());
@@ -817,6 +823,69 @@ internal sealed class MainForm : Form
         return page;
     }
 
+    private TabPage BuildWindowsNativePage()
+    {
+        var page = CreatePage("Win Native", "Windows Native");
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 154 : 170));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        page.Controls.Add(layout);
+
+        var statusGroup = CreateGroup("Windows Native input");
+        var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 34 : 40));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 34));
+        statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        statusGroup.Controls.Add(statusLayout);
+
+        _windowsNativeStatusLabel.Text = "Not ready";
+        _windowsNativeStatusLabel.Dock = DockStyle.Fill;
+        _windowsNativeStatusLabel.AutoEllipsis = true;
+        _windowsNativeStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _windowsNativeStatusLabel.Font = new Font("Segoe UI", IsCompactUi() ? 10.5F : 12, FontStyle.Bold);
+        statusLayout.Controls.Add(_windowsNativeStatusLabel, 0, 0);
+
+        _windowsNativeProgress.Dock = DockStyle.Fill;
+        _windowsNativeProgress.Minimum = 0;
+        _windowsNativeProgress.Maximum = 100;
+        _windowsNativeProgress.Value = 0;
+        _windowsNativeProgress.Style = ProgressBarStyle.Continuous;
+        statusLayout.Controls.Add(_windowsNativeProgress, 0, 1);
+
+        var actions = CreateFullWidthToolbarFlow();
+        actions.Dock = DockStyle.Fill;
+        actions.Padding = new Padding(0);
+        AddFlowButton(actions, "Probe", async () => await ProbeWindowsNativeAsync());
+        AddFlowButton(actions, "Start native", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actions, "Stop native", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+        AddFlowButton(actions, "Open probe", () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+        statusLayout.Controls.Add(actions, 0, 2);
+        layout.Controls.Add(statusGroup, 0, 0);
+
+        var deviceGroup = CreateGroup("Stadia HID devices");
+        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Name", 220), ("VID:PID", 88), ("Input", 62), ("HidHide", 92), ("Path", 420));
+        _windowsNativeDeviceList.ShowItemToolTips = true;
+        _windowsNativeDeviceList.Resize += (_, _) => ResizeWindowsNativeColumns();
+        _windowsNativeDeviceList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_windowsNativeDeviceList.SelectedItems.Count > 0)
+            {
+                LogUserSelection("Windows Native HID selected", ("device", SelectedListText(_windowsNativeDeviceList)));
+            }
+        };
+        deviceGroup.Controls.Add(_windowsNativeDeviceList);
+        layout.Controls.Add(deviceGroup, 1, 0);
+
+        var logGroup = CreateGroup("Windows Native log");
+        ConfigureLogBox(_windowsNativeLogBox, "Windows Native log not loaded yet.");
+        logGroup.Controls.Add(_windowsNativeLogBox);
+        layout.Controls.Add(logGroup, 0, 1);
+        layout.SetColumnSpan(logGroup, 2);
+        return page;
+    }
+
     private TabPage BuildSetupPage()
     {
         var page = CreatePage("Settings", "Setup");
@@ -1184,6 +1253,8 @@ internal sealed class MainForm : Form
         _trayIcon.ContextMenuStrip.Items.Add("Show", null, (_, _) => { LogUserAction("Tray show"); Show(); WindowState = FormWindowState.Normal; Activate(); });
         _trayIcon.ContextMenuStrip.Items.Add("Start", null, (_, _) => { LogUserAction("Tray start"); StartBridge(); });
         _trayIcon.ContextMenuStrip.Items.Add("Stop", null, (_, _) => { LogUserAction("Tray stop"); StopBridge(); });
+        _trayIcon.ContextMenuStrip.Items.Add("Start Windows Native", null, (_, _) => { LogUserAction("Tray start Windows Native"); StartWindowsNative(); });
+        _trayIcon.ContextMenuStrip.Items.Add("Stop Windows Native", null, (_, _) => { LogUserAction("Tray stop Windows Native"); StopWindowsNative(); });
         _trayIcon.ContextMenuStrip.Items.Add("Exit", null, (_, _) => { LogUserAction("Tray exit"); Close(); });
         _trayIcon.DoubleClick += (_, _) => { LogUserAction("Tray double-click show"); Show(); WindowState = FormWindowState.Normal; Activate(); };
     }
@@ -1200,9 +1271,11 @@ internal sealed class MainForm : Form
         await RefreshUsbipdDevicesAsync();
         SetOperationProgress("Refreshing app state", "Reading Windows Bluetooth devices", 46);
         await RefreshWindowsBluetoothAsync();
-        SetOperationProgress("Refreshing app state", "Reading Linux Bluetooth devices", 62);
+        SetOperationProgress("Refreshing app state", "Reading Windows Native HID devices", 54);
+        await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false);
+        SetOperationProgress("Refreshing app state", "Reading Linux Bluetooth devices", 64);
         var linuxDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false);
-        SetOperationProgress("Refreshing app state", "Loading profiles and macros", 78);
+        SetOperationProgress("Refreshing app state", "Loading profiles and macros", 80);
         RefreshProfiles();
         LoadMacroConfig();
         RefreshControllerTelemetry();
@@ -1322,6 +1395,109 @@ internal sealed class MainForm : Form
         var selectedDevice = SelectedUsbipdDevice();
         _capacityLabel.Text = NativeControlServices.EstimateCapacity(selectedDevice, devices);
         RefreshPairingWizardStatus();
+    }
+
+    private async Task ProbeWindowsNativeAsync()
+    {
+        LogUserAction("Windows Native probe requested");
+        BeginOperationProgress("Windows Native probe", "Checking HidHide", 6);
+        SetWindowsNativeStatus("Scanning Windows HID", 12, warn: false);
+
+        var runner = new ProcessRunner();
+        var hidHide = new HidHideManager(_paths, runner);
+        var scanner = new WindowsNativeHidScanner(hidHide);
+        var devices = await RefreshWindowsNativeDevicesAsync(scanner, updateOperationProgress: false).ConfigureAwait(true);
+
+        SetOperationProgress("Windows Native probe", "Capturing HID reports", 34);
+        SetWindowsNativeStatus(devices.Count == 0 ? "Not ready - no Stadia HID visible" : $"Capturing {devices.Count} device(s)", 48, devices.Count == 0);
+        var report = await AwaitWithTimedProgressAsync(
+            scanner.CreateProbeReportAsync(TimeSpan.FromSeconds(8)),
+            42,
+            92,
+            TimeSpan.FromSeconds(9),
+            "Windows Native probe",
+            "Reading raw HID input").ConfigureAwait(true);
+
+        var reportPath = Path.Combine(_paths.LogDirectory, "windows-native-probe.txt");
+        Directory.CreateDirectory(_paths.LogDirectory);
+        await File.WriteAllTextAsync(reportPath, report).ConfigureAwait(true);
+        _diagnosticsBox.Text = report;
+        _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+        RefreshLogs();
+
+        if (devices.Count == 0)
+        {
+            FailOperationProgress("Windows Native probe", "Not ready - no Stadia HID controller visible");
+            SetWindowsNativeStatus("Not ready - pair the controller in Windows first", 100, warn: true);
+            return;
+        }
+
+        CompleteOperationProgress("Windows Native probe", $"{devices.Count} Stadia HID device(s) visible");
+        SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s) visible", 100, warn: false);
+    }
+
+    private async Task<IReadOnlyList<WindowsNativeHidDevice>> RefreshWindowsNativeDevicesAsync(
+        WindowsNativeHidScanner? scanner = null,
+        bool updateOperationProgress = true)
+    {
+        if (updateOperationProgress)
+        {
+            BeginOperationProgress("Windows Native HID", "Scanning Windows HID devices", 10);
+        }
+
+        scanner ??= new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
+        var devices = await scanner.FindStadiaControllersAsync().ConfigureAwait(true);
+        PopulateWindowsNativeDevices(devices);
+        ResizeWindowsNativeColumns();
+
+        if (devices.Count == 0)
+        {
+            SetWindowsNativeStatus("Not ready - no Stadia HID controller visible", 100, warn: true);
+            if (updateOperationProgress)
+            {
+                FailOperationProgress("Windows Native HID", "No Stadia HID controller visible");
+            }
+        }
+        else
+        {
+            var hidden = devices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath));
+            SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s), {hidden} HidHide match(es)", 100, warn: hidden < devices.Count);
+            if (updateOperationProgress)
+            {
+                CompleteOperationProgress("Windows Native HID", $"{devices.Count} Stadia HID device(s) visible");
+            }
+        }
+
+        return devices;
+    }
+
+    private void PopulateWindowsNativeDevices(IReadOnlyList<WindowsNativeHidDevice> devices)
+    {
+        _windowsNativeDeviceList.Items.Clear();
+        for (var i = 0; i < devices.Count; i++)
+        {
+            var device = devices[i];
+            var hidHideState = string.IsNullOrWhiteSpace(device.DeviceInstancePath) ? "missing" : "matched";
+            var item = new ListViewItem("P" + (i + 1))
+            {
+                Tag = device,
+                ForeColor = hidHideState == "matched" ? Color.FromArgb(34, 120, 72) : Color.FromArgb(180, 45, 45),
+                ToolTipText = device.FileSystemName
+            };
+            item.SubItems.Add(string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName);
+            item.SubItems.Add($"{device.VendorId:X4}:{device.ProductId:X4}");
+            item.SubItems.Add(device.MaxInputReportLength.ToString());
+            item.SubItems.Add(hidHideState);
+            item.SubItems.Add(device.FileSystemName);
+            _windowsNativeDeviceList.Items.Add(item);
+        }
+    }
+
+    private void SetWindowsNativeStatus(string text, int percent, bool warn)
+    {
+        _windowsNativeStatusLabel.Text = text;
+        _windowsNativeStatusLabel.ForeColor = warn ? Color.FromArgb(180, 45, 45) : Color.FromArgb(24, 33, 48);
+        _windowsNativeProgress.Value = ClampProgress(percent);
     }
 
     private async Task<IReadOnlyList<LinuxBluetoothDevice>> RefreshLinuxBluetoothDevicesAsync(int scanSeconds, bool updateProgress = true)
@@ -1616,6 +1792,28 @@ internal sealed class MainForm : Form
         _windowsBluetoothList.Columns[0].Width = nameWidth;
         _windowsBluetoothList.Columns[1].Width = statusWidth;
         _windowsBluetoothList.Columns[2].Width = Math.Max(120, available - nameWidth - statusWidth);
+    }
+
+    private void ResizeWindowsNativeColumns()
+    {
+        if (_windowsNativeDeviceList.Columns.Count < 6 || _windowsNativeDeviceList.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var available = Math.Max(420, _windowsNativeDeviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
+        var padWidth = 42;
+        var vidWidth = 76;
+        var inputWidth = 56;
+        var hideWidth = 82;
+        var nameWidth = Math.Clamp((int)(available * 0.36), 150, 240);
+        var fixedWidth = padWidth + nameWidth + vidWidth + inputWidth + hideWidth;
+        _windowsNativeDeviceList.Columns[0].Width = padWidth;
+        _windowsNativeDeviceList.Columns[1].Width = nameWidth;
+        _windowsNativeDeviceList.Columns[2].Width = vidWidth;
+        _windowsNativeDeviceList.Columns[3].Width = inputWidth;
+        _windowsNativeDeviceList.Columns[4].Width = hideWidth;
+        _windowsNativeDeviceList.Columns[5].Width = Math.Max(120, available - fixedWidth);
     }
 
     private void ResizeDoctorColumns()
@@ -2260,6 +2458,7 @@ internal sealed class MainForm : Form
     {
         var statusText = LogReader.Tail(_paths.StatusLog, 140);
         var linuxText = LogReader.Tail(_paths.LinuxLog, 180);
+        var windowsNativeText = LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native.log"), 180);
         var actionText = LogReader.Tail(_paths.UserActionLog, 160);
         var appDiagnosticsText = LogReader.Tail(_paths.AppDiagnosticsLog, 180);
         _controlStatusLogBox.Text = statusText;
@@ -2267,6 +2466,7 @@ internal sealed class MainForm : Form
         _statusLogBox.Text = statusText;
         _controlLinuxLogBox.Text = linuxText;
         _linuxLogBox.Text = linuxText;
+        _windowsNativeLogBox.Text = string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText;
         _userActionLogBox.Text = actionText;
         _appDiagnosticsLogBox.Text = appDiagnosticsText;
     }
@@ -2300,6 +2500,7 @@ internal sealed class MainForm : Form
                 ("linuxSelected", SelectedListText(_linuxBluetoothList)),
                 ("wizardLinuxSelected", SelectedListText(_wizardLinuxBluetoothList)),
                 ("windowsBtSelected", SelectedListText(_windowsBluetoothList)),
+                ("windowsNativeSelected", SelectedListText(_windowsNativeDeviceList)),
                 ("profileSelected", SelectedListText(_profilesList))
             };
             context.AddRange(details);
@@ -2609,6 +2810,68 @@ internal sealed class MainForm : Form
         SetOperationProgress("Starting bridge", "Bridge launch requested; waiting for Linux devices", 38);
         _ = RefreshLinuxListAfterBridgeStartAsync();
         _tabs.SelectedTab = _tabs.TabPages["Control"];
+    }
+
+    private void StartWindowsNative()
+    {
+        LogUserAction("Start Windows Native requested");
+        BeginOperationProgress("Starting Windows Native", "Launching native receiver", 18);
+        SetWindowsNativeStatus("Starting Windows Native", 20, warn: false);
+        LaunchSelfCommand("--start-windows-native", elevateWhenNeeded: true, "Windows Native start requested. Watch logs for readiness.");
+        _ = RefreshWindowsNativeAfterStartAsync();
+        _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
+    }
+
+    private async Task RefreshWindowsNativeAfterStartAsync()
+    {
+        var waits = new[]
+        {
+            (Wait: TimeSpan.FromSeconds(2), Before: 24, After: 45),
+            (Wait: TimeSpan.FromSeconds(4), Before: 50, After: 72),
+            (Wait: TimeSpan.FromSeconds(6), Before: 76, After: 92)
+        };
+
+        for (var attempt = 0; attempt < waits.Length; attempt++)
+        {
+            var wait = waits[attempt];
+            await WaitWithProgressAsync(wait.Wait, wait.Before, wait.After, "Starting Windows Native", $"Waiting for native receiver pass {attempt + 1}");
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            RefreshLogs();
+            var latest = LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native.log"), 30);
+            if (latest.Contains("WINDOWS_NATIVE_READY", StringComparison.OrdinalIgnoreCase))
+            {
+                CompleteOperationProgress("Starting Windows Native", "Windows Native receiver is running");
+                SetWindowsNativeStatus("Running - physical input hidden", 100, warn: false);
+                RefreshControllerTelemetry();
+                return;
+            }
+
+            if (latest.Contains("WINDOWS_NATIVE_NOT_READY", StringComparison.OrdinalIgnoreCase))
+            {
+                FailOperationProgress("Starting Windows Native", "Not ready - check the Windows Native log");
+                SetWindowsNativeStatus("Not ready - check log", 100, warn: true);
+                await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false);
+                return;
+            }
+        }
+
+        CompleteOperationProgress("Starting Windows Native", "Start requested; waiting for receiver status in logs");
+        SetWindowsNativeStatus("Start requested - watching logs", 96, warn: false);
+    }
+
+    private void StopWindowsNative()
+    {
+        LogUserAction("Stop Windows Native requested");
+        BeginOperationProgress("Stopping Windows Native", "Sending receiver stop signal", 35);
+        LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: false, "Windows Native stop requested. HidHide remains enabled.");
+        SetWindowsNativeStatus("Stop requested - HidHide remains enabled", 100, warn: false);
+        CompleteOperationProgress("Stopping Windows Native", "Stop requested; HidHide remains enabled");
+        RefreshLogs();
+        _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
     }
 
     private async Task RefreshLinuxListAfterBridgeStartAsync()

@@ -33,6 +33,21 @@ internal static class Program
             Environment.Exit(RunBridgeCommand(start: false));
             return;
         }
+        if (args.Contains("--start-windows-native", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeCommand(paths, start: true));
+            return;
+        }
+        if (args.Contains("--stop-windows-native", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeCommand(paths, start: false));
+            return;
+        }
+        if (args.Contains("--windows-native-probe", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeProbe(paths));
+            return;
+        }
         if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
@@ -52,5 +67,33 @@ internal static class Program
         var runner = new ProcessRunner();
         var orchestrator = new BridgeOrchestrator(paths, runner);
         return (start ? orchestrator.StartAsync() : orchestrator.StopAsync()).GetAwaiter().GetResult();
+    }
+
+    private static int RunWindowsNativeCommand(AppPaths paths, bool start)
+    {
+        AppDiagnosticsLogger.Initialize(paths);
+        var runner = new ProcessRunner();
+        var orchestrator = new WindowsNativeOrchestrator(paths, runner);
+        return (start ? orchestrator.StartAsync() : orchestrator.StopAsync()).GetAwaiter().GetResult();
+    }
+
+    private static int RunWindowsNativeProbe(AppPaths paths)
+    {
+        try
+        {
+            Directory.CreateDirectory(paths.LogDirectory);
+            var runner = new ProcessRunner();
+            var hidHide = new HidHideManager(paths, runner);
+            var scanner = new WindowsNativeHidScanner(hidHide);
+            var report = scanner.CreateProbeReportAsync(TimeSpan.FromSeconds(8)).GetAwaiter().GetResult();
+            var reportPath = Path.Combine(paths.LogDirectory, "windows-native-probe.txt");
+            File.WriteAllText(reportPath, report);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_PROBE_FAILED", ("error", ex.Message));
+            return 1;
+        }
     }
 }

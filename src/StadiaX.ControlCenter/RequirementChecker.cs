@@ -57,6 +57,17 @@ internal sealed class RequirementChecker
             15000).ConfigureAwait(false);
         checks.Add(new CheckResult("ViGEmBus driver", vigem.Output.Contains("OK", StringComparison.OrdinalIgnoreCase) ? CheckState.Ok : CheckState.Missing, "Required for virtual Xbox 360 controllers."));
 
+        var hidHidePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            "Nefarius Software Solutions",
+            "HidHide",
+            "x64",
+            "HidHideCLI.exe");
+        checks.Add(new CheckResult(
+            "HidHide driver",
+            File.Exists(hidHidePath) ? CheckState.Ok : CheckState.Warn,
+            File.Exists(hidHidePath) ? hidHidePath : "Required only by the Windows Native variant to hide physical controller input."));
+
         var resolved = await _wslResolver.ResolveAsync().ConfigureAwait(false);
         checks.Add(new CheckResult("WSL distro", string.IsNullOrWhiteSpace(resolved) ? CheckState.Warn : CheckState.Ok, string.IsNullOrWhiteSpace(resolved) ? "No distro resolved yet; first start can install Ubuntu." : resolved));
 
