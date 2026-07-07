@@ -14,6 +14,8 @@ internal sealed class WindowsNativeReceiver
     private readonly IReadOnlyList<WindowsNativeHidDevice>? _initialDevices;
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly object _logLock = new();
+    private readonly WindowsNativeRumbleWriter?[] _rumbleWriters = new WindowsNativeRumbleWriter?[MaxControllers];
+    private readonly VigemNative.X360Notification _rumbleCallback;
     private readonly IntPtr[] _targets = new IntPtr[MaxControllers];
 
     private IntPtr _client;
@@ -29,6 +31,7 @@ internal sealed class WindowsNativeReceiver
         _scanner = scanner;
         _initialDevices = initialDevices;
         _telemetryWriter = new ControllerTelemetryWriter(paths);
+        _rumbleCallback = OnRumble;
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -52,15 +55,50 @@ internal sealed class WindowsNativeReceiver
 
             InitializeVigem(devices.Length);
             _status.Write("WINDOWS_NATIVE_READY", $"Starting Windows Native input for {devices.Length} controller(s)");
+            WriteReadyMarker(devices.Length);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var tasks = devices
+            var controllerTasks = devices
                 .Select((device, index) => Task.Run(() => RunControllerAsync(index, device, linked.Token), linked.Token))
+                .ToArray();
+            var rumbleServer = new WindowsNativeRumbleUdpServer(
+                controllerIndex => controllerIndex >= 0 && controllerIndex < _rumbleWriters.Length ? _rumbleWriters[controllerIndex] : null,
+                LogInfo,
+                LogError);
+            var tasks = controllerTasks
+                .Append(Task.Run(() => rumbleServer.RunAsync(linked.Token), linked.Token))
                 .ToArray();
 
             try
             {
-                await Task.WhenAll(tasks).ConfigureAwait(false);
-                return 0;
+                var controllerGroup = Task.WhenAll(controllerTasks);
+                var shutdownTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+                var completed = await Task.WhenAny(controllerGroup, shutdownTask).ConfigureAwait(false);
+                if (completed == shutdownTask)
+                {
+                    return 0;
+                }
+
+                var controllerLoopsStopped = completed == controllerGroup;
+                linked.Cancel();
+                try
+                {
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!controllerLoopsStopped)
+                {
+                    return 0;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                if (controllerGroup.IsFaulted)
+                {
+                    throw controllerGroup.Exception?.GetBaseException() ??
+                          new InvalidOperationException("Windows Native controller loop failed.");
+                }
+
+                throw new InvalidOperationException("Windows Native controller loop stopped unexpectedly.");
             }
             catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
@@ -82,6 +120,7 @@ internal sealed class WindowsNativeReceiver
         }
         finally
         {
+            DeleteReadyMarker();
             CleanupVigem();
             LogInfo("Windows Native receiver stopped");
         }
@@ -101,41 +140,52 @@ internal sealed class WindowsNativeReceiver
 
             using var stream = hidDevice.Open();
             stream.ReadTimeout = 500;
+            stream.WriteTimeout = 80;
             var mapper = new WindowsNativeHidMapper(hidDevice);
+            var rumbleWriter = new WindowsNativeRumbleWriter(hidDevice, stream, LogInfo, LogError);
             var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
+            _rumbleWriters[controllerIndex] = rumbleWriter;
             LogInfo("P{0} Windows Native HID open: {1}", controllerIndex + 1, device.FriendlyName);
 
-            while (!cancellationToken.IsCancellationRequested)
+            try
             {
-                int read;
-                try
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    Array.Clear(buffer);
-                    read = stream.Read(buffer);
-                }
-                catch (TimeoutException)
-                {
-                    continue;
-                }
+                    int read;
+                    try
+                    {
+                        Array.Clear(buffer);
+                        read = stream.Read(buffer);
+                    }
+                    catch (TimeoutException)
+                    {
+                        continue;
+                    }
 
-                if (read <= 0)
-                {
-                    await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
+                    if (read <= 0)
+                    {
+                        await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
 
-                if (!mapper.TryParse(buffer.AsSpan(0, read), out var state))
-                {
-                    continue;
-                }
+                    if (!mapper.TryParse(buffer.AsSpan(0, read), out var state))
+                    {
+                        continue;
+                    }
 
-                var update = VigemNative.vigem_target_x360_update(_client, _targets[controllerIndex], ControllerStateMapper.ToXusb(state));
-                if (!VigemNative.Success(update))
-                {
-                    LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
-                }
+                    var update = VigemNative.vigem_target_x360_update(_client, _targets[controllerIndex], ControllerStateMapper.ToXusb(state));
+                    if (!VigemNative.Success(update))
+                    {
+                        LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
+                    }
 
-                _telemetryWriter.Write(controllerIndex, state);
+                    _telemetryWriter.Write(controllerIndex, state);
+                }
+            }
+            finally
+            {
+                try { rumbleWriter.Send(0, 0); } catch { }
+                _rumbleWriters[controllerIndex] = null;
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -177,8 +227,31 @@ internal sealed class WindowsNativeReceiver
                 throw new InvalidOperationException($"ViGEm virtual pad {i + 1} init failed: 0x{add:X8}.");
             }
 
+            var notify = VigemNative.vigem_target_x360_register_notification(_client, target, _rumbleCallback, new IntPtr(i));
+            if (!VigemNative.Success(notify))
+            {
+                LogError("P{0} ViGEm rumble notification registration failed: 0x{1:X8}", i + 1, notify);
+            }
+
             LogInfo("P{0} Windows Native virtual Xbox 360 pad ready", i + 1);
         }
+    }
+
+    private void OnRumble(IntPtr client, IntPtr target, byte largeMotor, byte smallMotor, byte ledNumber, IntPtr userData)
+    {
+        var controllerIndex = userData.ToInt32();
+        if (controllerIndex < 0 || controllerIndex >= _rumbleWriters.Length)
+        {
+            return;
+        }
+
+        var writer = _rumbleWriters[controllerIndex];
+        if (writer is null)
+        {
+            return;
+        }
+
+        writer.Send(largeMotor, smallMotor);
     }
 
     private void CleanupVigem()
@@ -191,6 +264,7 @@ internal sealed class WindowsNativeReceiver
                 continue;
             }
 
+            try { VigemNative.vigem_target_x360_unregister_notification(target); } catch { }
             try { VigemNative.vigem_target_remove(_client, target); } catch { }
             try { VigemNative.vigem_target_free(target); } catch { }
             _targets[i] = IntPtr.Zero;
@@ -201,6 +275,23 @@ internal sealed class WindowsNativeReceiver
             try { VigemNative.vigem_disconnect(_client); } catch { }
             try { VigemNative.vigem_free(_client); } catch { }
             _client = IntPtr.Zero;
+        }
+    }
+
+    private void WriteReadyMarker(int controllerCount)
+    {
+        Directory.CreateDirectory(_paths.LogDirectory);
+        File.WriteAllText(
+            WindowsNativeRuntime.ReadyPath(_paths),
+            $"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}|controllers={controllerCount}{Environment.NewLine}");
+    }
+
+    private void DeleteReadyMarker()
+    {
+        var path = WindowsNativeRuntime.ReadyPath(_paths);
+        if (File.Exists(path))
+        {
+            try { File.Delete(path); } catch { }
         }
     }
 

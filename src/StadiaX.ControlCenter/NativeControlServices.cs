@@ -316,6 +316,12 @@ internal sealed class NativeControlServices
             return;
         }
 
+        if (IsWindowsNativeReceiverActive())
+        {
+            await SendWindowsNativeRumbleTestAsync(controllerIndex, largeMotor, smallMotor, durationMs).ConfigureAwait(false);
+            return;
+        }
+
         var distro = await _wslResolver.ResolveAsync().ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(distro))
         {
@@ -335,6 +341,44 @@ internal sealed class NativeControlServices
         await udp.SendAsync(BuildRumblePacket(controllerIndex - 1, largeMotor, smallMotor), 6).ConfigureAwait(false);
         await Task.Delay(Math.Clamp(durationMs, 80, 1500)).ConfigureAwait(false);
         await udp.SendAsync(BuildRumblePacket(controllerIndex - 1, 0, 0), 6).ConfigureAwait(false);
+    }
+
+    private async Task SendWindowsNativeRumbleTestAsync(int controllerIndex, byte largeMotor, byte smallMotor, int durationMs)
+    {
+        using var udp = new UdpClient(AddressFamily.InterNetwork);
+        udp.Connect(new IPEndPoint(IPAddress.Loopback, WindowsNativeRuntime.RumblePort));
+        await udp.SendAsync(WindowsNativeRumbleProtocol.BuildPacket(controllerIndex - 1, largeMotor, smallMotor), 6).ConfigureAwait(false);
+        await Task.Delay(Math.Clamp(durationMs, 80, 1500)).ConfigureAwait(false);
+        await udp.SendAsync(WindowsNativeRumbleProtocol.BuildPacket(controllerIndex - 1, 0, 0), 6).ConfigureAwait(false);
+    }
+
+    private bool IsWindowsNativeReceiverActive()
+    {
+        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
+        if (!File.Exists(readyPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var marker = File.ReadAllText(readyPath).Trim();
+            var pidText = marker.Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Split('=', 2, StringSplitOptions.TrimEntries))
+                .Where(parts => parts.Length == 2)
+                .FirstOrDefault(parts => parts[0].Equals("pid", StringComparison.OrdinalIgnoreCase))?[1];
+            if (int.TryParse(pidText, out var pid))
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                return !process.HasExited;
+            }
+
+            return File.GetLastWriteTimeUtc(readyPath) >= DateTime.UtcNow - TimeSpan.FromMinutes(5);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     public async Task<CommandResult> RunLinuxBluetoothCommandAsync(string mac, string command)

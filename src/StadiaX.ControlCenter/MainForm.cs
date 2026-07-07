@@ -7,6 +7,8 @@ namespace StadiaX.ControlCenter;
 
 internal sealed class MainForm : Form
 {
+    private const double DefaultControllerFullBatteryHours = 8d;
+
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner = new();
     private readonly ReleaseChecker _releaseChecker = new();
@@ -1715,7 +1717,7 @@ internal sealed class MainForm : Form
 
     private static string BatteryCellText(LinuxBluetoothDevice device)
     {
-        return device.BatteryPercent is null ? "-" : device.BatteryPercent.Value + "%";
+        return device.BatteryPercent is null ? "-" : BatteryPercentWithRuntime(device.BatteryPercent);
     }
 
     private static string CompactMacText(string value)
@@ -1996,7 +1998,7 @@ internal sealed class MainForm : Form
 
         _batteryLabel.Text = "Battery: " + string.Join("   ", stadia.Select((d, i) =>
         {
-            var battery = d.BatteryPercent is null ? "unknown" : d.BatteryPercent + "%";
+            var battery = BatteryPercentWithRuntime(d.BatteryPercent);
             var state = BatteryDeviceStateText(d);
             return string.IsNullOrWhiteSpace(state) ? $"P{i + 1} {battery}" : $"P{i + 1} {battery} ({state})";
         }));
@@ -2174,7 +2176,7 @@ internal sealed class MainForm : Form
             _dashboardPadNameLabels[slot - 1].Text = ShortPadName(device?.Name ?? profile?.Name ?? "Pad P" + slot);
             _dashboardPadStatusLabels[slot - 1].Text = state;
             _dashboardPadStatusLabels[slot - 1].ForeColor = DashboardStateColor(state);
-            _dashboardPadBatteryLabels[slot - 1].Text = device?.BatteryPercent is null ? "Battery --" : "Battery " + device.BatteryPercent.Value + "%";
+            _dashboardPadBatteryLabels[slot - 1].Text = device?.BatteryPercent is null ? "Battery --" : "Battery " + BatteryPercentWithRuntime(device.BatteryPercent);
             _dashboardPadBatteryBars[slot - 1].Value = device?.BatteryPercent is null ? 0 : Math.Clamp(device.BatteryPercent.Value, 0, 100);
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
             _dashboardPadMacLabels[slot - 1].Text = device?.Mac ?? profile?.Mac ?? "Automatic";
@@ -2940,7 +2942,7 @@ internal sealed class MainForm : Form
     {
         return string.Join("  ", devices.Take(4).Select((device, index) =>
         {
-            var battery = device.BatteryPercent is null ? "unknown" : device.BatteryPercent + "%";
+            var battery = BatteryPercentWithRuntime(device.BatteryPercent);
             var state = BatteryDeviceStateText(device);
             return string.IsNullOrWhiteSpace(state)
                 ? $"P{index + 1} {battery}"
@@ -3538,7 +3540,7 @@ internal sealed class MainForm : Form
         _batteryOverlay.BackColor = Color.FromArgb(8, 18, 30);
         var rows = devices.Take(4).Select((device, index) =>
         {
-            var battery = device.BatteryPercent is null ? "?" : device.BatteryPercent + "%";
+            var battery = BatteryPercentWithRuntime(device.BatteryPercent);
             return $"P{index + 1} {battery}";
         }).ToArray();
         var firstLine = string.Join("  ", rows.Take(2));
@@ -3616,12 +3618,48 @@ internal sealed class MainForm : Form
             .Select(line => TextRenderer.MeasureText(line, label.Font, Size.Empty, flags).Width)
             .DefaultIfEmpty(48)
             .Max();
-        var lineHeight = TextRenderer.MeasureText("P1 100%", label.Font, Size.Empty, flags).Height;
-        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 6, 54, 118);
+        var lineHeight = TextRenderer.MeasureText("P1 100% 8h", label.Font, Size.Empty, flags).Height;
+        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 6, 54, 144);
         var height = lines.Length > 1
             ? Math.Clamp((lineHeight * lines.Length) + label.Padding.Vertical + 4, 32, 40)
             : Math.Clamp(lineHeight + label.Padding.Vertical + 4, 22, 26);
         return new Size(width, height);
+    }
+
+    private static string BatteryPercentWithRuntime(int? percent)
+    {
+        if (percent is null)
+        {
+            return "?";
+        }
+
+        var clamped = Math.Clamp(percent.Value, 0, 100);
+        return $"{clamped}% {EstimatedBatteryRuntimeText(clamped)}";
+    }
+
+    private static string EstimatedBatteryRuntimeText(int percent)
+    {
+        var minutes = Math.Max(0, (int)Math.Round(ControllerFullBatteryHours() * 60 * Math.Clamp(percent, 0, 100) / 100.0));
+        if (minutes < 60)
+        {
+            return minutes + "m";
+        }
+
+        var hours = minutes / 60;
+        var remainder = minutes % 60;
+        return remainder < 15 ? hours + "h" : $"{hours}h{remainder / 15 * 15:00}";
+    }
+
+    private static double ControllerFullBatteryHours()
+    {
+        var configured = Environment.GetEnvironmentVariable("STADIAX_CONTROLLER_FULL_BATTERY_HOURS");
+        return double.TryParse(
+                   configured,
+                   System.Globalization.NumberStyles.Float,
+                   System.Globalization.CultureInfo.InvariantCulture,
+                   out var hours)
+            ? Math.Clamp(hours, 1d, 24d)
+            : DefaultControllerFullBatteryHours;
     }
 
     private UsbipdDevice? SelectedUsbipdDevice()

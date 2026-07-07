@@ -277,6 +277,7 @@ internal sealed class WindowsNativeHidScanner
             lines.Add($"HidHide instance: {EmptyAsNone(device.DeviceInstancePath)}");
             lines.Add($"Input report length: {device.MaxInputReportLength}");
             lines.Add($"Output report length: {device.MaxOutputReportLength}");
+            lines.AddRange(DescribeReports(device.FileSystemName));
             lines.AddRange(CaptureReports(device.FileSystemName, captureTime));
             lines.Add("");
         }
@@ -377,6 +378,39 @@ internal sealed class WindowsNativeHidScanner
         }
 
         return lines;
+    }
+
+    private static IEnumerable<string> DescribeReports(string fileSystemName)
+    {
+        var lines = new List<string>();
+        try
+        {
+            var device = DeviceList.Local.GetHidDevices().FirstOrDefault(item =>
+                item.GetFileSystemName().Equals(fileSystemName, StringComparison.OrdinalIgnoreCase));
+            if (device is null)
+            {
+                return lines;
+            }
+
+            var descriptor = device.GetReportDescriptor();
+            lines.Add("Input report IDs: " + ReportSummary(descriptor.InputReports));
+            lines.Add("Output report IDs: " + ReportSummary(descriptor.OutputReports));
+            lines.Add("Feature report IDs: " + ReportSummary(descriptor.FeatureReports));
+        }
+        catch (Exception ex)
+        {
+            lines.Add("Report descriptor read failed: " + ex.Message);
+        }
+
+        return lines;
+    }
+
+    private static string ReportSummary(IEnumerable<HidSharp.Reports.Report> reports)
+    {
+        var summary = reports
+            .Select(report => report.ReportID == 0 ? $"none/len={report.Length}" : $"{report.ReportID}/len={report.Length}")
+            .ToArray();
+        return summary.Length == 0 ? "none" : string.Join(", ", summary);
     }
 
     private static string NormalizeDevicePath(string value)
