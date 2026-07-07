@@ -1,0 +1,106 @@
+name: Build Windows Native setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional Windows Native package version"
+        required: false
+        type: string
+  push:
+    branches:
+      - windows-native-experiment
+    tags:
+      - "windows-native-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-windows-native:
+    name: Package Windows Native ZIP and installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build C# control center
+        shell: pwsh
+        run: ./build/Build-CSharpControlCenter.ps1 -CopyToRoot
+
+      - name: Download ViGEm client
+        shell: pwsh
+        run: ./build/Download-ViGEmClient.ps1 -OutputDirectory .
+
+      - name: Resolve package version
+        id: package_version
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          $releaseTag = ""
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $refName = "${{ github.ref_name }}"
+            if ($refName -like "windows-native-v*") {
+              $version = $refName -replace '^windows-native-', ''
+              $releaseTag = $refName
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($version) -and (Test-Path VERSION.txt)) {
+            $baseVersion = (Get-Content VERSION.txt -Raw).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($baseVersion)) {
+              $version = "$baseVersion-windows-native.${{ github.run_number }}"
+            }
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "windows-native-${{ github.run_number }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            $releaseTag = "windows-native-$version"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+
+      - name: Package Windows Native
+        shell: pwsh
+        run: ./build/Package-WindowsNative.ps1 -Version "${{ steps.package_version.outputs.version }}"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows Native installer
+        shell: pwsh
+        run: ./build/Build-WindowsNativeInstaller.ps1 -Version "${{ steps.package_version.outputs.version }}"
+
+      - name: Upload Windows Native package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stadia-X-Windows-Native-package
+          path: |
+            dist/Stadia-X-Windows-Native-*.zip
+            dist/Stadia-X-Windows-Native-*.zip.sha256
+            dist/Stadia-X-Windows-Native-*.exe
+            dist/Stadia-X-Windows-Native-*.exe.sha256
+          if-no-files-found: error
+
+      - name: Publish Windows Native GitHub release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package_version.outputs.release_tag }}
+          target_commitish: ${{ github.sha }}
+          name: Stadia X Windows Native ${{ steps.package_version.outputs.version }}
+          generate_release_notes: true
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/Stadia-X-Windows-Native-*.zip
+            dist/Stadia-X-Windows-Native-*.zip.sha256
+            dist/Stadia-X-Windows-Native-*.exe
+            dist/Stadia-X-Windows-Native-*.exe.sha256
