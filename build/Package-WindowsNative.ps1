@@ -39,8 +39,8 @@ $requiredFiles = @(
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
     "LICENSE.txt",
-    "assets\StadiaX.ico",
-    "assets\StadiaX-icon.png",
+    "assets\StadiaX-WindowsNative.ico",
+    "assets\StadiaX-WindowsNative-icon.png",
     "assets\ATTRIBUTION.md"
 )
 

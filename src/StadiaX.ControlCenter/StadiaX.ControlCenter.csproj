@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>StadiaX</AssemblyName>
     <RootNamespace>StadiaX.ControlCenter</RootNamespace>
-    <ApplicationIcon>..\..\assets\StadiaX.ico</ApplicationIcon>
+    <ApplicationIcon>..\..\assets\StadiaX-WindowsNative.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\ViGEmClient.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\ViGEmClient.dll')" />

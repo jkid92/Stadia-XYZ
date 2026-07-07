@@ -4058,16 +4058,22 @@ internal sealed class MainForm : Form
 
     private static Icon LoadApplicationIcon(AppPaths paths)
     {
-        var assetIcon = Path.Combine(paths.Root, "assets", "StadiaX.ico");
-        if (File.Exists(assetIcon))
+        foreach (var assetIcon in new[]
         {
-            try
+            Path.Combine(paths.Root, "assets", "StadiaX-WindowsNative.ico"),
+            Path.Combine(paths.Root, "assets", "StadiaX.ico")
+        })
+        {
+            if (File.Exists(assetIcon))
             {
-                using var icon = new Icon(assetIcon);
-                return (Icon)icon.Clone();
-            }
-            catch
-            {
+                try
+                {
+                    using var icon = new Icon(assetIcon);
+                    return (Icon)icon.Clone();
+                }
+                catch
+                {
+                }
             }
         }
 

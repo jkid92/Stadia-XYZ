@@ -158,10 +158,16 @@ internal static class MainFormRuntimeTuner
     private static Bitmap LoadHeaderLogoBitmap(Form form, int size)
     {
         var paths = ReadPrivate<AppPaths>(form, "_paths");
-        var logoPath = paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-icon.png");
-        if (File.Exists(logoPath))
+        foreach (var logoPath in new[]
         {
-            return new Bitmap(logoPath);
+            paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-WindowsNative-icon.png"),
+            paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-icon.png")
+        })
+        {
+            if (File.Exists(logoPath))
+            {
+                return new Bitmap(logoPath);
+            }
         }
 
         return BrandLogo.CreateBitmap(size);

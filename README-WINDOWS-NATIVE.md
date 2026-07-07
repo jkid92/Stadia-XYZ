@@ -9,7 +9,7 @@ It does not use WSL, usbipd, BlueZ, or the Linux bridge. The app reads Stadia Co
 - `StadiaX.exe`: the Windows Native control center and receiver.
 - `ViGEmClient.dll`: native ViGEm client library used by the receiver.
 - `VERSION.txt`: package version.
-- `assets/`: app icon and bundled visual assets.
+- `assets/`: Windows Native app icon and bundled visual assets.
 
 ## First run
 

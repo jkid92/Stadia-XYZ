@@ -30,8 +30,8 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Stadia X Windows Native
-UninstallDisplayIcon={app}\StadiaX.exe
-SetupIconFile={#SourceDir}\assets\StadiaX.ico
+UninstallDisplayIcon={app}\assets\StadiaX-WindowsNative.ico
+SetupIconFile={#SourceDir}\assets\StadiaX-WindowsNative.ico
 CloseApplications=no
 
 [Languages]
@@ -44,8 +44,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{group}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"
+Name: "{autodesktop}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\StadiaX.exe"; Description: "Launch Stadia X Windows Native"; Flags: postinstall shellexec nowait skipifsilent unchecked
