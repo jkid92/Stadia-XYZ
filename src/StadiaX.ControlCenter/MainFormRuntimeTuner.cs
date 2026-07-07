@@ -24,6 +24,7 @@ internal static class MainFormRuntimeTuner
     private static readonly Color Danger = Color.FromArgb(184, 64, 64);
 
     private static bool CompactUi => MainForm.IsCompactUi();
+    private static bool ConstrainedUi => MainForm.IsConstrainedUi();
 
     [ModuleInitializer]
     internal static void Initialize()
@@ -69,7 +70,8 @@ internal static class MainFormRuntimeTuner
         }
 
         var compact = CompactUi;
-        header.Height = compact ? 80 : 96;
+        var constrained = ConstrainedUi;
+        header.Height = constrained ? 72 : compact ? 80 : 96;
         header.BackColor = HeaderTop;
         header.Paint += (_, e) =>
         {
@@ -86,7 +88,7 @@ internal static class MainFormRuntimeTuner
 
         if (!header.Controls.ContainsKey("StadiaXBrandLogo"))
         {
-            var logoSize = compact ? 44 : 54;
+            var logoSize = constrained ? 38 : compact ? 44 : 54;
             var logoBitmap = LoadHeaderLogoBitmap(form, logoSize);
             var logo = new PictureBox
             {
@@ -94,7 +96,7 @@ internal static class MainFormRuntimeTuner
                 Image = logoBitmap,
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent,
-                Location = compact ? new Point(22, 12) : new Point(20, 14),
+                Location = constrained ? new Point(18, 10) : compact ? new Point(22, 12) : new Point(20, 14),
                 Size = new Size(logoSize, logoSize)
             };
             OwnedBitmaps[logo] = logoBitmap;
@@ -117,8 +119,8 @@ internal static class MainFormRuntimeTuner
                 if (label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
                 {
                     label.AutoSize = true;
-                    label.Location = compact ? new Point(86, 8) : new Point(100, 8);
-                    label.Font = new Font("Segoe UI", compact ? 18 : 21, FontStyle.Bold);
+                    label.Location = constrained ? new Point(66, 7) : compact ? new Point(86, 8) : new Point(100, 8);
+                    label.Font = new Font("Segoe UI", constrained ? 16 : compact ? 18 : 21, FontStyle.Bold);
                     label.ForeColor = Color.White;
                 }
                 else if (label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase) ||
@@ -126,25 +128,25 @@ internal static class MainFormRuntimeTuner
                 {
                     label.Text = "Bluetooth controller bridge";
                     label.AutoSize = true;
-                    label.Location = compact ? new Point(88, 50) : new Point(102, 60);
-                    label.Font = new Font("Segoe UI", compact ? 8.25F : 9F);
+                    label.Location = constrained ? new Point(68, 46) : compact ? new Point(88, 50) : new Point(102, 60);
+                    label.Font = new Font("Segoe UI", constrained ? 8F : compact ? 8.25F : 9F);
                     label.ForeColor = Color.FromArgb(202, 213, 225);
                 }
                 else if (label.Text.StartsWith("Battery:", StringComparison.OrdinalIgnoreCase))
                 {
                     label.AutoSize = false;
-                    label.Size = new Size(Math.Min(compact ? 440 : 520, Math.Max(compact ? 220 : 260, header.Width - (compact ? 360 : 430))), compact ? 20 : 22);
-                    label.Location = new Point(header.Width - label.Width - 28, compact ? 50 : 56);
-                    label.Font = new Font("Segoe UI", compact ? 8.25F : 9F, FontStyle.Bold);
+                    label.Size = new Size(Math.Min(constrained ? 320 : compact ? 440 : 520, Math.Max(constrained ? 160 : compact ? 220 : 260, header.Width - (constrained ? 260 : compact ? 360 : 430))), constrained ? 18 : compact ? 20 : 22);
+                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 28), constrained ? 48 : compact ? 50 : 56);
+                    label.Font = new Font("Segoe UI", constrained ? 8F : compact ? 8.25F : 9F, FontStyle.Bold);
                     label.ForeColor = Color.FromArgb(202, 213, 225);
                     label.TextAlign = ContentAlignment.MiddleRight;
                 }
                 else
                 {
                     label.AutoSize = false;
-                    label.Size = new Size(Math.Min(compact ? 440 : 520, Math.Max(compact ? 220 : 260, header.Width - (compact ? 360 : 430))), compact ? 24 : 28);
-                    label.Location = new Point(header.Width - label.Width - 28, compact ? 16 : 18);
-                    label.Font = new Font("Segoe UI", compact ? 9.5F : 11F, FontStyle.Bold);
+                    label.Size = new Size(Math.Min(constrained ? 320 : compact ? 440 : 520, Math.Max(constrained ? 160 : compact ? 220 : 260, header.Width - (constrained ? 260 : compact ? 360 : 430))), constrained ? 22 : compact ? 24 : 28);
+                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 28), constrained ? 14 : compact ? 16 : 18);
+                    label.Font = new Font("Segoe UI", constrained ? 8.75F : compact ? 9.5F : 11F, FontStyle.Bold);
                     label.ForeColor = Color.White;
                     label.TextAlign = ContentAlignment.MiddleRight;
                 }
@@ -207,7 +209,7 @@ internal static class MainFormRuntimeTuner
 
         if (layout.RowStyles.Count > 0)
         {
-            layout.RowStyles[0] = new RowStyle(SizeType.Absolute, CompactUi ? 190 : 220);
+            layout.RowStyles[0] = new RowStyle(SizeType.Absolute, ConstrainedUi ? 170 : CompactUi ? 190 : 220);
         }
     }
 
@@ -366,7 +368,7 @@ internal static class MainFormRuntimeTuner
         button.FlatAppearance.MouseDownBackColor = back == NeutralButton ? Border : ControlPaint.Dark(back);
         if (CompactUi)
         {
-            var width = button.MinimumSize.Width == 0 ? 0 : Math.Min(button.MinimumSize.Width, 96);
+            var width = button.MinimumSize.Width == 0 ? 0 : Math.Min(button.MinimumSize.Width, ConstrainedUi ? 86 : 96);
             button.MinimumSize = new Size(width, Math.Max(button.MinimumSize.Height, 34));
             button.Padding = new Padding(7, 0, 7, 0);
         }

@@ -7,6 +7,9 @@ namespace StadiaX.ControlCenter;
 
 internal sealed class MainForm : Form
 {
+    private const double DefaultControllerFullBatteryHours = 8d;
+    private const int ScreenFitMargin = 48;
+
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner = new();
     private readonly ReleaseChecker _releaseChecker = new();
@@ -102,12 +105,14 @@ internal sealed class MainForm : Form
         _baseIcon = LoadApplicationIcon(paths);
         Icon = (Icon)_baseIcon.Clone();
         var compactUi = IsCompactUi();
-        MinimumSize = compactUi ? new Size(1040, 660) : new Size(1180, 760);
-        Size = compactUi ? new Size(1120, 720) : new Size(1280, 820);
+        var sizing = CalculateStartupSizing(compactUi);
+        MinimumSize = sizing.Minimum;
+        Size = sizing.Initial;
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Color.FromArgb(248, 250, 252);
 
         BuildUi();
+        ApplyHighDpiLayoutGuards();
         ConfigureTimers();
         ConfigureTray();
 
@@ -136,6 +141,8 @@ internal sealed class MainForm : Form
                 _trayIcon.Visible = true;
             }
         };
+        Shown += (_, _) => EnsureWindowFitsDisplay();
+        DpiChanged += (_, _) => BeginInvoke(EnsureWindowFitsDisplay);
         FormClosing += (_, _) =>
         {
             LogUserAction("App closing");
@@ -162,6 +169,87 @@ internal sealed class MainForm : Form
         var density = Environment.GetEnvironmentVariable("STADIAX_UI_DENSITY");
         return !string.Equals(density, "comfortable", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(density, "classic", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static bool IsConstrainedUi()
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("STADIAX_UI_CONSTRAINED"), "1", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        return area.Width < 1240 || area.Height < 760;
+    }
+
+    private static (Size Minimum, Size Initial) CalculateStartupSizing(bool compactUi)
+    {
+        var desired = compactUi ? new Size(1120, 720) : new Size(1280, 820);
+        var desiredMinimum = compactUi ? new Size(900, 560) : new Size(980, 620);
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        var margin = area.Width < 900 || area.Height < 640 ? 20 : ScreenFitMargin;
+        var available = new Size(
+            Math.Max(560, area.Width - margin),
+            Math.Max(420, area.Height - margin));
+
+        var minimum = new Size(
+            Math.Min(desiredMinimum.Width, available.Width),
+            Math.Min(desiredMinimum.Height, available.Height));
+        var initial = new Size(
+            Math.Min(desired.Width, available.Width),
+            Math.Min(desired.Height, available.Height));
+
+        initial.Width = Math.Max(initial.Width, minimum.Width);
+        initial.Height = Math.Max(initial.Height, minimum.Height);
+        return (minimum, initial);
+    }
+
+    private void ApplyHighDpiLayoutGuards()
+    {
+        var constrained = IsConstrainedUi();
+        var pageMinimum = constrained ? new Size(720, 460) : new Size(860, 540);
+        foreach (TabPage page in _tabs.TabPages)
+        {
+            page.AutoScroll = true;
+            page.AutoScrollMargin = new Size(16, 16);
+            foreach (Control child in page.Controls)
+            {
+                if (child.Dock == DockStyle.Fill && child.MinimumSize.Width == 0 && child.MinimumSize.Height == 0)
+                {
+                    child.MinimumSize = pageMinimum;
+                }
+            }
+        }
+    }
+
+    private void EnsureWindowFitsDisplay()
+    {
+        if (WindowState != FormWindowState.Normal)
+        {
+            return;
+        }
+
+        var area = Screen.FromControl(this).WorkingArea;
+        var margin = area.Width < 900 || area.Height < 640 ? 20 : ScreenFitMargin;
+        var maxWidth = Math.Max(560, area.Width - margin);
+        var maxHeight = Math.Max(420, area.Height - margin);
+
+        MinimumSize = new Size(
+            Math.Min(MinimumSize.Width, maxWidth),
+            Math.Min(MinimumSize.Height, maxHeight));
+
+        var targetSize = new Size(Math.Min(Width, maxWidth), Math.Min(Height, maxHeight));
+        if (targetSize != Size)
+        {
+            Size = targetSize;
+        }
+
+        var x = Math.Min(Math.Max(Left, area.Left), Math.Max(area.Left, area.Right - Width));
+        var y = Math.Min(Math.Max(Top, area.Top), Math.Max(area.Top, area.Bottom - Height));
+        if (Location.X != x || Location.Y != y)
+        {
+            Location = new Point(x, y);
+        }
     }
 
     private static bool IsBluetoothDemoMode()
@@ -220,10 +308,11 @@ internal sealed class MainForm : Form
 
     private Control BuildSidebar()
     {
+        var constrained = IsConstrainedUi();
         var left = new Panel
         {
             Dock = DockStyle.Left,
-            Width = 318,
+            Width = constrained ? 272 : 318,
             Padding = IsCompactUi() ? new Padding(10) : new Padding(14)
         };
 
@@ -233,8 +322,8 @@ internal sealed class MainForm : Form
             ColumnCount = 1,
             RowCount = 3
         };
-        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 266));
-        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 126));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 238 : 266));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 116 : 126));
         sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.Controls.Add(sidebarLayout);
 
@@ -251,15 +340,15 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 2,
             RowCount = 5,
-            Padding = IsCompactUi() ? new Padding(10, 14, 10, 10) : new Padding(14, 18, 14, 14)
+            Padding = constrained ? new Padding(8, 10, 8, 8) : IsCompactUi() ? new Padding(10, 14, 10, 10) : new Padding(14, 18, 14, 14)
         };
         actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         actionGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 42 : 48));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 42 : 48));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 38 : 44));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 38 : 44));
+        actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 38 : 44));
         actions.Controls.Add(actionGrid);
 
         AddActionGridButton(actionGrid, "Start bridge", 0, 0, 2, StartBridge, Color.FromArgb(45, 125, 90), Color.White);
@@ -302,9 +391,13 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             BackColor = Color.FromArgb(248, 250, 252),
-            Padding = IsCompactUi() ? new Padding(7, 5, 7, 3) : new Padding(9, 6, 9, 4)
+            Padding = IsCompactUi() ? new Padding(7, 5, 7, 3) : new Padding(9, 6, 9, 4),
+            AutoScroll = true
         };
-        _tabNavPanel.Dock = DockStyle.Fill;
+        _tabNavPanel.Dock = DockStyle.None;
+        _tabNavPanel.AutoSize = true;
+        _tabNavPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _tabNavPanel.MinimumSize = new Size(0, IsCompactUi() ? 30 : 34);
         _tabNavPanel.AutoScroll = false;
         _tabNavPanel.WrapContents = false;
         _tabNavPanel.FlowDirection = FlowDirection.LeftToRight;
@@ -393,6 +486,7 @@ internal sealed class MainForm : Form
     private TabPage BuildDashboardPage()
     {
         var page = CreatePage("Home", "Dashboard");
+        var constrained = IsConstrainedUi();
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -401,7 +495,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(14)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 156 : 168));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 212));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 304 : 212));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
@@ -455,14 +549,24 @@ internal sealed class MainForm : Form
         var cards = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
-            RowCount = 1,
+            ColumnCount = constrained ? 2 : 4,
+            RowCount = constrained ? 2 : 1,
             Margin = new Padding(0, 10, 0, 0)
         };
+        for (var row = 0; row < cards.RowCount; row++)
+        {
+            cards.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / cards.RowCount));
+        }
         for (var slot = 1; slot <= 4; slot++)
         {
-            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-            cards.Controls.Add(BuildDashboardPadCard(slot), slot - 1, 0);
+            if (slot <= cards.ColumnCount)
+            {
+                cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cards.ColumnCount));
+            }
+
+            var column = constrained ? (slot - 1) % 2 : slot - 1;
+            var row = constrained ? (slot - 1) / 2 : 0;
+            cards.Controls.Add(BuildDashboardPadCard(slot), column, row);
         }
         layout.Controls.Add(cards, 0, 1);
 

@@ -10,6 +10,12 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
         }
+        if (args.Contains("--constrained-ui", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--dpi-preview=200", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
+            Environment.SetEnvironmentVariable("STADIAX_UI_CONSTRAINED", "1");
+        }
         if (args.Contains("--comfortable-ui", StringComparer.OrdinalIgnoreCase) ||
             args.Contains("--classic-ui", StringComparer.OrdinalIgnoreCase))
         {
