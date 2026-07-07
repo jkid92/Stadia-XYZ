@@ -8,6 +8,8 @@
     <AssemblyName>StadiaX</AssemblyName>
     <RootNamespace>StadiaX.ControlCenter</RootNamespace>
     <ApplicationIcon>..\..\assets\StadiaX-WindowsNative.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>DpiUnawareGdiScaled</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\ViGEmClient.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\ViGEmClient.dll')" />
