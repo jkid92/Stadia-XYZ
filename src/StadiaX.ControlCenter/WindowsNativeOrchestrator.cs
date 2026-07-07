@@ -18,7 +18,7 @@ internal sealed class WindowsNativeOrchestrator
     public async Task<int> StartAsync()
     {
         var status = new StatusWriter(_paths, "windows-native.log");
-        status.Reset("WINDOWS_NATIVE_START_REQUESTED", "Windows Native start requested");
+        status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         ClearStopSignal();
 
         var hidHide = new HidHideManager(_paths, _runner);
@@ -35,11 +35,20 @@ internal sealed class WindowsNativeOrchestrator
         var scanner = new WindowsNativeHidScanner(hidHide);
         status.Write("WINDOWS_NATIVE_SCAN_START", "Scanning Windows HID devices for Stadia controllers");
         var devices = (await scanner.FindStadiaControllersAsync().ConfigureAwait(false)).Take(MaxControllers).ToArray();
+        status.Write("WINDOWS_NATIVE_SCAN_RESULT", $"Detected {devices.Length} Stadia HID candidate(s)");
         if (devices.Length == 0)
         {
             status.Write("WINDOWS_NATIVE_NOT_READY", "No Stadia HID controller is visible to Windows");
             await WriteProbeAsync(scanner).ConfigureAwait(false);
             return 2;
+        }
+
+        for (var i = 0; i < devices.Length; i++)
+        {
+            var device = devices[i];
+            status.Write(
+                "WINDOWS_NATIVE_DEVICE",
+                $"P{i + 1} {DeviceName(device)} vidpid={device.VendorId:X4}:{device.ProductId:X4} input={device.MaxInputReportLength} output={device.MaxOutputReportLength} hidhide={(string.IsNullOrWhiteSpace(device.DeviceInstancePath) ? "missing" : "matched")}");
         }
 
         var missingHidePath = devices.Where(device => string.IsNullOrWhiteSpace(device.DeviceInstancePath)).ToArray();
@@ -51,11 +60,12 @@ internal sealed class WindowsNativeOrchestrator
         }
 
         var appPath = ResolveCurrentAppPath();
-        status.Write("WINDOWS_NATIVE_HIDHIDE_START", $"Registering {Path.GetFileName(appPath)} and hiding {devices.Length} physical Stadia HID device(s)");
+        status.Write("WINDOWS_NATIVE_HIDHIDE_START", $"Registering {appPath} and hiding {devices.Length} physical Stadia HID device(s)");
         var hide = await hidHide.ConfigureStadiaDevicesAsync(
             appPath,
             devices.Select(device => device.DeviceInstancePath).ToArray(),
             elevated: !IsAdministrator()).ConfigureAwait(false);
+        status.Write("WINDOWS_NATIVE_HIDHIDE_RESULT", $"exit={hide.ExitCode} output={Shorten(FirstNonEmpty(hide.Output, hide.Error, "none"), 260)}");
 
         if (hide.ExitCode != 0)
         {
@@ -67,6 +77,7 @@ internal sealed class WindowsNativeOrchestrator
         using var cancellation = new CancellationTokenSource();
         using var stopWatcher = StartStopWatcher(cancellation);
         var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
+        status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
         var exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
         status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; HidHide remains enabled");
         return exitCode;
@@ -220,5 +231,20 @@ internal sealed class WindowsNativeOrchestrator
     private static string FirstNonEmpty(params string[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
+    }
+
+    private static string DeviceName(WindowsNativeHidDevice device)
+    {
+        return !string.IsNullOrWhiteSpace(device.FriendlyName)
+            ? device.FriendlyName
+            : !string.IsNullOrWhiteSpace(device.ProductName)
+                ? device.ProductName
+                : "Stadia Controller";
+    }
+
+    private static string Shorten(string value, int maxLength)
+    {
+        value = value.ReplaceLineEndings(" ").Trim();
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
     }
 }

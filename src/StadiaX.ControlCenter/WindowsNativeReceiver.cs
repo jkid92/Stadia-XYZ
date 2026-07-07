@@ -302,10 +302,12 @@ internal sealed class WindowsNativeReceiver
     private void Log(string level, string format, params object[] args)
     {
         var message = args.Length == 0 ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
-        var line = $"[{DateTime.Now}] {level}: {message}{Environment.NewLine}";
+        var line = $"[{DateTime.Now}] {level}: pid={Environment.ProcessId} {message}{Environment.NewLine}";
         lock (_logLock)
         {
+            Directory.CreateDirectory(_paths.LogDirectory);
             File.AppendAllText(_paths.ReceiverLog, line);
+            File.AppendAllText(Path.Combine(_paths.LogDirectory, "windows-native.log"), line);
         }
     }
 }
