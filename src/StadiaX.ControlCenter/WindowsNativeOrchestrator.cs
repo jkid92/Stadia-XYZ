@@ -23,6 +23,13 @@ internal sealed class WindowsNativeOrchestrator
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
         ClearStopSignal();
+        if (TryGetActiveReceiver(out var activePid, out var activeControllers))
+        {
+            status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={activePid} controllers={activeControllers}");
+            status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {activeControllers} controller(s)");
+            status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={activePid}");
+            return 0;
+        }
 
         var hidHide = new HidHideManager(_paths, _runner);
         if (!await EnsureHidHideAsync(hidHide, status).ConfigureAwait(false))
@@ -107,9 +114,12 @@ internal sealed class WindowsNativeOrchestrator
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
         SignalStop();
         status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
-        await WaitForReceiverStopAsync().ConfigureAwait(false);
+        var stopped = await WaitForReceiverStopAsync().ConfigureAwait(false);
+        status.Write(
+            stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
+            stopped ? "Ready marker disappeared after stop signal" : "Ready marker still exists after waiting for receiver shutdown");
         await RestorePhysicalInputAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
-        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "OK", "Stop completed and physical input restore requested");
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", stopped ? "OK" : "WARN", "Stop completed and physical input restore requested");
         return 0;
     }
 
@@ -260,13 +270,15 @@ internal sealed class WindowsNativeOrchestrator
         File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
     }
 
-    private async Task WaitForReceiverStopAsync()
+    private async Task<bool> WaitForReceiverStopAsync()
     {
         var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
-        for (var attempt = 0; attempt < 20 && File.Exists(readyPath); attempt++)
+        for (var attempt = 0; attempt < 40 && File.Exists(readyPath); attempt++)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
         }
+
+        return !File.Exists(readyPath);
     }
 
     private async Task RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)
@@ -295,6 +307,71 @@ internal sealed class WindowsNativeOrchestrator
         if (File.Exists(path))
         {
             File.Delete(path);
+        }
+    }
+
+    private bool TryGetActiveReceiver(out int pid, out int controllers)
+    {
+        pid = 0;
+        controllers = 0;
+        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
+        if (!File.Exists(readyPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var marker = File.ReadAllText(readyPath).Trim();
+            foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+                if (pair.Length != 2)
+                {
+                    continue;
+                }
+
+                if (pair[0].Equals("pid", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = int.TryParse(pair[1], out pid);
+                }
+                else if (pair[0].Equals("controllers", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = int.TryParse(pair[1], out controllers);
+                }
+            }
+
+            if (pid > 0)
+            {
+                using var process = Process.GetProcessById(pid);
+                if (!process.HasExited && LooksLikeStadiaXProcess(process))
+                {
+                    controllers = Math.Clamp(controllers, 1, MaxControllers);
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // A stale or unreadable marker should not block a fresh start.
+        }
+
+        try { File.Delete(readyPath); } catch { }
+        pid = 0;
+        controllers = 0;
+        return false;
+    }
+
+    private static bool LooksLikeStadiaXProcess(Process process)
+    {
+        try
+        {
+            return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
+                   process.MainWindowHandle == IntPtr.Zero;
+        }
+        catch
+        {
+            return false;
         }
     }
 
