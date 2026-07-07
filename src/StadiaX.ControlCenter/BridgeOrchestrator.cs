@@ -4,6 +4,9 @@ namespace StadiaX.ControlCenter;
 
 internal sealed class BridgeOrchestrator
 {
+    private const int StartPhaseCount = 6;
+    private const int StopPhaseCount = 3;
+
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
     private readonly WslDistroResolver _resolver;
@@ -19,36 +22,45 @@ internal sealed class BridgeOrchestrator
     {
         var status = new StatusWriter(_paths, "start.log");
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
+        status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
         ClearReceiverStopSignal();
 
         var missing = RequiredRuntimeFiles().Where(file => !File.Exists(Path.Combine(_paths.Root, file))).ToArray();
         if (missing.Length > 0)
         {
             status.Write("MISSING_RUNTIME", "Missing runtime file(s): " + string.Join(", ", missing));
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "FAIL", "Missing runtime file(s): " + string.Join(", ", missing));
             return 1;
         }
 
         if (!await _runner.CommandExistsAsync("usbipd", _paths.Root).ConfigureAwait(false))
         {
             status.Write("USBIPD_MISSING", "usbipd was not found; launching winget install");
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "INSTALL", "usbipd is missing; requesting winget install");
             await _runner.RunAsync("winget", new[] { "install", "usbipd" }, _paths.Root, 120000, createNoWindow: false).ConfigureAwait(false);
             status.Write("RESTART_REQUIRED", "usbipd install was requested; restart Windows before starting again");
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "WAIT", "Restart Windows after usbipd install");
             return 2;
         }
 
         if (!await _runner.CommandExistsAsync("wsl", _paths.Root).ConfigureAwait(false))
         {
             status.Write("WSL_MISSING", "wsl.exe is missing");
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "FAIL", "wsl.exe is missing");
             return 1;
         }
+        status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "OK", "Runtime files, usbipd, and WSL are present");
 
+        status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "START", "Resolving Linux distro");
         var requestedDistro = Environment.GetEnvironmentVariable("STADIA_X_WSL_DISTRO");
         var distro = await _resolver.ResolveAsync(requestedDistro).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(distro))
         {
             status.Write("WSL_DISTRO_MISSING", "No usable WSL distro found; launching Ubuntu install");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "INSTALL", "No usable distro found; requesting Ubuntu install");
             await _runner.RunAsync("wsl", new[] { "--install", "-d", "Ubuntu" }, _paths.Root, 120000, createNoWindow: false).ConfigureAwait(false);
             status.Write("RESTART_REQUIRED", "Ubuntu install was requested; restart Windows before starting again");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "WAIT", "Restart Windows after Ubuntu install");
             return 2;
         }
 
@@ -56,41 +68,53 @@ internal sealed class BridgeOrchestrator
         if (wslCheck.ExitCode != 0)
         {
             status.Write("WSL_DISTRO_START_FAILED", $"WSL distro {distro} did not start correctly");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", $"WSL distro {distro} did not start correctly");
             return 1;
         }
         status.Write("WSL_DISTRO_SELECTED", $"Using WSL distro {distro}");
+        status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "OK", $"Using WSL distro {distro}");
 
         if (!await EnsureKernelAsync(distro, status).ConfigureAwait(false))
         {
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", "WSL USB/HID kernel support is not ready");
             return 1;
         }
         await CleanupOldSessionAsync(distro, status).ConfigureAwait(false);
 
+        status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "START", $"Starting WSL distro {distro}");
         status.Write("WSL_START", $"Starting WSL distro {distro}");
         await _runner.RunAsync("wsl", new[] { "-d", distro, "echo", "WSL Booted" }, _paths.Root, 15000).ConfigureAwait(false);
         if (!await WaitForWslNetworkAsync(distro).ConfigureAwait(false))
         {
             status.Write("WSL_NETWORK_TIMEOUT", "Timed out waiting for WSL network");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "FAIL", "Timed out waiting for WSL network");
             return 1;
         }
         status.Write("WSL_NETWORK_READY", "WSL network is ready");
+        status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "OK", "WSL network is ready");
 
+        status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "START", "Resolving Bluetooth adapter BUSID");
         var busId = await ResolveBluetoothBusIdAsync(status).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(busId))
         {
             status.Write("BT_MISSING", "No Bluetooth BUSID was selected or detected");
+            status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "No Bluetooth BUSID was selected or auto-detected");
             return 1;
         }
         File.WriteAllText(Path.Combine(_paths.Root, "bt_busid.txt"), busId + Environment.NewLine);
         status.Write("BT_SELECTED", $"Using Bluetooth BUSID {busId}");
+        status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "OK", $"Using Bluetooth BUSID {busId}");
 
         if (!await AttachBluetoothAsync(distro, busId, status).ConfigureAwait(false))
         {
+            status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "Could not attach Bluetooth adapter to WSL");
             return 1;
         }
 
+        status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "START", "Deploying and starting BlueZ bridge");
         if (!await DeployLinuxBridgeAsync(distro, status).ConfigureAwait(false))
         {
+            status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "FAIL", "Could not deploy Linux bridge files");
             await StopAsync().ConfigureAwait(false);
             return 1;
         }
@@ -98,30 +122,38 @@ internal sealed class BridgeOrchestrator
         var linuxStarted = await StartLinuxCoreAsync(distro, status).ConfigureAwait(false);
         if (!linuxStarted)
         {
+            status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "FAIL", "Could not start Linux core");
             await StopAsync().ConfigureAwait(false);
             return 1;
         }
+        status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "OK", "Linux core launch requested");
 
+        status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "START", "Waiting for BlueZ pairing and input readiness");
         await Task.Delay(TimeSpan.FromSeconds(8)).ConfigureAwait(false);
         var wslIp = await GetWslIpAsync(distro).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(wslIp))
         {
             wslIp = "127.0.0.1";
             status.Write("WSL_IP_FALLBACK", "Could not detect WSL IP; using 127.0.0.1");
+            status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "WARN", "Could not detect WSL IP; using 127.0.0.1");
         }
         else
         {
             status.Write("WSL_IP_READY", $"Detected WSL IP {wslIp}");
+            status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "OK", $"Detected WSL IP {wslIp}");
         }
 
+        status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", "START", "Starting integrated Windows receiver");
         status.Write("RECEIVER_START", "Starting Windows receiver");
         var receiverExit = await RunIntegratedReceiverAndStopAsync(wslIp, status).ConfigureAwait(false);
+        status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", receiverExit == 0 ? "OK" : "FAIL", $"Integrated receiver exited with code {receiverExit}");
         return receiverExit;
     }
 
     public async Task<int> StopAsync()
     {
         var status = new StatusWriter(_paths, "teardown.log");
+        status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "START", "Stopping receiver and Linux session");
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
         SignalReceiverStop();
@@ -130,20 +162,27 @@ internal sealed class BridgeOrchestrator
 
         await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "OK", "Receiver stop signal sent and WSL shutdown requested");
 
+        status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "START", "Resolving adapter to detach");
         var busId = await ResolveBusIdForDetachAsync().ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(busId))
         {
             status.Write("BT_RESTORE_UNKNOWN", "No Bluetooth BUSID found for detach");
+            status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "WARN", "No Bluetooth BUSID found for detach");
         }
         else
         {
             status.Write("BT_RESTORE_START", $"Releasing Bluetooth BUSID {busId}");
-            await _runner.RunAsync("usbipd", new[] { "detach", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
+            var detach = await _runner.RunAsync("usbipd", new[] { "detach", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
+            status.Write("BT_RESTORE_DETACH_RESULT", $"exit={detach.ExitCode} detail={Shorten(FirstNonEmpty(detach.Error, detach.Output, "none"), 240)}");
             await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
-            await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
-            await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false);
-            status.Write("BT_RESTORE_OK", "Bluetooth adapter returned to Windows");
+            var unbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
+            var forceUnbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false);
+            status.Write("BT_RESTORE_UNBIND_RESULT", $"exit={unbind.ExitCode} forceExit={forceUnbind.ExitCode} detail={Shorten(FirstNonEmpty(forceUnbind.Error, forceUnbind.Output, unbind.Error, unbind.Output, "none"), 240)}");
+            var restoreLooksOk = detach.ExitCode == 0 || unbind.ExitCode == 0 || forceUnbind.ExitCode == 0;
+            status.Write(restoreLooksOk ? "BT_RESTORE_OK" : "BT_RESTORE_WARN", "Bluetooth adapter restore commands completed");
+            status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", restoreLooksOk ? "OK" : "WARN", $"Bluetooth BUSID {busId} restore commands completed");
             var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
             if (File.Exists(busFile))
             {
@@ -153,6 +192,7 @@ internal sealed class BridgeOrchestrator
 
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         status.Write("STOP_DONE", "Teardown complete");
+        status.WritePhase("Linux bridge", 3, StopPhaseCount, "Teardown", "OK", "Teardown complete");
         return 0;
     }
 
@@ -385,8 +425,25 @@ internal sealed class BridgeOrchestrator
         {
             startInfo.ArgumentList.Add(arg);
         }
-        Process.Start(startInfo);
-        return true;
+
+        try
+        {
+            var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                status.Write("LINUX_START_FAILED", "wsl.exe did not return a process handle");
+                return false;
+            }
+
+            status.Write("LINUX_START_OK", $"Linux core launch requested pid={process.Id}");
+            process.Dispose();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            status.Write("LINUX_START_FAILED", "Could not launch Linux core: " + ex.Message);
+            return false;
+        }
     }
 
     private async Task<string> GetWslIpAsync(string distro)
@@ -531,5 +588,20 @@ internal sealed class BridgeOrchestrator
         {
             try { process.Kill(entireProcessTree: true); } catch { }
         }
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
+    }
+
+    private static string Shorten(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length <= maxLength)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "-" : value;
+        }
+
+        return value[..maxLength] + "...";
     }
 }

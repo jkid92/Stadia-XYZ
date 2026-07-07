@@ -2,6 +2,8 @@ namespace StadiaX.ControlCenter;
 
 internal sealed class StatusWriter
 {
+    private static readonly object Sync = new();
+
     private readonly AppPaths _paths;
     private readonly string _logPath;
 
@@ -15,15 +17,59 @@ internal sealed class StatusWriter
     public void Reset(string code, string message)
     {
         Directory.CreateDirectory(_paths.LogDirectory);
-        File.WriteAllText(_logPath, $"[{DateTime.Now}] STATUS:{code}|{message}{Environment.NewLine}");
-        File.WriteAllText(_paths.StatusLog, $"[{DateTime.Now}] STATUS:{code}|{message}{Environment.NewLine}");
+        var line = BuildLine(code, message);
+        lock (Sync)
+        {
+            File.WriteAllText(_logPath, line);
+            if (!_logPath.Equals(_paths.StatusLog, StringComparison.OrdinalIgnoreCase))
+            {
+                File.WriteAllText(_paths.StatusLog, line);
+            }
+        }
     }
 
     public void Write(string code, string message)
     {
         Directory.CreateDirectory(_paths.LogDirectory);
-        var line = $"[{DateTime.Now}] STATUS:{code}|{message}{Environment.NewLine}";
-        File.AppendAllText(_logPath, line);
-        File.AppendAllText(_paths.StatusLog, line);
+        var line = BuildLine(code, message);
+        lock (Sync)
+        {
+            File.AppendAllText(_logPath, line);
+            if (!_logPath.Equals(_paths.StatusLog, StringComparison.OrdinalIgnoreCase))
+            {
+                File.AppendAllText(_paths.StatusLog, line);
+            }
+        }
+    }
+
+    public void WritePhase(string flow, int step, int total, string phase, string state, string message)
+    {
+        var safeTotal = Math.Max(1, total);
+        var safeStep = Math.Clamp(step, 1, safeTotal);
+        Write(
+            "PHASE",
+            $"flow={Sanitize(flow)} step={safeStep}/{safeTotal} phase={Sanitize(phase)} state={Sanitize(state)} detail={Sanitize(message)}");
+        AppDiagnosticsLogger.Record(
+            "CONNECTION_PHASE",
+            ("flow", flow),
+            ("step", $"{safeStep}/{safeTotal}"),
+            ("phase", phase),
+            ("state", state),
+            ("detail", message));
+    }
+
+    private static string BuildLine(string code, string message)
+    {
+        return $"[{DateTimeOffset.Now:O}] STATUS:{Sanitize(code)}|{Sanitize(message)}{Environment.NewLine}";
+    }
+
+    private static string Sanitize(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value)
+            ? "-"
+            : value.Replace("\r", " ", StringComparison.Ordinal)
+                .Replace("\n", " ", StringComparison.Ordinal)
+                .Replace("|", "/", StringComparison.Ordinal)
+                .Trim();
     }
 }
