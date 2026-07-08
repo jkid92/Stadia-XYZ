@@ -57,8 +57,15 @@ internal sealed class WindowsNativeOrchestrator
         var scanner = new WindowsNativeHidScanner(hidHide);
         status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "START", "Scanning Windows HID for Stadia controllers");
         status.Write("WINDOWS_NATIVE_SCAN_START", "Scanning Windows HID devices for Stadia controllers");
-        var devices = (await scanner.FindStadiaControllersAsync().ConfigureAwait(false)).Take(MaxControllers).ToArray();
-        status.Write("WINDOWS_NATIVE_SCAN_RESULT", $"Detected {devices.Length} Stadia HID candidate(s)");
+        var scan = await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+        var devices = scan.Devices.Take(MaxControllers).ToArray();
+        status.Write(
+            "WINDOWS_NATIVE_SCAN_RESULT",
+            $"Detected {devices.Length} Stadia HID candidate(s); raw={scan.RawCandidateCount} duplicateIgnored={scan.DuplicateCandidateCount}");
+        if (scan.DuplicateCandidateCount > 0)
+        {
+            status.Write("WINDOWS_NATIVE_SCAN_DEDUP", $"Ignored {scan.DuplicateCandidateCount} duplicate HID candidate(s) before assigning virtual pads");
+        }
         if (devices.Length == 0)
         {
             status.Write("WINDOWS_NATIVE_NOT_READY", "No Stadia HID controller is visible to Windows");

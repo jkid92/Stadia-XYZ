@@ -17,6 +17,11 @@ internal sealed record WindowsNativeHidDevice(
     string DeviceInstancePath,
     string HidHideSymbolicLink);
 
+internal sealed record WindowsNativeHidScanResult(
+    IReadOnlyList<WindowsNativeHidDevice> Devices,
+    int RawCandidateCount,
+    int DuplicateCandidateCount);
+
 internal sealed record HidHideDeviceEntry(
     string FriendlyName,
     string DeviceInstancePath,
@@ -231,26 +236,38 @@ internal sealed class WindowsNativeHidScanner
 
     public async Task<IReadOnlyList<WindowsNativeHidDevice>> FindStadiaControllersAsync()
     {
+        return (await ScanStadiaControllersAsync().ConfigureAwait(false)).Devices;
+    }
+
+    public async Task<WindowsNativeHidScanResult> ScanStadiaControllersAsync()
+    {
         var hiddenDevices = await _hidHide.GetDevicesAsync().ConfigureAwait(false);
         var hidHideBySymbolicLink = hiddenDevices
             .Where(device => !string.IsNullOrWhiteSpace(device.SymbolicLink))
             .GroupBy(device => NormalizeDevicePath(device.SymbolicLink))
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-        return DeviceList.Local.GetHidDevices()
+        var rawCandidates = DeviceList.Local.GetHidDevices()
             .Where(IsLikelyStadiaDevice)
             .Select(device => ToNativeDevice(device, hidHideBySymbolicLink))
+            .ToArray();
+        var devices = rawCandidates
             .GroupBy(DeviceIdentityKey, StringComparer.OrdinalIgnoreCase)
             .Select(ChooseBestCandidate)
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
             .ToArray();
+        return new WindowsNativeHidScanResult(
+            devices,
+            rawCandidates.Length,
+            Math.Max(0, rawCandidates.Length - devices.Length));
     }
 
     public async Task<string> CreateProbeReportAsync(TimeSpan captureTime)
     {
-        var devices = await FindStadiaControllersAsync().ConfigureAwait(false);
+        var scan = await ScanStadiaControllersAsync().ConfigureAwait(false);
+        var devices = scan.Devices;
         var lines = new List<string>
         {
             "Stadia X Windows Native probe",
@@ -258,6 +275,8 @@ internal sealed class WindowsNativeHidScanner
             $"HidHide installed: {_hidHide.IsInstalled}",
             $"HidHide version: {await _hidHide.GetVersionAsync().ConfigureAwait(false)}",
             $"Detected Stadia HID devices: {devices.Count}",
+            $"Raw HID candidates: {scan.RawCandidateCount}",
+            $"Duplicate HID candidates ignored: {scan.DuplicateCandidateCount}",
             ""
         };
 
