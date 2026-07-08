@@ -16,6 +16,7 @@ internal sealed class ControllerVisualizer : Control
     private Image? _controllerImage;
     private ControllerTelemetryRow? _controller;
     private string _status = "Waiting for controller telemetry.";
+    private string _missingImageDetail = "Controller image not found";
 
     public ControllerVisualizer()
     {
@@ -25,11 +26,40 @@ internal sealed class ControllerVisualizer : Control
         Font = new Font("Segoe UI", 9, FontStyle.Bold);
     }
 
-    public void LoadControllerImage(string path)
+    public bool LoadControllerImage(params string[] candidatePaths)
     {
         _controllerImage?.Dispose();
-        _controllerImage = File.Exists(path) ? Image.FromFile(path) : null;
+        _controllerImage = null;
+
+        foreach (var path in candidatePaths.Where(path => !string.IsNullOrWhiteSpace(path)).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var stream = File.OpenRead(path);
+                using var source = Image.FromStream(stream);
+                _controllerImage = new Bitmap(source);
+                _missingImageDetail = "";
+                Invalidate();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _missingImageDetail = "Controller image could not be loaded: " + ex.Message;
+            }
+        }
+
+        if (_controllerImage is null && string.IsNullOrWhiteSpace(_missingImageDetail))
+        {
+            _missingImageDetail = "Controller image not found";
+        }
+
         Invalidate();
+        return false;
     }
 
     public void SetTelemetry(ControllerTelemetryRow? controller, string status)
@@ -247,7 +277,7 @@ internal sealed class ControllerVisualizer : Control
         using var border = new Pen(Color.FromArgb(148, 163, 184), 2f);
         g.FillRectangle(fill, bounds);
         g.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width, bounds.Height);
-        DrawCenteredText(g, "Controller image not found", bounds, Color.FromArgb(51, 65, 85));
+        DrawCenteredText(g, _missingImageDetail, bounds, Color.FromArgb(51, 65, 85));
     }
 
     private bool IsPressed(string button)

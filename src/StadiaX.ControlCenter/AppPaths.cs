@@ -67,6 +67,45 @@ internal sealed class AppPaths
         }
     }
 
+    public IReadOnlyList<string> ResolveAssetCandidates(string fileName)
+    {
+        fileName = Path.GetFileName(fileName);
+        var candidates = new List<string>();
+
+        AddAssetCandidate(candidates, Root, fileName);
+        AddAssetCandidate(candidates, AppContext.BaseDirectory, fileName);
+        AddAssetCandidate(candidates, Path.GetDirectoryName(Environment.ProcessPath), fileName);
+        AddAssetCandidate(candidates, Directory.GetCurrentDirectory(), fileName);
+
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        for (var depth = 0; depth < 8 && current is not null; depth++)
+        {
+            AddAssetCandidate(candidates, current.FullName, fileName);
+            current = current.Parent;
+        }
+
+        return candidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    public string ResolveAssetPath(string fileName)
+    {
+        return ResolveAssetCandidates(fileName).FirstOrDefault(File.Exists) ??
+               Path.Combine(Root, "assets", Path.GetFileName(fileName));
+    }
+
+    private static void AddAssetCandidate(List<string> candidates, string? root, string fileName)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return;
+        }
+
+        candidates.Add(Path.Combine(root, "assets", fileName));
+    }
+
     public static AppPaths Discover()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);

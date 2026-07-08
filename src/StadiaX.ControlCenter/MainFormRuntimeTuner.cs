@@ -160,11 +160,9 @@ internal static class MainFormRuntimeTuner
     private static Bitmap LoadHeaderLogoBitmap(Form form, int size)
     {
         var paths = ReadPrivate<AppPaths>(form, "_paths");
-        foreach (var logoPath in new[]
-        {
-            paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-WindowsNative-icon.png"),
-            paths is null ? "" : Path.Combine(paths.Root, "assets", "StadiaX-icon.png")
-        })
+        foreach (var logoPath in (paths?.ResolveAssetCandidates("StadiaX-WindowsNative-icon.png") ?? Array.Empty<string>())
+                     .Concat(paths?.ResolveAssetCandidates("StadiaX-icon.png") ?? Array.Empty<string>())
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (File.Exists(logoPath))
             {

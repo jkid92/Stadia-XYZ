@@ -1171,7 +1171,7 @@ internal sealed class MainForm : Form
 
         var visualGroup = CreateGroup("Visual controller test");
         _controllerVisualizer.Dock = DockStyle.Fill;
-        _controllerVisualizer.LoadControllerImage(Path.Combine(_paths.Root, "assets", "StadiaControllerPhoto.png"));
+        _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerPhoto.png").ToArray());
         visualGroup.Controls.Add(_controllerVisualizer);
         layout.Controls.Add(visualGroup, 1, 0);
 
@@ -4220,11 +4220,9 @@ internal sealed class MainForm : Form
 
     private static Icon LoadApplicationIcon(AppPaths paths)
     {
-        foreach (var assetIcon in new[]
-        {
-            Path.Combine(paths.Root, "assets", "StadiaX-WindowsNative.ico"),
-            Path.Combine(paths.Root, "assets", "StadiaX.ico")
-        })
+        foreach (var assetIcon in paths.ResolveAssetCandidates("StadiaX-WindowsNative.ico")
+                     .Concat(paths.ResolveAssetCandidates("StadiaX.ico"))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (File.Exists(assetIcon))
             {
