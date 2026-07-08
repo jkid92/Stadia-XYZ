@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using HidSharp;
@@ -8,8 +9,74 @@ namespace StadiaX.ControlCenter;
 internal static class WindowsNativeRuntime
 {
     public const int RumblePort = 45504;
+    public const int MaxControllers = 4;
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
+
+    public static bool TryGetActiveReceiver(AppPaths paths, out int pid, out int controllers)
+    {
+        pid = 0;
+        controllers = 0;
+        var readyPath = ReadyPath(paths);
+        if (!File.Exists(readyPath))
+        {
+            return false;
+        }
+
+        try
+        {
+            var marker = File.ReadAllText(readyPath).Trim();
+            foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+                if (pair.Length != 2)
+                {
+                    continue;
+                }
+
+                if (pair[0].Equals("pid", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = int.TryParse(pair[1], out pid);
+                }
+                else if (pair[0].Equals("controllers", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ = int.TryParse(pair[1], out controllers);
+                }
+            }
+
+            if (pid > 0)
+            {
+                using var process = Process.GetProcessById(pid);
+                if (!process.HasExited && LooksLikeReceiverProcess(process))
+                {
+                    controllers = Math.Clamp(controllers, 1, MaxControllers);
+                    return true;
+                }
+            }
+        }
+        catch
+        {
+            // A stale or unreadable marker should never block a fresh start.
+        }
+
+        try { File.Delete(readyPath); } catch { }
+        pid = 0;
+        controllers = 0;
+        return false;
+    }
+
+    private static bool LooksLikeReceiverProcess(Process process)
+    {
+        try
+        {
+            return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
+                   process.MainWindowHandle == IntPtr.Zero;
+        }
+        catch
+        {
+            return false;
+        }
+    }
 }
 
 internal static class WindowsNativeRumbleProtocol

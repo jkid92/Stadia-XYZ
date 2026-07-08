@@ -25,7 +25,7 @@ internal sealed class WindowsNativeOrchestrator
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
         ClearStopSignal();
-        if (TryGetActiveReceiver(out var activePid, out var activeControllers))
+        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeControllers))
         {
             status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={activePid} controllers={activeControllers}");
             status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {activeControllers} controller(s)");
@@ -358,71 +358,6 @@ internal sealed class WindowsNativeOrchestrator
         {
             status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", "Could not acquire start lock: " + ex.Message);
             return null;
-        }
-    }
-
-    private bool TryGetActiveReceiver(out int pid, out int controllers)
-    {
-        pid = 0;
-        controllers = 0;
-        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
-        if (!File.Exists(readyPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var marker = File.ReadAllText(readyPath).Trim();
-            foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            {
-                var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
-                if (pair.Length != 2)
-                {
-                    continue;
-                }
-
-                if (pair[0].Equals("pid", StringComparison.OrdinalIgnoreCase))
-                {
-                    _ = int.TryParse(pair[1], out pid);
-                }
-                else if (pair[0].Equals("controllers", StringComparison.OrdinalIgnoreCase))
-                {
-                    _ = int.TryParse(pair[1], out controllers);
-                }
-            }
-
-            if (pid > 0)
-            {
-                using var process = Process.GetProcessById(pid);
-                if (!process.HasExited && LooksLikeStadiaXProcess(process))
-                {
-                    controllers = Math.Clamp(controllers, 1, MaxControllers);
-                    return true;
-                }
-            }
-        }
-        catch
-        {
-            // A stale or unreadable marker should not block a fresh start.
-        }
-
-        try { File.Delete(readyPath); } catch { }
-        pid = 0;
-        controllers = 0;
-        return false;
-    }
-
-    private static bool LooksLikeStadiaXProcess(Process process)
-    {
-        try
-        {
-            return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
-                   process.MainWindowHandle == IntPtr.Zero;
-        }
-        catch
-        {
-            return false;
         }
     }
 

@@ -333,31 +333,7 @@ internal sealed class NativeControlServices
 
     private bool IsWindowsNativeReceiverActive()
     {
-        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
-        if (!File.Exists(readyPath))
-        {
-            return false;
-        }
-
-        try
-        {
-            var marker = File.ReadAllText(readyPath).Trim();
-            var pidText = marker.Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .Select(part => part.Split('=', 2, StringSplitOptions.TrimEntries))
-                .Where(parts => parts.Length == 2)
-                .FirstOrDefault(parts => parts[0].Equals("pid", StringComparison.OrdinalIgnoreCase))?[1];
-            if (int.TryParse(pidText, out var pid))
-            {
-                using var process = System.Diagnostics.Process.GetProcessById(pid);
-                return !process.HasExited;
-            }
-
-            return File.GetLastWriteTimeUtc(readyPath) >= DateTime.UtcNow - TimeSpan.FromMinutes(5);
-        }
-        catch
-        {
-            return false;
-        }
+        return WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
     }
 
     public async Task<CommandResult> RunLinuxBluetoothCommandAsync(string mac, string command)
