@@ -3339,34 +3339,77 @@ internal sealed class MainForm : Form
     private void LaunchSelfCommand(string argument, bool elevateWhenNeeded, string message)
     {
         LogUserAction("Launch self command requested", ("argument", argument), ("elevateWhenNeeded", elevateWhenNeeded.ToString()));
-        var executable = File.Exists(_paths.AppExecutable) ? _paths.AppExecutable : Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        var executable = ResolveSelfExecutable();
+        if (string.IsNullOrWhiteSpace(executable))
         {
+            LogUserAction("Launch self command failed", ("argument", argument), ("reason", "StadiaX.exe not found"));
+            AppDiagnosticsLogger.Record("SELF_COMMAND_START_FAILED", ("argument", argument), ("reason", "executable_missing"), ("root", _paths.Root));
             MessageBox.Show("StadiaX.exe was not found. Build or install the native launcher first.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
+        var willElevate = elevateWhenNeeded && !IsAdministrator();
         var startInfo = new ProcessStartInfo(executable, argument)
         {
             WorkingDirectory = _paths.Root,
             UseShellExecute = true,
             WindowStyle = ProcessWindowStyle.Hidden
         };
-        if (elevateWhenNeeded && !IsAdministrator())
+        if (willElevate)
         {
             startInfo.Verb = "runas";
         }
 
         try
         {
-            Process.Start(startInfo);
+            var process = Process.Start(startInfo);
+            var pid = process?.Id.ToString() ?? "unknown";
+            LogUserAction(
+                "Launch self command started",
+                ("argument", argument),
+                ("pid", pid),
+                ("elevated", willElevate.ToString()),
+                ("executable", executable));
+            AppDiagnosticsLogger.Record(
+                "SELF_COMMAND_STARTED",
+                ("argument", argument),
+                ("pid", pid),
+                ("elevated", willElevate.ToString()),
+                ("executable", executable),
+                ("cwd", _paths.Root));
             _statusLabel.Text = message;
             RefreshLogs();
         }
         catch (Exception ex)
         {
+            LogUserAction("Launch self command failed", ("argument", argument), ("error", ex.Message));
+            AppDiagnosticsLogger.Record(
+                "SELF_COMMAND_START_FAILED",
+                ("argument", argument),
+                ("elevated", willElevate.ToString()),
+                ("executable", executable),
+                ("cwd", _paths.Root),
+                ("error", ex.Message));
             MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private string? ResolveSelfExecutable()
+    {
+        if (File.Exists(_paths.AppExecutable))
+        {
+            return _paths.AppExecutable;
+        }
+
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath) &&
+            File.Exists(processPath) &&
+            Path.GetFileNameWithoutExtension(processPath).Equals("StadiaX", StringComparison.OrdinalIgnoreCase))
+        {
+            return processPath;
+        }
+
+        return null;
     }
 
     private void ShowBatteryOverlay(IReadOnlyList<LinuxBluetoothDevice> devices, bool warning)
