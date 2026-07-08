@@ -1854,8 +1854,7 @@ internal sealed class MainForm : Form
 
     private bool IsControllerStateFresh()
     {
-        return File.Exists(_paths.ControllerState) &&
-               File.GetLastWriteTimeUtc(_paths.ControllerState) >= DateTime.UtcNow - TimeSpan.FromSeconds(10);
+        return NativeControlServices.IsControllerTelemetryFileFresh(_paths.ControllerState);
     }
 
     private async Task TestRumbleAsync(int controllerIndex)
@@ -2026,8 +2025,11 @@ internal sealed class MainForm : Form
 
         if (selected is null)
         {
-            _controllerVisualizer.SetTelemetry(null, "No controller telemetry yet. Start the bridge and press a button.");
-            _controllerVisualStatusLabel.Text = "No controller data yet";
+            var stateText = File.Exists(_paths.ControllerState) && !NativeControlServices.IsControllerTelemetryFileFresh(_paths.ControllerState)
+                ? $"Controller telemetry is stale. Last update {snapshot.ReadAt.ToLocalTime():HH:mm:ss}."
+                : "No controller telemetry yet. Start the bridge and press a button.";
+            _controllerVisualizer.SetTelemetry(null, stateText);
+            _controllerVisualStatusLabel.Text = stateText;
             return;
         }
 

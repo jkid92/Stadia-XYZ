@@ -49,6 +49,7 @@ internal sealed class NativeControlServices
     private const int BridgeRumblePort = 45494;
     private const byte PacketMagic = 0x53;
     private const byte PacketVersion = 1;
+    public static readonly TimeSpan ControllerTelemetryMaxAge = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan LiveFallbackMaxAge = TimeSpan.FromSeconds(90);
     private static readonly Regex BusIdPattern = new(@"^\d+-\d+$", RegexOptions.Compiled);
     private static readonly Regex MacPattern = new(@"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", RegexOptions.Compiled);
@@ -850,6 +851,12 @@ bluetoothctl devices 2>&1 || true
             return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
         }
 
+        var dataTimestamp = ControllerTelemetryTimestamp(_paths.ControllerState);
+        if (!IsControllerTelemetryFileFresh(_paths.ControllerState))
+        {
+            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
+        }
+
         JsonDocument document;
         try
         {
@@ -857,25 +864,44 @@ bluetoothctl devices 2>&1 || true
         }
         catch (IOException)
         {
-            return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
         }
         catch (JsonException)
         {
-            return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
         }
 
         using (document)
         {
             if (!document.RootElement.TryGetProperty("controllers", out var controllers) || controllers.ValueKind != JsonValueKind.Array)
             {
-                return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+                return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
             }
 
-            return ReadControllerRows(controllers);
+            return ReadControllerRows(controllers, dataTimestamp);
         }
     }
 
-    private static ControllerTelemetrySnapshot ReadControllerRows(JsonElement controllers)
+    public static bool IsControllerTelemetryFileFresh(string path)
+    {
+        return File.Exists(path) &&
+               File.GetLastWriteTimeUtc(path) >= DateTime.UtcNow - ControllerTelemetryMaxAge;
+    }
+
+    private static DateTimeOffset ControllerTelemetryTimestamp(string path)
+    {
+        try
+        {
+            var timestamp = File.GetLastWriteTimeUtc(path);
+            return timestamp.Year <= 1900 ? DateTimeOffset.Now : new DateTimeOffset(timestamp, TimeSpan.Zero);
+        }
+        catch
+        {
+            return DateTimeOffset.Now;
+        }
+    }
+
+    private static ControllerTelemetrySnapshot ReadControllerRows(JsonElement controllers, DateTimeOffset dataTimestamp)
     {
         var rows = new List<ControllerTelemetryRow>();
         foreach (var item in controllers.EnumerateArray())
@@ -904,7 +930,7 @@ bluetoothctl devices 2>&1 || true
                 buttons));
         }
 
-        return new ControllerTelemetrySnapshot(DateTimeOffset.Now, rows);
+        return new ControllerTelemetrySnapshot(dataTimestamp, rows);
     }
 
     public async Task<string> CreateSessionReportAsync()
