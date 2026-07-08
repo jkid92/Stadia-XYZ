@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Security.Principal;
+using System.Text;
 
 namespace StadiaX.ControlCenter;
 
@@ -7,6 +8,7 @@ internal sealed class WindowsNativeOrchestrator
 {
     private const int MaxControllers = 4;
     private const int StartPhaseCount = 5;
+    private static readonly TimeSpan StartLockMaxAge = TimeSpan.FromSeconds(60);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -29,6 +31,13 @@ internal sealed class WindowsNativeOrchestrator
             status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {activeControllers} controller(s)");
             status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={activePid}");
             return 0;
+        }
+        using var startLock = TryAcquireStartLock(status);
+        if (startLock is null)
+        {
+            status.Write("WINDOWS_NATIVE_START_BUSY", "Another Windows Native start request is already in progress");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "WAIT", "Another start request is already in progress");
+            return 2;
         }
 
         var hidHide = new HidHideManager(_paths, _runner);
@@ -310,6 +319,48 @@ internal sealed class WindowsNativeOrchestrator
         }
     }
 
+    private IDisposable? TryAcquireStartLock(StatusWriter status)
+    {
+        Directory.CreateDirectory(_paths.LogDirectory);
+        var path = StartLockPath();
+        if (File.Exists(path))
+        {
+            var age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(path);
+            if (age <= StartLockMaxAge)
+            {
+                status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", $"Existing start lock ageSeconds={(int)age.TotalSeconds}");
+                return null;
+            }
+
+            try
+            {
+                File.Delete(path);
+                status.Write("WINDOWS_NATIVE_START_LOCK_STALE", $"Removed stale start lock ageSeconds={(int)age.TotalSeconds}");
+            }
+            catch (Exception ex)
+            {
+                status.Write("WINDOWS_NATIVE_START_LOCK_FAILED", "Could not remove stale start lock: " + ex.Message);
+                return null;
+            }
+        }
+
+        try
+        {
+            var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            using var writer = new StreamWriter(stream, Encoding.UTF8, 1024, leaveOpen: true);
+            writer.WriteLine($"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}");
+            writer.Flush();
+            stream.Flush();
+            status.Write("WINDOWS_NATIVE_START_LOCK_ACQUIRED", $"pid={Environment.ProcessId}");
+            return new FileLock(stream, path);
+        }
+        catch (IOException ex)
+        {
+            status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", "Could not acquire start lock: " + ex.Message);
+            return null;
+        }
+    }
+
     private bool TryGetActiveReceiver(out int pid, out int controllers)
     {
         pid = 0;
@@ -380,6 +431,11 @@ internal sealed class WindowsNativeOrchestrator
         return Path.Combine(_paths.LogDirectory, "windows-native.stop");
     }
 
+    private string StartLockPath()
+    {
+        return Path.Combine(_paths.LogDirectory, "windows-native.start.lock");
+    }
+
     private string ResolveCurrentAppPath()
     {
         var processPath = Environment.ProcessPath;
@@ -421,5 +477,23 @@ internal sealed class WindowsNativeOrchestrator
     {
         value = value.ReplaceLineEndings(" ").Trim();
         return value.Length <= maxLength ? value : value[..maxLength] + "...";
+    }
+
+    private sealed class FileLock : IDisposable
+    {
+        private readonly FileStream _stream;
+        private readonly string _path;
+
+        public FileLock(FileStream stream, string path)
+        {
+            _stream = stream;
+            _path = path;
+        }
+
+        public void Dispose()
+        {
+            _stream.Dispose();
+            try { File.Delete(_path); } catch { }
+        }
     }
 }
