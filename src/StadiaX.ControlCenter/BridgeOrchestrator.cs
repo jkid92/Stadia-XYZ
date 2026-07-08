@@ -300,7 +300,12 @@ internal sealed class BridgeOrchestrator
         var requested = Environment.GetEnvironmentVariable("STADIA_X_BT_BUSID");
         if (IsBusId(requested))
         {
+            status.Write("BT_SELECTED_SOURCE", $"Using Bluetooth BUSID {requested} from STADIA_X_BT_BUSID");
             return requested!;
+        }
+        if (!string.IsNullOrWhiteSpace(requested))
+        {
+            status.Write("BT_SELECTED_SOURCE_IGNORED", "Ignoring invalid STADIA_X_BT_BUSID value");
         }
 
         if (File.Exists(_paths.SelectedBluetoothBusId))
@@ -308,11 +313,17 @@ internal sealed class BridgeOrchestrator
             var saved = File.ReadAllText(_paths.SelectedBluetoothBusId).Trim();
             if (IsBusId(saved))
             {
+                status.Write("BT_SELECTED_SOURCE", $"Using saved Bluetooth BUSID {saved}");
                 return saved;
+            }
+            if (!string.IsNullOrWhiteSpace(saved))
+            {
+                status.Write("BT_SELECTED_SOURCE_IGNORED", "Ignoring invalid saved Bluetooth BUSID");
             }
         }
 
         var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
+        status.Write("BT_DETECT_LIST_RESULT", $"exit={list.ExitCode} bytes={list.Output.Length}");
         foreach (var line in list.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
         {
             var lower = line.ToLowerInvariant();
@@ -321,6 +332,7 @@ internal sealed class BridgeOrchestrator
                 var first = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                 if (IsBusId(first))
                 {
+                    status.Write("BT_SELECTED_SOURCE", $"Auto-detected Bluetooth BUSID {first}");
                     return first!;
                 }
             }
@@ -334,20 +346,23 @@ internal sealed class BridgeOrchestrator
     {
         for (var attempt = 1; attempt <= 3; attempt++)
         {
-            status.Write("BT_ATTACH_START", $"Attaching Bluetooth adapter to WSL distro {distro}");
-            await _runner.RunAsync("usbipd", new[] { "bind", "--busid", busId, "--force" }, _paths.Root, 20000).ConfigureAwait(false);
+            status.Write("BT_ATTACH_START", $"Attempt {attempt}/3 attaching Bluetooth BUSID {busId} to WSL distro {distro}");
+            var bind = await _runner.RunAsync("usbipd", new[] { "bind", "--busid", busId, "--force" }, _paths.Root, 20000).ConfigureAwait(false);
+            status.Write("BT_ATTACH_BIND_RESULT", $"attempt={attempt} exit={bind.ExitCode} detail={Shorten(FirstNonEmpty(bind.Error, bind.Output, "none"), 240)}");
             var help = await _runner.RunAsync("usbipd", new[] { "attach", "--help" }, _paths.Root, 15000).ConfigureAwait(false);
             var attachArgs = help.Output.Contains("--distribution", StringComparison.OrdinalIgnoreCase)
                 ? new[] { "attach", "--wsl", "--busid", busId, "--distribution", distro }
                 : help.Output.Contains("<[DISTRIBUTION]>", StringComparison.OrdinalIgnoreCase)
                     ? new[] { "attach", "--wsl", distro, "--busid", busId }
                     : new[] { "attach", "--wsl", "--busid", busId };
+            status.Write("BT_ATTACH_ARGS", $"attempt={attempt} args={string.Join(" ", attachArgs)}");
             var attach = await _runner.RunAsync("usbipd", attachArgs, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
             if (attach.ExitCode != 0 && attachArgs.Any(arg => arg.Equals("--distribution", StringComparison.OrdinalIgnoreCase)))
             {
-                status.Write("BT_ATTACH_DISTRO_FALLBACK", "Attach with explicit distro failed; retrying default WSL attach");
+                status.Write("BT_ATTACH_DISTRO_FALLBACK", $"Attach with explicit distro failed: {Shorten(FirstNonEmpty(attach.Error, attach.Output, "none"), 240)}");
                 attach = await _runner.RunAsync("usbipd", new[] { "attach", "--wsl", "--busid", busId }, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
             }
+            status.Write("BT_ATTACH_RESULT", $"attempt={attempt} exit={attach.ExitCode} detail={Shorten(FirstNonEmpty(attach.Error, attach.Output, "none"), 240)}");
             if (attach.ExitCode == 0)
             {
                 status.Write("BT_ATTACH_OK", "Bluetooth adapter attached to WSL");
@@ -358,16 +373,31 @@ internal sealed class BridgeOrchestrator
                     line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase)
                         ? $"usbipd reports BUSID {busId} as attached"
                         : "Attach command succeeded, but usbipd list did not report the BUSID as Attached");
+                await VerifyBluetoothInsideWslAsync(distro, status).ConfigureAwait(false);
                 await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
                 return true;
             }
 
-            status.Write("BT_ATTACH_RETRY", $"Attach failed on attempt {attempt}; retrying");
+            status.Write("BT_ATTACH_RETRY", $"Attach failed on attempt {attempt}; retrying after cleanup delay");
             await Task.Delay(TimeSpan.FromSeconds(4)).ConfigureAwait(false);
         }
 
         status.Write("BT_ATTACH_FAILED", "Could not attach Bluetooth adapter to WSL");
         return false;
+    }
+
+    private async Task VerifyBluetoothInsideWslAsync(string distro, StatusWriter status)
+    {
+        var probe = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "-u", "root", "bash", "-lc", "if command -v bluetoothctl >/dev/null 2>&1; then timeout 6s bluetoothctl list 2>/dev/null || timeout 6s bluetoothctl show 2>/dev/null || true; elif command -v hciconfig >/dev/null 2>&1; then hciconfig -a 2>/dev/null || true; fi" },
+            _paths.Root,
+            10000).ConfigureAwait(false);
+
+        var detail = Shorten(FirstNonEmpty(probe.Output, probe.Error, "no Bluetooth controller reported yet"), 260);
+        var looksReady = probe.Output.Contains("Controller", StringComparison.OrdinalIgnoreCase) ||
+                         probe.Output.Contains("hci", StringComparison.OrdinalIgnoreCase);
+        status.Write(looksReady ? "BT_WSL_PROBE_OK" : "BT_WSL_PROBE_WAIT", detail);
     }
 
     private async Task<bool> DeployLinuxBridgeAsync(string distro, StatusWriter status)
