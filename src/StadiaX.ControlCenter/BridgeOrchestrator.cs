@@ -297,13 +297,28 @@ internal sealed class BridgeOrchestrator
 
     private async Task<string> ResolveBluetoothBusIdAsync(StatusWriter status)
     {
+        var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
+        status.Write("BT_DETECT_LIST_RESULT", $"exit={list.ExitCode} bytes={list.Output.Length}");
+        var usbipdDevices = ParseUsbipdList(list.Output).ToArray();
+        var canVerifyUsbipd = list.ExitCode == 0 && usbipdDevices.Length > 0;
+
         var requested = Environment.GetEnvironmentVariable("STADIA_X_BT_BUSID");
         if (IsBusId(requested))
         {
-            status.Write("BT_SELECTED_SOURCE", $"Using Bluetooth BUSID {requested} from STADIA_X_BT_BUSID");
-            return requested!;
+            var requestedDevice = FindUsbipdBus(usbipdDevices, requested!);
+            if (!canVerifyUsbipd || requestedDevice is not null)
+            {
+                status.Write(
+                    requestedDevice is not null && !LooksLikeBluetoothUsbipdLine(requestedDevice.Line) ? "BT_SELECTED_SOURCE_WARN" : "BT_SELECTED_SOURCE",
+                    requestedDevice is not null
+                        ? $"Using Bluetooth BUSID {requested} from STADIA_X_BT_BUSID ({Shorten(requestedDevice.Line, 180)})"
+                        : $"Using Bluetooth BUSID {requested} from STADIA_X_BT_BUSID without usbipd list verification");
+                return requested!;
+            }
+
+            status.Write("BT_SELECTED_SOURCE_IGNORED", $"Ignoring STADIA_X_BT_BUSID {requested}; BUSID was not found in usbipd list");
         }
-        if (!string.IsNullOrWhiteSpace(requested))
+        else if (!string.IsNullOrWhiteSpace(requested))
         {
             status.Write("BT_SELECTED_SOURCE_IGNORED", "Ignoring invalid STADIA_X_BT_BUSID value");
         }
@@ -313,34 +328,79 @@ internal sealed class BridgeOrchestrator
             var saved = File.ReadAllText(_paths.SelectedBluetoothBusId).Trim();
             if (IsBusId(saved))
             {
-                status.Write("BT_SELECTED_SOURCE", $"Using saved Bluetooth BUSID {saved}");
-                return saved;
+                var savedDevice = FindUsbipdBus(usbipdDevices, saved);
+                if (!canVerifyUsbipd || (savedDevice is not null && LooksLikeBluetoothUsbipdLine(savedDevice.Line)))
+                {
+                    status.Write(
+                        "BT_SELECTED_SOURCE",
+                        savedDevice is not null
+                            ? $"Using saved Bluetooth BUSID {saved} ({Shorten(savedDevice.Line, 180)})"
+                            : $"Using saved Bluetooth BUSID {saved} without usbipd list verification");
+                    return saved;
+                }
+
+                status.Write(
+                    "BT_SELECTED_SOURCE_IGNORED",
+                    savedDevice is null
+                        ? $"Ignoring saved BUSID {saved}; BUSID was not found in usbipd list"
+                        : $"Ignoring saved BUSID {saved}; usbipd no longer reports it as a Bluetooth adapter");
             }
-            if (!string.IsNullOrWhiteSpace(saved))
+            else if (!string.IsNullOrWhiteSpace(saved))
             {
                 status.Write("BT_SELECTED_SOURCE_IGNORED", "Ignoring invalid saved Bluetooth BUSID");
             }
         }
 
-        var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
-        status.Write("BT_DETECT_LIST_RESULT", $"exit={list.ExitCode} bytes={list.Output.Length}");
-        foreach (var line in list.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        foreach (var device in usbipdDevices)
         {
-            var lower = line.ToLowerInvariant();
-            if (lower.Contains("bluetooth") || lower.Contains("intel wireless") || lower.Contains("realtek") || lower.Contains("mediatek") || lower.Contains("qualcomm"))
+            if (LooksLikeBluetoothUsbipdLine(device.Line))
             {
-                var first = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-                if (IsBusId(first))
-                {
-                    status.Write("BT_SELECTED_SOURCE", $"Auto-detected Bluetooth BUSID {first}");
-                    return first!;
-                }
+                status.Write("BT_SELECTED_SOURCE", $"Auto-detected Bluetooth BUSID {device.BusId} ({Shorten(device.Line, 180)})");
+                return device.BusId;
             }
         }
 
         status.Write("BT_DETECT_FAILED", "Could not auto-detect Bluetooth adapter from usbipd list");
         return "";
     }
+
+    private static IReadOnlyList<UsbipdListEntry> ParseUsbipdList(string output)
+    {
+        var devices = new List<UsbipdListEntry>();
+        foreach (var rawLine in output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.Trim();
+            var first = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+            if (IsBusId(first))
+            {
+                devices.Add(new UsbipdListEntry(first!, line));
+            }
+        }
+
+        return devices;
+    }
+
+    private static UsbipdListEntry? FindUsbipdBus(IReadOnlyList<UsbipdListEntry> devices, string busId)
+    {
+        return devices.FirstOrDefault(device => device.BusId.Equals(busId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool LooksLikeBluetoothUsbipdLine(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        var lower = line.ToLowerInvariant();
+        return lower.Contains("bluetooth") ||
+               lower.Contains("intel wireless") ||
+               lower.Contains("realtek") ||
+               lower.Contains("mediatek") ||
+               lower.Contains("qualcomm");
+    }
+
+    private sealed record UsbipdListEntry(string BusId, string Line);
 
     private async Task<bool> AttachBluetoothAsync(string distro, string busId, StatusWriter status)
     {
