@@ -24,6 +24,7 @@ internal sealed class BridgeOrchestrator
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
         status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
         ClearReceiverStopSignal();
+        ClearControllerState(status, "START");
 
         var missing = RequiredRuntimeFiles().Where(file => !File.Exists(Path.Combine(_paths.Root, file))).ToArray();
         if (missing.Length > 0)
@@ -157,6 +158,7 @@ internal sealed class BridgeOrchestrator
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
         SignalReceiverStop();
+        ClearControllerState(status, "STOP");
         KillProcess("stadia_receiver");
         KillProcess("stadia-vigem-x86");
 
@@ -604,6 +606,27 @@ internal sealed class BridgeOrchestrator
     private string ReceiverStopSignalPath()
     {
         return Path.Combine(_paths.LogDirectory, "receiver.stop");
+    }
+
+    private void ClearControllerState(StatusWriter status, string phase)
+    {
+        foreach (var path in new[] { _paths.ControllerState, _paths.ControllerState + ".tmp" })
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                File.Delete(path);
+                status.Write("CONTROLLER_STATE_CLEARED", $"{phase}: removed {Path.GetFileName(path)} from previous session");
+            }
+            catch (Exception ex)
+            {
+                status.Write("CONTROLLER_STATE_CLEAR_WARN", $"{phase}: could not remove {Path.GetFileName(path)}: {ex.Message}");
+            }
+        }
     }
 
     private async Task<string> ResolveBusIdForDetachAsync(StatusWriter status)

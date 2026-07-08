@@ -128,6 +128,25 @@ internal sealed class IntegratedReceiver
             }
 
             LogInfo("Integrated receiver stopped.");
+            ClearControllerTelemetry();
+        }
+    }
+
+    private void ClearControllerTelemetry()
+    {
+        foreach (var path in new[] { _paths.ControllerState, _paths.ControllerState + ".tmp" })
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("Controller telemetry cleanup failed for {0}: {1}", Path.GetFileName(path), ex.Message);
+            }
         }
     }
 
