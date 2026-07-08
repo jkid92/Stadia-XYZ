@@ -121,8 +121,23 @@ internal sealed class WindowsNativeReceiver
         finally
         {
             DeleteReadyMarker();
+            ClearControllerTelemetry();
             CleanupVigem();
             LogInfo("Windows Native receiver stopped");
+        }
+    }
+
+    private void ClearControllerTelemetry()
+    {
+        var cleanup = WindowsNativeRuntime.ClearControllerStateFiles(_paths);
+        foreach (var file in cleanup.Removed)
+        {
+            LogInfo("Controller telemetry cleanup removed {0}", file);
+        }
+
+        foreach (var warning in cleanup.Warnings)
+        {
+            LogError("Controller telemetry cleanup failed for {0}", warning);
         }
     }
 

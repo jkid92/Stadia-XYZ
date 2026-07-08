@@ -13,6 +13,31 @@ internal static class WindowsNativeRuntime
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
 
+    public static (IReadOnlyList<string> Removed, IReadOnlyList<string> Warnings) ClearControllerStateFiles(AppPaths paths)
+    {
+        var removed = new List<string>();
+        var warnings = new List<string>();
+        foreach (var path in new[] { paths.ControllerState, paths.ControllerState + ".tmp" })
+        {
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    continue;
+                }
+
+                File.Delete(path);
+                removed.Add(Path.GetFileName(path));
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"{Path.GetFileName(path)}: {ex.Message}");
+            }
+        }
+
+        return (removed, warnings);
+    }
+
     public static bool TryGetActiveReceiver(AppPaths paths, out int pid, out int controllers)
     {
         pid = 0;

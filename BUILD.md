@@ -107,13 +107,13 @@ The Windows Native experiment ships without WSL, usbipd, BlueZ, or `stadia_bridg
 ```powershell
 .\build\Build-CSharpControlCenter.ps1 -CopyToRoot
 .\build\Download-ViGEmClient.ps1 -OutputDirectory .
-.\build\Package-WindowsNative.ps1 -Version v0.5.20.12
-.\build\Build-WindowsNativeInstaller.ps1 -Version v0.5.20.12
+.\build\Package-WindowsNative.ps1 -Version v0.5.20.13
+.\build\Build-WindowsNativeInstaller.ps1 -Version v0.5.20.13
 ```
 
-This writes `Stadia-X-Windows-Native-v0.5.20.12.zip` and `Stadia-X-Windows-Native-v0.5.20.12-Setup.exe` under `dist/`.
+This writes `Stadia-X-Windows-Native-v0.5.20.13.zip` and `Stadia-X-Windows-Native-v0.5.20.13-Setup.exe` under `dist/`.
 
-Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a tag like `windows-native-v0.5.20.12` creates a prerelease with the ZIP, setup EXE, and SHA256 files attached.
+Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a tag like `windows-native-v0.5.20.13` creates a prerelease with the ZIP, setup EXE, and SHA256 files attached.
 
 After extracting a package or installing Stadia X, run:
 

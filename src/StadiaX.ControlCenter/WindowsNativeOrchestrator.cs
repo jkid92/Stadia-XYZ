@@ -39,6 +39,7 @@ internal sealed class WindowsNativeOrchestrator
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "WAIT", "Another start request is already in progress");
             return 2;
         }
+        ClearControllerState(status, "START");
 
         var hidHide = new HidHideManager(_paths, _runner);
         if (!await EnsureHidHideAsync(hidHide, status).ConfigureAwait(false))
@@ -129,6 +130,7 @@ internal sealed class WindowsNativeOrchestrator
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "START", "Stop requested");
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
         SignalStop();
+        ClearControllerState(status, "STOP");
         status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
         var stopped = await WaitForReceiverStopAsync(status).ConfigureAwait(false);
         status.Write(
@@ -284,6 +286,20 @@ internal sealed class WindowsNativeOrchestrator
     {
         Directory.CreateDirectory(_paths.LogDirectory);
         File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+    }
+
+    private void ClearControllerState(StatusWriter status, string phase)
+    {
+        var cleanup = WindowsNativeRuntime.ClearControllerStateFiles(_paths);
+        foreach (var file in cleanup.Removed)
+        {
+            status.Write("WINDOWS_NATIVE_CONTROLLER_STATE_CLEARED", $"{phase}: removed {file} from previous session");
+        }
+
+        foreach (var warning in cleanup.Warnings)
+        {
+            status.Write("WINDOWS_NATIVE_CONTROLLER_STATE_CLEAR_WARN", $"{phase}: could not remove {warning}");
+        }
     }
 
     private async Task<bool> WaitForReceiverStopAsync(StatusWriter status)
