@@ -165,7 +165,7 @@ internal sealed class BridgeOrchestrator
         status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "OK", "Receiver stop signal sent and WSL shutdown requested");
 
         status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "START", "Resolving adapter to detach");
-        var busId = await ResolveBusIdForDetachAsync().ConfigureAwait(false);
+        var busId = await ResolveBusIdForDetachAsync(status).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(busId))
         {
             status.Write("BT_RESTORE_UNKNOWN", "No Bluetooth BUSID found for detach");
@@ -178,7 +178,9 @@ internal sealed class BridgeOrchestrator
             status.Write("BT_RESTORE_DETACH_RESULT", $"exit={detach.ExitCode} detail={Shorten(FirstNonEmpty(detach.Error, detach.Output, "none"), 240)}");
             await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
             var unbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
-            var forceUnbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false);
+            var forceUnbind = await SupportsForceUnbindAsync().ConfigureAwait(false)
+                ? await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false)
+                : new CommandResult(0, "Skipped: this usbipd version does not advertise unbind --force.", "");
             status.Write("BT_RESTORE_UNBIND_RESULT", $"exit={unbind.ExitCode} forceExit={forceUnbind.ExitCode} detail={Shorten(FirstNonEmpty(forceUnbind.Error, forceUnbind.Output, unbind.Error, unbind.Output, "none"), 240)}");
             var restoreLooksOk = detach.ExitCode == 0 || unbind.ExitCode == 0 || forceUnbind.ExitCode == 0;
             status.Write(restoreLooksOk ? "BT_RESTORE_OK" : "BT_RESTORE_WARN", "Bluetooth adapter restore commands completed");
@@ -604,33 +606,59 @@ internal sealed class BridgeOrchestrator
         return Path.Combine(_paths.LogDirectory, "receiver.stop");
     }
 
-    private async Task<string> ResolveBusIdForDetachAsync()
+    private async Task<string> ResolveBusIdForDetachAsync(StatusWriter status)
     {
         var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
+        var saved = "";
         if (File.Exists(busFile))
         {
-            var saved = File.ReadAllText(busFile).Trim();
-            if (IsBusId(saved))
-            {
-                return saved;
-            }
+            saved = File.ReadAllText(busFile).Trim();
         }
 
         var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
-        foreach (var line in list.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        status.Write("BT_RESTORE_LIST_RESULT", $"exit={list.ExitCode} bytes={list.Output.Length}");
+        var devices = ParseUsbipdList(list.Output);
+        var canVerifyUsbipd = list.ExitCode == 0 && devices.Count > 0;
+
+        if (IsBusId(saved))
         {
-            var lower = line.ToLowerInvariant();
-            if (lower.Contains("bluetooth") || lower.Contains("usbip shared") || lower.Contains("intel wireless"))
+            var savedDevice = FindUsbipdBus(devices, saved);
+            if (savedDevice is not null)
             {
-                var first = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
-                if (IsBusId(first))
-                {
-                    return first!;
-                }
+                status.Write("BT_RESTORE_SOURCE", $"Using session Bluetooth BUSID {saved} ({Shorten(savedDevice.Line, 180)})");
+                return saved;
+            }
+
+            if (!canVerifyUsbipd)
+            {
+                status.Write("BT_RESTORE_SOURCE_WARN", $"Using session Bluetooth BUSID {saved} without usbipd list verification");
+                return saved;
+            }
+
+            status.Write("BT_RESTORE_SOURCE_IGNORED", $"Ignoring session BUSID {saved}; BUSID was not found in usbipd list");
+        }
+        else if (!string.IsNullOrWhiteSpace(saved))
+        {
+            status.Write("BT_RESTORE_SOURCE_IGNORED", "Ignoring invalid session Bluetooth BUSID");
+        }
+
+        foreach (var device in devices)
+        {
+            if (LooksLikeBluetoothUsbipdLine(device.Line))
+            {
+                status.Write("BT_RESTORE_SOURCE", $"Auto-detected Bluetooth BUSID {device.BusId} for restore ({Shorten(device.Line, 180)})");
+                return device.BusId;
             }
         }
 
         return "";
+    }
+
+    private async Task<bool> SupportsForceUnbindAsync()
+    {
+        var help = await _runner.RunAsync("usbipd", new[] { "unbind", "--help" }, _paths.Root, 15000).ConfigureAwait(false);
+        return help.Output.Contains("--force", StringComparison.OrdinalIgnoreCase) ||
+               help.Error.Contains("--force", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<string> ConvertToWslPathAsync(string distro, string windowsPath)

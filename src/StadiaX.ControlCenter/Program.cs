@@ -29,12 +29,14 @@ internal static class Program
         var paths = AppPaths.Discover();
         AppDiagnosticsLogger.Initialize(paths);
 
-        if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase))
+        if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--start", StringComparer.OrdinalIgnoreCase))
         {
             Environment.Exit(RunBridgeCommand(start: true));
             return;
         }
-        if (args.Contains("--stop-bridge", StringComparer.OrdinalIgnoreCase))
+        if (args.Contains("--stop-bridge", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--stop", StringComparer.OrdinalIgnoreCase))
         {
             Environment.Exit(RunBridgeCommand(start: false));
             return;
