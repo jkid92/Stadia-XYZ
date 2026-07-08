@@ -1779,6 +1779,11 @@ internal sealed class MainForm : Form
                device.Connected.Equals("yes", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsLiveBluetoothDevice(LinuxBluetoothDevice device)
+    {
+        return NativeControlServices.IsBluetoothMac(device.Mac) && IsLiveBluetoothSource(device);
+    }
+
     private static bool IsHistoricalBluetoothSource(LinuxBluetoothDevice device)
     {
         return NativeControlServices.IsBluetoothMac(device.Mac) && !IsLiveBluetoothSource(device);
@@ -2071,6 +2076,8 @@ internal sealed class MainForm : Form
                 ? "Active"
                 : device is not null && IsLiveBluetoothConnected(device)
                     ? "Connected"
+                    : device is not null && IsHistoricalBluetoothSource(device)
+                        ? "Last seen"
                     : device?.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase) == true
                         ? "Paired"
                         : profile is not null
@@ -2103,10 +2110,18 @@ internal sealed class MainForm : Form
         var wslOk = _wslCombo.Items.Count > 1 || !string.IsNullOrWhiteSpace(_native.GetSelectedWslDistro());
         var adapterOk = !string.IsNullOrWhiteSpace(_selectedBusText.Text) ||
                         _usbipdList.Items.Cast<ListViewItem>().Any(item => item.Tag is UsbipdDevice device && device.IsBluetooth);
-        var bridgeOk = IsControllerStateFresh() || _lastLinuxBluetoothDevices.Count > 0;
-        var scanOk = _lastLinuxBluetoothDevices.Count > 0;
+        var liveLinuxCount = _lastLinuxBluetoothDevices.Count(IsLiveBluetoothDevice);
+        var fallbackLinuxCount = _lastLinuxBluetoothDevices.Count - liveLinuxCount;
+        var bridgeOk = IsControllerStateFresh() || liveLinuxCount > 0;
+        var bridgeWarn = !bridgeOk && fallbackLinuxCount > 0;
+        var scanOk = liveLinuxCount > 0;
+        var scanWarn = !scanOk && fallbackLinuxCount > 0;
         var selectedDevices = SelectedLinuxBluetoothDevices();
-        var selectionOk = selectedDevices.Count > 0;
+        var selectedBluetoothDevices = selectedDevices
+            .Where(device => NativeControlServices.IsBluetoothMac(device.Mac))
+            .ToArray();
+        var selectionOk = selectedBluetoothDevices.Length > 0;
+        var selectionWarn = selectedDevices.Count > 0 && !selectionOk;
         var inputOk = _lastTelemetrySnapshot?.Controllers.Any(controller => controller.Active || controller.PacketsPerSecond > 0) == true;
 
         var stepNames = PairingWizardStepNames();
@@ -2115,9 +2130,9 @@ internal sealed class MainForm : Form
             (Done: requirementsOk, Warn: requirementsKnown && missingRequirements > 0, Detail: !requirementsKnown ? "" : missingRequirements > 0 ? $" - {missingRequirements} missing" : warningRequirements > 0 ? $" - {warningRequirements} warning(s)" : ""),
             (Done: wslOk, Warn: false, Detail: ""),
             (Done: adapterOk, Warn: false, Detail: string.IsNullOrWhiteSpace(_selectedBusText.Text) ? "" : " - " + _selectedBusText.Text.Trim()),
-            (Done: bridgeOk, Warn: false, Detail: ""),
-            (Done: scanOk, Warn: false, Detail: scanOk ? " - " + _lastLinuxBluetoothDevices.Count + " visible" : ""),
-            (Done: selectionOk, Warn: false, Detail: selectionOk ? " - " + selectedDevices.Count + " selected" : ""),
+            (Done: bridgeOk, Warn: bridgeWarn, Detail: bridgeWarn ? " - only cached/receiver rows" : ""),
+            (Done: scanOk, Warn: scanWarn, Detail: scanOk ? " - " + liveLinuxCount + " live" : scanWarn ? " - only cached/receiver rows" : ""),
+            (Done: selectionOk, Warn: selectionWarn, Detail: selectionOk ? " - " + selectedBluetoothDevices.Length + " selected" : selectionWarn ? " - select a Bluetooth MAC" : ""),
             (Done: inputOk, Warn: false, Detail: "")
         };
 
@@ -2147,13 +2162,15 @@ internal sealed class MainForm : Form
                 ? "Ready for pair/connect"
                 : scanOk
                     ? "Select a Linux device"
+                    : scanWarn
+                        ? "Scan again while the controller is flashing"
                     : bridgeOk
                         ? "Scan for devices"
                         : adapterOk
                             ? "Start the bridge"
                             : "Complete setup";
         _wizardSelectionLabel.Text = selectionOk
-            ? "Selected: " + string.Join("   ", selectedDevices.Take(3).Select(device => $"{device.Name} {device.Mac}"))
+            ? "Selected: " + string.Join("   ", selectedBluetoothDevices.Take(3).Select(device => $"{device.Name} {device.Mac}"))
             : "Selected: none";
     }
 
