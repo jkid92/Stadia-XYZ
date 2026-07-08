@@ -130,10 +130,10 @@ internal sealed class WindowsNativeOrchestrator
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
         SignalStop();
         status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
-        var stopped = await WaitForReceiverStopAsync().ConfigureAwait(false);
+        var stopped = await WaitForReceiverStopAsync(status).ConfigureAwait(false);
         status.Write(
             stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
-            stopped ? "Ready marker disappeared after stop signal" : "Ready marker still exists after waiting for receiver shutdown");
+            stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after waiting for shutdown");
         await RestorePhysicalInputAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", stopped ? "OK" : "WARN", "Stop completed and physical input restore requested");
         return 0;
@@ -286,15 +286,26 @@ internal sealed class WindowsNativeOrchestrator
         File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
     }
 
-    private async Task<bool> WaitForReceiverStopAsync()
+    private async Task<bool> WaitForReceiverStopAsync(StatusWriter status)
     {
-        var readyPath = WindowsNativeRuntime.ReadyPath(_paths);
-        for (var attempt = 0; attempt < 40 && File.Exists(readyPath); attempt++)
+        var loggedWait = false;
+        for (var attempt = 0; attempt < 40; attempt++)
         {
+            if (!WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var pid, out var controllers))
+            {
+                return true;
+            }
+
+            if (!loggedWait)
+            {
+                status.Write("WINDOWS_NATIVE_STOP_WAITING", $"Waiting for receiver pid={pid} controllers={controllers}");
+                loggedWait = true;
+            }
+
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
         }
 
-        return !File.Exists(readyPath);
+        return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
     }
 
     private async Task RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)
