@@ -41,6 +41,7 @@ $requiredFiles = @(
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",
+    "assets\StadiaControllerPhoto.png",
     "assets\ATTRIBUTION.md"
 )
 
