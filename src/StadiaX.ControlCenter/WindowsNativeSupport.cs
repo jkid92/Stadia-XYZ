@@ -240,6 +240,8 @@ internal sealed class WindowsNativeHidScanner
         return DeviceList.Local.GetHidDevices()
             .Where(IsLikelyStadiaDevice)
             .Select(device => ToNativeDevice(device, hidHideBySymbolicLink))
+            .GroupBy(DeviceIdentityKey, StringComparer.OrdinalIgnoreCase)
+            .Select(ChooseBestCandidate)
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
@@ -312,6 +314,24 @@ internal sealed class WindowsNativeHidScanner
             SafeInt(device.GetMaxOutputReportLength),
             hidHideEntry?.DeviceInstancePath ?? "",
             hidHideEntry?.SymbolicLink ?? "");
+    }
+
+    private static string DeviceIdentityKey(WindowsNativeHidDevice device)
+    {
+        return !string.IsNullOrWhiteSpace(device.DeviceInstancePath)
+            ? NormalizeDevicePath(device.DeviceInstancePath)
+            : NormalizeDevicePath(device.FileSystemName);
+    }
+
+    private static WindowsNativeHidDevice ChooseBestCandidate(IGrouping<string, WindowsNativeHidDevice> candidates)
+    {
+        return candidates
+            .OrderByDescending(device => device.MaxInputReportLength > 0)
+            .ThenByDescending(device => device.MaxOutputReportLength > 0)
+            .ThenByDescending(device => device.MaxInputReportLength)
+            .ThenByDescending(device => device.MaxOutputReportLength)
+            .ThenBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
+            .First();
     }
 
     private static IEnumerable<string> CaptureReports(string fileSystemName, TimeSpan captureTime)
