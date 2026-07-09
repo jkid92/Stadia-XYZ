@@ -134,11 +134,22 @@ internal sealed class WindowsNativeOrchestrator
         ClearControllerState(status, "STOP");
         status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
         var stopped = await WaitForReceiverStopAsync(status).ConfigureAwait(false);
+        if (!stopped)
+        {
+            stopped = await TerminateReceiverIfActiveAsync(status).ConfigureAwait(false);
+        }
+
         status.Write(
             stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
-            stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after waiting for shutdown");
+            stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after termination attempt");
         await RestorePhysicalInputAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
-        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", stopped ? "OK" : "WARN", "Stop completed and physical input restore requested");
+        status.WritePhase(
+            "Windows Native",
+            5,
+            StartPhaseCount,
+            "Shutdown",
+            stopped ? "OK" : "WARN",
+            stopped ? "Stop completed and physical input restore requested" : "Stop could not confirm receiver exit; physical input restore requested");
         return 0;
     }
 
@@ -354,6 +365,43 @@ internal sealed class WindowsNativeOrchestrator
         }
 
         return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+    }
+
+    private async Task<bool> TerminateReceiverIfActiveAsync(StatusWriter status)
+    {
+        if (!WindowsNativeRuntime.TryOpenActiveReceiverProcess(_paths, out var process, out var pid, out var controllers) || process is null)
+        {
+            status.Write("WINDOWS_NATIVE_STOP_TERMINATE_SKIPPED", "No validated active Windows Native receiver process found");
+            return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+        }
+
+        using (process)
+        {
+            status.Write("WINDOWS_NATIVE_STOP_TERMINATE_START", $"Terminating hidden receiver pid={pid} controllers={controllers}");
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try
+                {
+                    await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    status.Write("WINDOWS_NATIVE_STOP_TERMINATE_TIMEOUT", $"Receiver pid={pid} did not exit within timeout");
+                    return false;
+                }
+
+                WindowsNativeRuntime.ClearReadyMarker(_paths);
+                status.Write("WINDOWS_NATIVE_STOP_TERMINATE_OK", $"Hidden receiver pid={pid} was terminated");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                status.Write("WINDOWS_NATIVE_STOP_TERMINATE_WARN", $"Could not terminate receiver pid={pid}: {ex.Message}");
+                return false;
+            }
+        }
     }
 
     private async Task RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)

@@ -14,6 +14,11 @@ internal static class WindowsNativeRuntime
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
 
+    public static void ClearReadyMarker(AppPaths paths)
+    {
+        TryDeleteFile(ReadyPath(paths));
+    }
+
     public static (IReadOnlyList<string> Removed, IReadOnlyList<string> Warnings) ClearControllerStateFiles(AppPaths paths)
     {
         var removed = new List<string>();
@@ -91,7 +96,43 @@ internal static class WindowsNativeRuntime
             // A stale or unreadable marker should never block a fresh start.
         }
 
-        try { File.Delete(readyPath); } catch { }
+        TryDeleteFile(readyPath);
+        pid = 0;
+        controllers = 0;
+        return false;
+    }
+
+    public static bool TryOpenActiveReceiverProcess(AppPaths paths, out Process? process, out int pid, out int controllers)
+    {
+        process = null;
+        pid = 0;
+        controllers = 0;
+
+        if (!TryGetActiveReceiver(paths, out pid, out controllers))
+        {
+            return false;
+        }
+
+        var readyPath = ReadyPath(paths);
+        try
+        {
+            var marker = File.ReadAllText(readyPath).Trim();
+            var timestamp = ReadMarkerTimestamp(marker, readyPath);
+            var candidate = Process.GetProcessById(pid);
+            if (!candidate.HasExited && LooksLikeReceiverProcess(candidate) && ProcessMatchesMarker(candidate, timestamp))
+            {
+                process = candidate;
+                return true;
+            }
+
+            candidate.Dispose();
+        }
+        catch
+        {
+            // If the process changed after marker validation, refuse to terminate it.
+        }
+
+        TryDeleteFile(readyPath);
         pid = 0;
         controllers = 0;
         return false;
@@ -131,6 +172,20 @@ internal static class WindowsNativeRuntime
         catch
         {
             return false;
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
         }
     }
 }
