@@ -160,7 +160,7 @@ internal sealed class BridgeOrchestrator
         status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "START", "Stopping receiver and Linux session");
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
-        SignalReceiverStop();
+        SignalReceiverStop(status);
         ClearControllerState(status, "STOP");
         KillProcess("stadia_receiver");
         KillProcess("stadia-vigem-x86");
@@ -205,10 +205,7 @@ internal sealed class BridgeOrchestrator
             status.Write(restoreLooksOk ? "BT_RESTORE_OK" : "BT_RESTORE_WARN", "Bluetooth adapter restore commands completed");
             status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", restoreLooksOk ? "OK" : "WARN", $"Bluetooth BUSID {busId} restore commands completed");
             var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
-            if (File.Exists(busFile))
-            {
-                File.Delete(busFile);
-            }
+            TryDeleteSessionFile(busFile, status, "BT_RESTORE_SESSION_FILE");
         }
 
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
@@ -266,7 +263,7 @@ internal sealed class BridgeOrchestrator
 
     private async Task CleanupOldSessionAsync(string distro, StatusWriter status)
     {
-        SignalReceiverStop();
+        SignalReceiverStop(status);
         var legacyReceiverRunning = Process.GetProcessesByName("stadia_receiver").Length > 0;
         var linuxSessionRunning = false;
         if (!string.IsNullOrWhiteSpace(distro))
@@ -620,10 +617,20 @@ internal sealed class BridgeOrchestrator
         }, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500));
     }
 
-    private void SignalReceiverStop()
+    private bool SignalReceiverStop(StatusWriter? status = null)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
-        File.WriteAllText(ReceiverStopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+            File.WriteAllText(ReceiverStopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            status?.Write("RECEIVER_STOP_SIGNAL_WARN", "Could not write receiver.stop: " + ex.Message);
+            AppDiagnosticsLogger.Record("RECEIVER_STOP_SIGNAL_WRITE_WARN", ("error", ex.Message));
+            return false;
+        }
     }
 
     private void ClearReceiverStopSignal(StatusWriter status)
@@ -935,9 +942,16 @@ internal sealed class BridgeOrchestrator
     {
         var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
         var saved = "";
-        if (File.Exists(busFile))
+        try
         {
-            saved = File.ReadAllText(busFile).Trim();
+            if (File.Exists(busFile))
+            {
+                saved = File.ReadAllText(busFile).Trim();
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write("BT_RESTORE_SOURCE_WARN", "Could not read saved Bluetooth BUSID: " + ex.Message);
         }
 
         var list = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
@@ -1044,6 +1058,22 @@ internal sealed class BridgeOrchestrator
         }
         catch
         {
+        }
+    }
+
+    private static void TryDeleteSessionFile(string path, StatusWriter status, string eventName)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                status.Write(eventName + "_CLEARED", "Removed " + Path.GetFileName(path));
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write(eventName + "_CLEAR_WARN", "Could not remove " + Path.GetFileName(path) + ": " + ex.Message);
         }
     }
 
