@@ -10,6 +10,7 @@ internal static class WindowsNativeRuntime
 {
     public const int RumblePort = 45504;
     public const int MaxControllers = 4;
+    public static readonly TimeSpan ReadyMarkerMaxAge = TimeSpan.FromMinutes(10);
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
 
@@ -51,6 +52,12 @@ internal static class WindowsNativeRuntime
         try
         {
             var marker = File.ReadAllText(readyPath).Trim();
+            var timestamp = ReadMarkerTimestamp(marker, readyPath);
+            if (DateTimeOffset.UtcNow - timestamp.ToUniversalTime() > ReadyMarkerMaxAge)
+            {
+                throw new InvalidOperationException("Windows Native ready marker is stale.");
+            }
+
             foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
@@ -72,7 +79,7 @@ internal static class WindowsNativeRuntime
             if (pid > 0)
             {
                 using var process = Process.GetProcessById(pid);
-                if (!process.HasExited && LooksLikeReceiverProcess(process))
+                if (!process.HasExited && LooksLikeReceiverProcess(process) && ProcessMatchesMarker(process, timestamp))
                 {
                     controllers = Math.Clamp(controllers, 1, MaxControllers);
                     return true;
@@ -88,6 +95,30 @@ internal static class WindowsNativeRuntime
         pid = 0;
         controllers = 0;
         return false;
+    }
+
+    private static DateTimeOffset ReadMarkerTimestamp(string marker, string readyPath)
+    {
+        var first = marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(first) && DateTimeOffset.TryParse(first, out var timestamp))
+        {
+            return timestamp;
+        }
+
+        return new DateTimeOffset(File.GetLastWriteTimeUtc(readyPath), TimeSpan.Zero);
+    }
+
+    private static bool ProcessMatchesMarker(Process process, DateTimeOffset markerTimestamp)
+    {
+        try
+        {
+            var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            return startedAt <= markerTimestamp.ToUniversalTime().AddSeconds(15);
+        }
+        catch
+        {
+            return true;
+        }
     }
 
     private static bool LooksLikeReceiverProcess(Process process)

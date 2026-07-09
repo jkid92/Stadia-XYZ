@@ -9,6 +9,7 @@ internal sealed class WindowsNativeOrchestrator
     private const int MaxControllers = 4;
     private const int StartPhaseCount = 5;
     private static readonly TimeSpan StartLockMaxAge = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan StopSignalMaxAge = TimeSpan.FromMinutes(10);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -270,7 +271,7 @@ internal sealed class WindowsNativeOrchestrator
         {
             try
             {
-                if (File.Exists(StopSignalPath()))
+                if (StopSignalIsActive())
                 {
                     cancellation.Cancel();
                 }
@@ -286,6 +287,37 @@ internal sealed class WindowsNativeOrchestrator
     {
         Directory.CreateDirectory(_paths.LogDirectory);
         File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+    }
+
+    private bool StopSignalIsActive()
+    {
+        var path = StopSignalPath();
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var text = File.ReadLines(path).FirstOrDefault()?.Trim();
+            var timestamp = DateTimeOffset.TryParse(text, out var parsed)
+                ? parsed
+                : new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+            var age = DateTimeOffset.UtcNow - timestamp.ToUniversalTime();
+            if (age <= StopSignalMaxAge)
+            {
+                return true;
+            }
+
+            File.Delete(path);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_STOP_SIGNAL_STALE", ("ageSeconds", ((int)age.TotalSeconds).ToString()));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_STOP_SIGNAL_READ_WARN", ("error", ex.Message));
+            return true;
+        }
     }
 
     private void ClearControllerState(StatusWriter status, string phase)
