@@ -7,6 +7,7 @@ internal sealed class BridgeOrchestrator
     private const int StartPhaseCount = 6;
     private const int StopPhaseCount = 3;
     private static readonly TimeSpan ReceiverStopSignalMaxAge = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ReceiverReadyMarkerMaxAge = TimeSpan.FromMinutes(10);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -25,6 +26,7 @@ internal sealed class BridgeOrchestrator
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
         status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
         ClearReceiverStopSignal(status);
+        ClearReceiverReadyMarker(status, "START");
         ClearControllerState(status, "START");
 
         var missing = RequiredRuntimeFiles().Where(file => !File.Exists(Path.Combine(_paths.Root, file))).ToArray();
@@ -163,9 +165,23 @@ internal sealed class BridgeOrchestrator
         KillProcess("stadia_receiver");
         KillProcess("stadia-vigem-x86");
 
+        var receiverStopped = await WaitForIntegratedReceiverStopAsync(status).ConfigureAwait(false);
+        if (!receiverStopped)
+        {
+            receiverStopped = await TerminateIntegratedReceiverIfActiveAsync(status).ConfigureAwait(false);
+        }
+
         await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "OK", "Receiver stop signal sent and WSL shutdown requested");
+        status.WritePhase(
+            "Linux bridge",
+            1,
+            StopPhaseCount,
+            "Stop receiver",
+            receiverStopped ? "OK" : "WARN",
+            receiverStopped
+                ? "Receiver stopped and WSL shutdown requested"
+                : "Receiver stop could not be confirmed; WSL shutdown requested");
 
         status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "START", "Resolving adapter to detach");
         var busId = await ResolveBusIdForDetachAsync(status).ConfigureAwait(false);
@@ -612,6 +628,232 @@ internal sealed class BridgeOrchestrator
         }
     }
 
+    private async Task<bool> WaitForIntegratedReceiverStopAsync(StatusWriter status)
+    {
+        for (var i = 0; i < 20; i++)
+        {
+            if (!TryGetActiveIntegratedReceiver(out _, out _))
+            {
+                status.Write("RECEIVER_STOP_CONFIRMED", "Integrated receiver marker is clear");
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+        }
+
+        if (TryGetActiveIntegratedReceiver(out var pid, out var detail))
+        {
+            status.Write("RECEIVER_STOP_TIMEOUT", $"Integrated receiver still active after stop signal: pid={pid} detail={detail}");
+            return false;
+        }
+
+        status.Write("RECEIVER_STOP_CONFIRMED", "Integrated receiver marker cleared after timeout window");
+        return true;
+    }
+
+    private async Task<bool> TerminateIntegratedReceiverIfActiveAsync(StatusWriter status)
+    {
+        if (!TryGetActiveIntegratedReceiver(out var pid, out var detail))
+        {
+            status.Write("RECEIVER_STOP_TERMINATE_SKIPPED", "No active integrated receiver marker found");
+            return true;
+        }
+
+        status.Write("RECEIVER_STOP_TERMINATE_START", $"Terminating hidden integrated receiver pid={pid} detail={detail}");
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (!LooksLikeIntegratedReceiverProcess(process) || !ProcessMatchesReadyMarker(process, ReadReceiverReadyTimestamp()))
+            {
+                status.Write("RECEIVER_STOP_TERMINATE_REFUSED", $"Receiver marker pid={pid} no longer matches a hidden StadiaX receiver");
+                return false;
+            }
+
+            process.Kill(entireProcessTree: true);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                status.Write("RECEIVER_STOP_TERMINATE_TIMEOUT", $"Receiver pid={pid} did not exit within timeout");
+                return false;
+            }
+
+            ClearReceiverReadyMarker(status, "STOP");
+            status.Write("RECEIVER_STOP_TERMINATE_OK", $"Hidden integrated receiver pid={pid} was terminated");
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            ClearReceiverReadyMarker(status, "STOP");
+            status.Write("RECEIVER_STOP_TERMINATE_OK", $"Receiver pid={pid} already exited");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            status.Write("RECEIVER_STOP_TERMINATE_WARN", $"Could not terminate receiver pid={pid}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private bool TryGetActiveIntegratedReceiver(out int pid, out string detail)
+    {
+        pid = 0;
+        detail = "no marker";
+        var path = ReceiverReadyMarkerPath();
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        DateTimeOffset timestamp;
+        try
+        {
+            timestamp = ReadReceiverReadyTimestamp();
+            var age = DateTimeOffset.UtcNow - timestamp.ToUniversalTime();
+            if (age > ReceiverReadyMarkerMaxAge)
+            {
+                File.Delete(path);
+                detail = $"stale marker ageSeconds={(int)age.TotalSeconds}";
+                AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_STALE", ("ageSeconds", ((int)age.TotalSeconds).ToString()));
+                return false;
+            }
+
+            pid = ReadReceiverReadyPid();
+            if (pid <= 0)
+            {
+                File.Delete(path);
+                detail = "invalid pid";
+                AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_INVALID", ("reason", "pid"));
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            TryDeleteFile(path);
+            detail = "marker read failed: " + ex.Message;
+            AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_READ_WARN", ("error", ex.Message));
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (process.HasExited)
+            {
+                TryDeleteFile(path);
+                detail = "process already exited";
+                return false;
+            }
+
+            if (!LooksLikeIntegratedReceiverProcess(process))
+            {
+                TryDeleteFile(path);
+                detail = $"pid {pid} is not a hidden StadiaX process";
+                AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_MISMATCH", ("reason", "process"));
+                return false;
+            }
+
+            if (!ProcessMatchesReadyMarker(process, timestamp))
+            {
+                TryDeleteFile(path);
+                detail = $"pid {pid} start time does not match marker";
+                AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_MISMATCH", ("reason", "startTime"));
+                return false;
+            }
+
+            detail = "active";
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            TryDeleteFile(path);
+            detail = "process not found";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            detail = "process probe failed: " + ex.Message;
+            AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_PROCESS_WARN", ("error", ex.Message));
+            return true;
+        }
+    }
+
+    private DateTimeOffset ReadReceiverReadyTimestamp()
+    {
+        var path = ReceiverReadyMarkerPath();
+        var value = ReadMarkerValue(path, "timestamp");
+        if (DateTimeOffset.TryParse(value, out var parsed))
+        {
+            return parsed;
+        }
+
+        return new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+    }
+
+    private int ReadReceiverReadyPid()
+    {
+        return int.TryParse(ReadMarkerValue(ReceiverReadyMarkerPath(), "pid"), out var pid) ? pid : 0;
+    }
+
+    private static string ReadMarkerValue(string path, string key)
+    {
+        var prefix = key + "=";
+        foreach (var line in File.ReadLines(path))
+        {
+            if (line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return line[prefix.Length..].Trim();
+            }
+        }
+
+        return "";
+    }
+
+    private static bool LooksLikeIntegratedReceiverProcess(Process process)
+    {
+        try
+        {
+            return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
+                   process.MainWindowHandle == IntPtr.Zero;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ProcessMatchesReadyMarker(Process process, DateTimeOffset markerTimestamp)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime) <= markerTimestamp.ToLocalTime().AddSeconds(15);
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private void ClearReceiverReadyMarker(StatusWriter status, string phase)
+    {
+        var path = ReceiverReadyMarkerPath();
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                status.Write("RECEIVER_READY_MARKER_CLEARED", $"{phase}: removed receiver.ready from previous session");
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write("RECEIVER_READY_MARKER_CLEAR_WARN", $"{phase}: could not remove receiver.ready: {ex.Message}");
+        }
+    }
+
     private bool ReceiverStopSignalIsActive()
     {
         var path = ReceiverStopSignalPath();
@@ -646,6 +888,11 @@ internal sealed class BridgeOrchestrator
     private string ReceiverStopSignalPath()
     {
         return Path.Combine(_paths.LogDirectory, "receiver.stop");
+    }
+
+    private string ReceiverReadyMarkerPath()
+    {
+        return Path.Combine(_paths.LogDirectory, "receiver.ready");
     }
 
     private void ClearControllerState(StatusWriter status, string phase)
@@ -768,6 +1015,20 @@ internal sealed class BridgeOrchestrator
         foreach (var process in Process.GetProcessesByName(processName))
         {
             try { process.Kill(entireProcessTree: true); } catch { }
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
         }
     }
 

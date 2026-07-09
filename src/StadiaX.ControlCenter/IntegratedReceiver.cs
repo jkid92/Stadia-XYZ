@@ -69,6 +69,7 @@ internal sealed class IntegratedReceiver
 
             LogInfo("Integrated receiver running.");
             _status.Write("RECEIVER_READY", "Integrated Windows receiver is running inside StadiaX.exe");
+            WriteReadyMarker();
 
             try
             {
@@ -128,7 +129,48 @@ internal sealed class IntegratedReceiver
             }
 
             LogInfo("Integrated receiver stopped.");
+            ClearReadyMarker();
             ClearControllerTelemetry();
+        }
+    }
+
+    private string ReadyMarkerPath()
+    {
+        return Path.Combine(_paths.LogDirectory, "receiver.ready");
+    }
+
+    private void WriteReadyMarker()
+    {
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+            File.WriteAllLines(ReadyMarkerPath(), new[]
+            {
+                $"timestamp={DateTimeOffset.UtcNow:O}",
+                $"pid={Environment.ProcessId}",
+                $"bridgeIp={_bridgeIp}"
+            });
+        }
+        catch (Exception ex)
+        {
+            LogError("Receiver ready marker write failed: {0}", ex.Message);
+            _status.Write("RECEIVER_READY_MARKER_WARN", ex.Message);
+        }
+    }
+
+    private void ClearReadyMarker()
+    {
+        try
+        {
+            var path = ReadyMarkerPath();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError("Receiver ready marker cleanup failed: {0}", ex.Message);
         }
     }
 
