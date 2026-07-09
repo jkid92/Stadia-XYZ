@@ -6,6 +6,7 @@ internal sealed class BridgeOrchestrator
 {
     private const int StartPhaseCount = 6;
     private const int StopPhaseCount = 3;
+    private static readonly TimeSpan ReceiverStopSignalMaxAge = TimeSpan.FromMinutes(10);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -23,7 +24,7 @@ internal sealed class BridgeOrchestrator
         var status = new StatusWriter(_paths, "start.log");
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
         status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
-        ClearReceiverStopSignal();
+        ClearReceiverStopSignal(status);
         ClearControllerState(status, "START");
 
         var missing = RequiredRuntimeFiles().Where(file => !File.Exists(Path.Combine(_paths.Root, file))).ToArray();
@@ -265,7 +266,7 @@ internal sealed class BridgeOrchestrator
         if (!legacyReceiverRunning && !linuxSessionRunning)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(750)).ConfigureAwait(false);
-            ClearReceiverStopSignal();
+            ClearReceiverStopSignal(status);
             return;
         }
 
@@ -281,7 +282,7 @@ internal sealed class BridgeOrchestrator
         }
         await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        ClearReceiverStopSignal();
+        ClearReceiverStopSignal(status);
     }
 
     private async Task<bool> WaitForWslNetworkAsync(string distro)
@@ -576,7 +577,7 @@ internal sealed class BridgeOrchestrator
         {
             try
             {
-                if (File.Exists(ReceiverStopSignalPath()))
+                if (ReceiverStopSignalIsActive())
                 {
                     cancellation.Cancel();
                 }
@@ -591,15 +592,54 @@ internal sealed class BridgeOrchestrator
     private void SignalReceiverStop()
     {
         Directory.CreateDirectory(_paths.LogDirectory);
-        File.WriteAllText(ReceiverStopSignalPath(), DateTime.Now.ToString("O") + Environment.NewLine);
+        File.WriteAllText(ReceiverStopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
     }
 
-    private void ClearReceiverStopSignal()
+    private void ClearReceiverStopSignal(StatusWriter status)
     {
         var path = ReceiverStopSignalPath();
-        if (File.Exists(path))
+        try
         {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                status.Write("RECEIVER_STOP_SIGNAL_CLEARED", "Removed receiver.stop from a previous session");
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write("RECEIVER_STOP_SIGNAL_CLEAR_WARN", "Could not remove receiver.stop: " + ex.Message);
+        }
+    }
+
+    private bool ReceiverStopSignalIsActive()
+    {
+        var path = ReceiverStopSignalPath();
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            var text = File.ReadLines(path).FirstOrDefault()?.Trim();
+            var timestamp = DateTimeOffset.TryParse(text, out var parsed)
+                ? parsed
+                : new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+            var age = DateTimeOffset.UtcNow - timestamp.ToUniversalTime();
+            if (age <= ReceiverStopSignalMaxAge)
+            {
+                return true;
+            }
+
             File.Delete(path);
+            AppDiagnosticsLogger.Record("RECEIVER_STOP_SIGNAL_STALE", ("ageSeconds", ((int)age.TotalSeconds).ToString()));
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record("RECEIVER_STOP_SIGNAL_READ_WARN", ("error", ex.Message));
+            return true;
         }
     }
 
