@@ -571,7 +571,7 @@ internal sealed class BridgeOrchestrator
         using var cancellation = new CancellationTokenSource();
         using var stopWatcher = StartReceiverStopWatcher(cancellation);
         var receiver = new IntegratedReceiver(_paths, wslIp, status);
-        int exitCode;
+        var exitCode = 1;
         try
         {
             exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
@@ -581,10 +581,25 @@ internal sealed class BridgeOrchestrator
             status.Write("RECEIVER_FAILED", ex.Message);
             exitCode = 1;
         }
+        finally
+        {
+            status.Write("RECEIVER_EXITED", $"Integrated receiver exited with code {exitCode}");
+            await StopBridgeSafelyAsync(status).ConfigureAwait(false);
+        }
 
-        status.Write("RECEIVER_EXITED", $"Integrated receiver exited with code {exitCode}");
-        await StopAsync().ConfigureAwait(false);
         return exitCode;
+    }
+
+    private async Task StopBridgeSafelyAsync(StatusWriter status)
+    {
+        try
+        {
+            await StopAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write("STOP_AFTER_RECEIVER_WARN", "Bridge teardown after receiver exit failed: " + ex.Message);
+        }
     }
 
     private System.Threading.Timer StartReceiverStopWatcher(CancellationTokenSource cancellation)
