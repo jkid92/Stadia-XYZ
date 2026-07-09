@@ -25,7 +25,7 @@ internal sealed class WindowsNativeOrchestrator
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
-        ClearStopSignal();
+        ClearStopSignal(status);
         if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeControllers))
         {
             status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={activePid} controllers={activeControllers}");
@@ -142,7 +142,7 @@ internal sealed class WindowsNativeOrchestrator
         var status = new StatusWriter(_paths, "windows-native.log");
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "START", "Stop requested");
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
-        SignalStop();
+        SignalStop(status);
         ClearControllerState(status, "STOP");
         status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
         var stopped = await WaitForReceiverStopAsync(status).ConfigureAwait(false);
@@ -306,10 +306,20 @@ internal sealed class WindowsNativeOrchestrator
         }, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500));
     }
 
-    private void SignalStop()
+    private bool SignalStop(StatusWriter? status = null)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
-        File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+            File.WriteAllText(StopSignalPath(), DateTimeOffset.Now.ToString("O") + Environment.NewLine);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            status?.Write("WINDOWS_NATIVE_STOP_SIGNAL_WARN", "Could not write windows-native.stop: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_STOP_SIGNAL_WRITE_WARN", ("error", ex.Message));
+            return false;
+        }
     }
 
     private bool StopSignalIsActive()
@@ -449,12 +459,20 @@ internal sealed class WindowsNativeOrchestrator
             restore.ExitCode == 0 ? "Physical Stadia input restored" : "Could not confirm HidHide cloak restore");
     }
 
-    private void ClearStopSignal()
+    private void ClearStopSignal(StatusWriter status)
     {
         var path = StopSignalPath();
-        if (File.Exists(path))
+        try
         {
-            File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                status.Write("WINDOWS_NATIVE_STOP_SIGNAL_CLEARED", "Removed windows-native.stop from a previous session");
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_STOP_SIGNAL_CLEAR_WARN", "Could not remove windows-native.stop: " + ex.Message);
         }
     }
 
