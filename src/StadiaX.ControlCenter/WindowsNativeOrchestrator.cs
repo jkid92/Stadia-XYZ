@@ -118,11 +118,23 @@ internal sealed class WindowsNativeOrchestrator
         var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
         status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "START", $"Creating {devices.Length} virtual Xbox 360 controller slot(s)");
         status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
-        var exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
-        await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
-        status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", exitCode == 0 ? "OK" : "FAIL", $"Receiver exited with code {exitCode}");
-        status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; physical input restore requested");
-        return exitCode;
+        var exitCode = 1;
+        try
+        {
+            exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
+            return exitCode;
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_RECEIVER_CRASHED", ex.Message);
+            return 1;
+        }
+        finally
+        {
+            await RestorePhysicalInputSafelyAsync(hidHide, status).ConfigureAwait(false);
+            status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", exitCode == 0 ? "OK" : "FAIL", $"Receiver exited with code {exitCode}");
+            status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; physical input restore requested");
+        }
     }
 
     public async Task<int> StopAsync()
@@ -142,7 +154,7 @@ internal sealed class WindowsNativeOrchestrator
         status.Write(
             stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
             stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after termination attempt");
-        await RestorePhysicalInputAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
+        await RestorePhysicalInputSafelyAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
         status.WritePhase(
             "Windows Native",
             5,
@@ -401,6 +413,19 @@ internal sealed class WindowsNativeOrchestrator
                 status.Write("WINDOWS_NATIVE_STOP_TERMINATE_WARN", $"Could not terminate receiver pid={pid}: {ex.Message}");
                 return false;
             }
+        }
+    }
+
+    private async Task RestorePhysicalInputSafelyAsync(HidHideManager hidHide, StatusWriter status)
+    {
+        try
+        {
+            await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_WARN", "Physical input restore failed unexpectedly: " + ex.Message);
+            status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "WARN", "Could not confirm HidHide cloak restore");
         }
     }
 
