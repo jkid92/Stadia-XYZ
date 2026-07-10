@@ -143,74 +143,170 @@ internal sealed class WindowsNativeReceiver
 
     private async Task RunControllerAsync(int controllerIndex, WindowsNativeHidDevice device, CancellationToken cancellationToken)
     {
-        try
+        var currentDevice = device;
+        var connectedOnce = false;
+        var reconnectAttempt = 0;
+        var neutralized = false;
+
+        while (!cancellationToken.IsCancellationRequested)
         {
-            var hidDevice = DeviceList.Local.GetHidDevices()
-                .FirstOrDefault(item => item.GetFileSystemName().Equals(device.FileSystemName, StringComparison.OrdinalIgnoreCase));
-            if (hidDevice is null)
-            {
-                LogError("P{0} HID device disappeared before open: {1}", controllerIndex + 1, device.FriendlyName);
-                return;
-            }
-
-            using var stream = hidDevice.Open();
-            stream.ReadTimeout = 500;
-            stream.WriteTimeout = 80;
-            var mapper = new WindowsNativeHidMapper(hidDevice);
-            var rumbleWriter = new WindowsNativeRumbleWriter(hidDevice, stream, LogInfo, LogError);
-            var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
-            _rumbleWriters[controllerIndex] = rumbleWriter;
-            LogInfo("P{0} Windows Native HID open: {1}", controllerIndex + 1, device.FriendlyName);
-
             try
             {
-                while (!cancellationToken.IsCancellationRequested)
+                var resolved = await ResolveCurrentHidDeviceAsync(currentDevice).ConfigureAwait(false);
+                if (resolved is null)
                 {
-                    int read;
-                    try
-                    {
-                        Array.Clear(buffer);
-                        read = stream.Read(buffer);
-                    }
-                    catch (TimeoutException)
-                    {
-                        continue;
-                    }
+                    throw new IOException($"{currentDevice.FriendlyName} is not visible to Windows HID");
+                }
 
-                    if (read <= 0)
-                    {
-                        await Task.Delay(10, cancellationToken).ConfigureAwait(false);
-                        continue;
-                    }
+                currentDevice = resolved.Value.Descriptor;
+                var hidDevice = resolved.Value.Device;
+                using var stream = hidDevice.Open();
+                stream.ReadTimeout = 500;
+                stream.WriteTimeout = 80;
+                var mapper = new WindowsNativeHidMapper(hidDevice);
+                var rumbleWriter = new WindowsNativeRumbleWriter(hidDevice, stream, LogInfo, LogError);
+                var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
+                _rumbleWriters[controllerIndex] = rumbleWriter;
+                reconnectAttempt = 0;
+                neutralized = false;
+                _status.Write(
+                    connectedOnce ? "WINDOWS_NATIVE_CONTROLLER_RECONNECTED" : "WINDOWS_NATIVE_CONTROLLER_OPEN",
+                    $"P{controllerIndex + 1}: {currentDevice.FriendlyName}");
+                LogInfo(
+                    connectedOnce ? "P{0} Windows Native HID reconnected: {1}" : "P{0} Windows Native HID open: {1}",
+                    controllerIndex + 1,
+                    currentDevice.FriendlyName);
+                connectedOnce = true;
 
-                    if (!mapper.TryParse(buffer.AsSpan(0, read), out var state))
+                try
+                {
+                    while (!cancellationToken.IsCancellationRequested)
                     {
-                        continue;
-                    }
+                        int read;
+                        try
+                        {
+                            Array.Clear(buffer);
+                            read = stream.Read(buffer);
+                        }
+                        catch (TimeoutException)
+                        {
+                            continue;
+                        }
 
-                    var update = VigemNative.vigem_target_x360_update(_client, _targets[controllerIndex], ControllerStateMapper.ToXusb(state));
-                    if (!VigemNative.Success(update))
-                    {
-                        LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
-                    }
+                        if (read <= 0)
+                        {
+                            await Task.Delay(10, cancellationToken).ConfigureAwait(false);
+                            continue;
+                        }
 
-                    _telemetryWriter.Write(controllerIndex, state);
+                        if (!mapper.TryParse(buffer.AsSpan(0, read), out var state))
+                        {
+                            continue;
+                        }
+
+                        var update = VigemNative.vigem_target_x360_update(_client, _targets[controllerIndex], ControllerStateMapper.ToXusb(state));
+                        if (!VigemNative.Success(update))
+                        {
+                            LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
+                        }
+
+                        _telemetryWriter.Write(controllerIndex, state);
+                    }
+                }
+                finally
+                {
+                    try { rumbleWriter.Send(0, 0); } catch { }
+                    _rumbleWriters[controllerIndex] = null;
                 }
             }
-            finally
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                try { rumbleWriter.Send(0, 0); } catch { }
-                _rumbleWriters[controllerIndex] = null;
+                break;
+            }
+            catch (Exception ex)
+            {
+                reconnectAttempt++;
+                if (!neutralized)
+                {
+                    NeutralizeVirtualPad(controllerIndex);
+                    neutralized = true;
+                }
+
+                if (reconnectAttempt == 1 || reconnectAttempt % 5 == 0)
+                {
+                    _status.Write(
+                        "WINDOWS_NATIVE_CONTROLLER_RECONNECT_WAIT",
+                        $"P{controllerIndex + 1}: attempt={reconnectAttempt} error={ex.Message}");
+                    LogError(
+                        "P{0} Windows Native HID unavailable; reconnect attempt {1}: {2}",
+                        controllerIndex + 1,
+                        reconnectAttempt,
+                        ex.Message);
+                }
+
+                var retryDelay = TimeSpan.FromMilliseconds(Math.Min(5000, 750 * reconnectAttempt));
+                await Task.Delay(retryDelay, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    }
+
+    private async Task<(WindowsNativeHidDevice Descriptor, HidDevice Device)?> ResolveCurrentHidDeviceAsync(WindowsNativeHidDevice expected)
+    {
+        var direct = FindHidDevice(expected.FileSystemName);
+        if (direct is not null)
         {
+            return (expected, direct);
         }
-        catch (Exception ex)
+
+        var currentDevices = await _scanner.FindStadiaControllersAsync().ConfigureAwait(false);
+        var descriptor = currentDevices.FirstOrDefault(candidate => SameControllerIdentity(expected, candidate));
+        if (descriptor is null)
         {
-            _status.Write("WINDOWS_NATIVE_CONTROLLER_FAILED", $"P{controllerIndex + 1}: {ex.Message}");
-            LogError("P{0} Windows Native controller loop failed: {1}", controllerIndex + 1, ex.Message);
+            return null;
         }
+
+        var hidDevice = FindHidDevice(descriptor.FileSystemName);
+        return hidDevice is null ? null : (descriptor, hidDevice);
+    }
+
+    private static HidDevice? FindHidDevice(string fileSystemName)
+    {
+        return DeviceList.Local.GetHidDevices()
+            .FirstOrDefault(item => item.GetFileSystemName().Equals(fileSystemName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool SameControllerIdentity(WindowsNativeHidDevice expected, WindowsNativeHidDevice candidate)
+    {
+        if (!string.IsNullOrWhiteSpace(expected.DeviceInstancePath) &&
+            !string.IsNullOrWhiteSpace(candidate.DeviceInstancePath))
+        {
+            return expected.DeviceInstancePath.Equals(candidate.DeviceInstancePath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (!string.IsNullOrWhiteSpace(expected.HidHideSymbolicLink) &&
+            !string.IsNullOrWhiteSpace(candidate.HidHideSymbolicLink))
+        {
+            return expected.HidHideSymbolicLink.Equals(candidate.HidHideSymbolicLink, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return expected.FileSystemName.Equals(candidate.FileSystemName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void NeutralizeVirtualPad(int controllerIndex)
+    {
+        var target = _targets[controllerIndex];
+        if (_client == IntPtr.Zero || target == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var update = VigemNative.vigem_target_x360_update(_client, target, default);
+        if (!VigemNative.Success(update))
+        {
+            LogError("P{0} ViGEm neutral reset failed: 0x{1:X8}", controllerIndex + 1, update);
+        }
+
+        _telemetryWriter.Write(controllerIndex, default);
     }
 
     private void InitializeVigem(int targetCount)
