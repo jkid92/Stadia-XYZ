@@ -232,32 +232,74 @@ internal sealed class BridgeOrchestrator
         }
 
         var sourceKernel = Path.Combine(_paths.Root, "build", "wsl_kernel");
-        var targetKernel = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "wsl_kernel");
-        if (!File.Exists(targetKernel) && File.Exists(sourceKernel))
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(userProfile))
         {
-            File.Copy(sourceKernel, targetKernel, overwrite: true);
-            var wslConfig = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wslconfig");
-            var backup = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".wslconfig.stadia-x.bak");
-            if (File.Exists(wslConfig) && !File.Exists(backup))
-            {
-                File.Copy(wslConfig, backup);
-                status.Write("WSL_CONFIG_BACKUP", "Backed up existing .wslconfig");
-            }
-
-            File.WriteAllText(wslConfig, "[wsl2]\n" +
-                                        $"kernel={EscapeWslConfigPath(targetKernel)}\n" +
-                                        "memory=800MB\nprocessors=2\nswap=800MB\n");
-            status.Write("WSL_KERNEL_DEPLOY", "Custom WSL kernel deployed; restarting WSL");
-            await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
-            await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-            return true;
-        }
-        else if (!File.Exists(targetKernel))
-        {
-            status.Write("WSL_KERNEL_MISSING", "Custom WSL kernel is required but build/wsl_kernel is missing");
+            status.Write("WSL_KERNEL_DEPLOY_FAILED", "Could not resolve the Windows user profile directory");
             return false;
         }
 
+        var targetKernel = Path.Combine(userProfile, "wsl_kernel");
+        if (!File.Exists(targetKernel))
+        {
+            if (!File.Exists(sourceKernel))
+            {
+                status.Write("WSL_KERNEL_MISSING", "Custom WSL kernel is required but build/wsl_kernel is missing");
+                return false;
+            }
+
+            try
+            {
+                File.Copy(sourceKernel, targetKernel, overwrite: true);
+                status.Write("WSL_KERNEL_COPIED", "Copied the custom WSL kernel to the Windows user profile");
+            }
+            catch (Exception ex)
+            {
+                status.Write("WSL_KERNEL_DEPLOY_FAILED", "Could not copy the custom WSL kernel: " + ex.Message);
+                AppDiagnosticsLogger.Record("WSL_KERNEL_COPY_FAILED", ("source", sourceKernel), ("target", targetKernel), ("error", ex.Message));
+                return false;
+            }
+        }
+
+        var wslConfig = Path.Combine(userProfile, ".wslconfig");
+        var backup = Path.Combine(userProfile, ".wslconfig.stadia-x.bak");
+        var kernelSetting = $"kernel={EscapeWslConfigPath(targetKernel)}";
+        try
+        {
+            var existingConfig = File.Exists(wslConfig) ? File.ReadAllText(wslConfig) : "";
+            var kernelConfigured = existingConfig
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line => string.Equals(line.Trim(), kernelSetting, StringComparison.OrdinalIgnoreCase));
+            if (!kernelConfigured)
+            {
+                if (File.Exists(wslConfig) && !File.Exists(backup))
+                {
+                    File.Copy(wslConfig, backup);
+                    status.Write("WSL_CONFIG_BACKUP", "Backed up existing .wslconfig");
+                }
+
+                File.WriteAllText(wslConfig, "[wsl2]\n" +
+                                            kernelSetting + "\n" +
+                                            "memory=800MB\nprocessors=2\nswap=800MB\n");
+                status.Write("WSL_KERNEL_CONFIGURED", "Configured .wslconfig to use the custom WSL kernel");
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Write("WSL_KERNEL_DEPLOY_FAILED", "Could not configure the custom WSL kernel: " + ex.Message);
+            AppDiagnosticsLogger.Record("WSL_KERNEL_CONFIG_FAILED", ("config", wslConfig), ("error", ex.Message));
+            return false;
+        }
+
+        status.Write("WSL_KERNEL_DEPLOY", "Custom WSL kernel is configured; restarting WSL");
+        var shutdown = await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
+        if (shutdown.ExitCode != 0)
+        {
+            status.Write("WSL_KERNEL_RESTART_FAILED", "Could not restart WSL after configuring the custom kernel: " + Shorten(shutdown.Error, 240));
+            return false;
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
         return true;
     }
 
