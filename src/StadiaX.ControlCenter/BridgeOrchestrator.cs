@@ -105,13 +105,18 @@ internal sealed class BridgeOrchestrator
             status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "No Bluetooth BUSID was selected or auto-detected");
             return 1;
         }
-        File.WriteAllText(Path.Combine(_paths.Root, "bt_busid.txt"), busId + Environment.NewLine);
+        if (!TryWriteBluetoothSessionFile(busId, status))
+        {
+            status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "Could not persist the Bluetooth BUSID for safe teardown");
+            return 1;
+        }
         status.Write("BT_SELECTED", $"Using Bluetooth BUSID {busId}");
         status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "OK", $"Using Bluetooth BUSID {busId}");
 
         if (!await AttachBluetoothAsync(distro, busId, status).ConfigureAwait(false))
         {
             status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "Could not attach Bluetooth adapter to WSL");
+            await RollbackFailedStartAsync(status, "Bluetooth adapter attach").ConfigureAwait(false);
             return 1;
         }
 
@@ -119,7 +124,7 @@ internal sealed class BridgeOrchestrator
         if (!await DeployLinuxBridgeAsync(distro, status).ConfigureAwait(false))
         {
             status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "FAIL", "Could not deploy Linux bridge files");
-            await StopAsync().ConfigureAwait(false);
+            await RollbackFailedStartAsync(status, "Linux bridge deployment").ConfigureAwait(false);
             return 1;
         }
 
@@ -127,7 +132,7 @@ internal sealed class BridgeOrchestrator
         if (!linuxStarted)
         {
             status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "FAIL", "Could not start Linux core");
-            await StopAsync().ConfigureAwait(false);
+            await RollbackFailedStartAsync(status, "Linux core launch").ConfigureAwait(false);
             return 1;
         }
         status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "OK", "Linux core launch requested");
@@ -638,6 +643,39 @@ internal sealed class BridgeOrchestrator
         catch (Exception ex)
         {
             status.Write("STOP_AFTER_RECEIVER_WARN", "Bridge teardown after receiver exit failed: " + ex.Message);
+        }
+    }
+
+    private async Task RollbackFailedStartAsync(StatusWriter status, string stage)
+    {
+        status.Write("START_ROLLBACK", $"Rolling back partial start after failure during {stage}");
+        try
+        {
+            var exitCode = await StopAsync().ConfigureAwait(false);
+            status.Write(
+                exitCode == 0 ? "START_ROLLBACK_OK" : "START_ROLLBACK_WARN",
+                $"Partial start rollback after {stage} exited with code {exitCode}");
+        }
+        catch (Exception ex)
+        {
+            status.Write("START_ROLLBACK_WARN", $"Partial start rollback after {stage} failed: {ex.Message}");
+            AppDiagnosticsLogger.Record("START_ROLLBACK_FAILED", ("stage", stage), ("error", ex.Message));
+        }
+    }
+
+    private bool TryWriteBluetoothSessionFile(string busId, StatusWriter status)
+    {
+        var path = Path.Combine(_paths.Root, "bt_busid.txt");
+        try
+        {
+            File.WriteAllText(path, busId + Environment.NewLine);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            status.Write("BT_SESSION_FILE_WRITE_FAILED", "Could not write bt_busid.txt: " + ex.Message);
+            AppDiagnosticsLogger.Record("BT_SESSION_FILE_WRITE_FAILED", ("path", path), ("busId", busId), ("error", ex.Message));
+            return false;
         }
     }
 
