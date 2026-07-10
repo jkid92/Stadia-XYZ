@@ -59,7 +59,19 @@ internal sealed class WindowsNativeOrchestrator
         var scanner = new WindowsNativeHidScanner(hidHide);
         status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "START", "Scanning Windows HID for Stadia controllers");
         status.Write("WINDOWS_NATIVE_SCAN_START", "Scanning Windows HID devices for Stadia controllers");
-        var scan = await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+        WindowsNativeHidScanResult scan;
+        try
+        {
+            scan = await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_SCAN_FAILED", "Windows HID scan failed: " + ex.Message);
+            status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "FAIL", "Windows could not enumerate Stadia HID devices");
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_SCAN_FAILED", ("error", ex.ToString()));
+            return 1;
+        }
+
         var devices = scan.Devices.Take(MaxControllers).ToArray();
         status.Write(
             "WINDOWS_NATIVE_SCAN_RESULT",
