@@ -512,20 +512,18 @@ internal sealed class BridgeOrchestrator
             status.Write("BT_ATTACH_RESULT", $"attempt={attempt} exit={attach.ExitCode} detail={Shorten(FirstNonEmpty(attach.Error, attach.Output, "none"), 240)}");
             if (attach.ExitCode == 0)
             {
-                status.Write("BT_ATTACH_OK", "Bluetooth adapter attached to WSL");
-                var verify = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
-                var line = verify.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-                    .FirstOrDefault(value => value.TrimStart().StartsWith(busId + " ", StringComparison.OrdinalIgnoreCase));
-                status.Write(line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase) ? "BT_ATTACH_VERIFY_OK" : "BT_ATTACH_VERIFY_WARN",
-                    line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase)
-                        ? $"usbipd reports BUSID {busId} as attached"
-                        : "Attach command succeeded, but usbipd list did not report the BUSID as Attached");
-                await VerifyBluetoothInsideWslAsync(distro, status).ConfigureAwait(false);
-                await Task.Delay(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-                return true;
+                if (await WaitForBluetoothAttachmentAsync(distro, busId, status).ConfigureAwait(false))
+                {
+                    status.Write("BT_ATTACH_OK", "Bluetooth adapter attachment was confirmed");
+                    return true;
+                }
+
+                status.Write("BT_ATTACH_UNCONFIRMED", $"Attach command succeeded on attempt {attempt}, but the adapter did not become visible");
+                var detach = await _runner.RunAsync("usbipd", new[] { "detach", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
+                status.Write("BT_ATTACH_RETRY_DETACH", $"attempt={attempt} exit={detach.ExitCode} detail={Shorten(FirstNonEmpty(detach.Error, detach.Output, "none"), 180)}");
             }
 
-            status.Write("BT_ATTACH_RETRY", $"Attach failed on attempt {attempt}; retrying after cleanup delay");
+            status.Write("BT_ATTACH_RETRY", $"Bluetooth attachment was not ready on attempt {attempt}; retrying after cleanup delay");
             await Task.Delay(TimeSpan.FromSeconds(4)).ConfigureAwait(false);
         }
 
@@ -533,18 +531,50 @@ internal sealed class BridgeOrchestrator
         return false;
     }
 
-    private async Task VerifyBluetoothInsideWslAsync(string distro, StatusWriter status)
+    private async Task<bool> WaitForBluetoothAttachmentAsync(string distro, string busId, StatusWriter status)
+    {
+        for (var verifyAttempt = 1; verifyAttempt <= 5; verifyAttempt++)
+        {
+            var verify = await _runner.RunAsync("usbipd", new[] { "list" }, _paths.Root, 15000).ConfigureAwait(false);
+            var line = verify.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault(value => value.TrimStart().StartsWith(busId + " ", StringComparison.OrdinalIgnoreCase));
+            var hostAttached = line is not null && line.Contains("Attached", StringComparison.OrdinalIgnoreCase);
+            var wslReady = await VerifyBluetoothInsideWslAsync(distro, status, verifyAttempt).ConfigureAwait(false);
+            if (hostAttached || wslReady)
+            {
+                status.Write(
+                    "BT_ATTACH_VERIFY_OK",
+                    hostAttached
+                        ? $"usbipd reports BUSID {busId} as attached"
+                        : $"WSL reports a Bluetooth HCI device for BUSID {busId}");
+                return true;
+            }
+
+            status.Write("BT_ATTACH_VERIFY_WAIT", $"Confirmation {verifyAttempt}/5 pending for Bluetooth BUSID {busId}");
+            if (verifyAttempt < 5)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            }
+        }
+
+        status.Write("BT_ATTACH_VERIFY_WARN", $"Bluetooth BUSID {busId} was not confirmed by usbipd or WSL");
+        return false;
+    }
+
+    private async Task<bool> VerifyBluetoothInsideWslAsync(string distro, StatusWriter status, int attempt)
     {
         var probe = await _runner.RunAsync(
             "wsl",
-            new[] { "-d", distro, "-u", "root", "bash", "-lc", "if command -v bluetoothctl >/dev/null 2>&1; then timeout 6s bluetoothctl list 2>/dev/null || timeout 6s bluetoothctl show 2>/dev/null || true; elif command -v hciconfig >/dev/null 2>&1; then hciconfig -a 2>/dev/null || true; fi" },
+            new[] { "-d", distro, "-u", "root", "bash", "-lc", "if compgen -G '/sys/class/bluetooth/hci*' >/dev/null; then echo STADIAX_HCI_READY; fi; if command -v bluetoothctl >/dev/null 2>&1; then timeout 6s bluetoothctl list 2>/dev/null || timeout 6s bluetoothctl show 2>/dev/null || true; elif command -v hciconfig >/dev/null 2>&1; then hciconfig -a 2>/dev/null || true; fi" },
             _paths.Root,
             10000).ConfigureAwait(false);
 
         var detail = Shorten(FirstNonEmpty(probe.Output, probe.Error, "no Bluetooth controller reported yet"), 260);
-        var looksReady = probe.Output.Contains("Controller", StringComparison.OrdinalIgnoreCase) ||
+        var looksReady = probe.Output.Contains("STADIAX_HCI_READY", StringComparison.Ordinal) ||
+                         probe.Output.Contains("Controller", StringComparison.OrdinalIgnoreCase) ||
                          probe.Output.Contains("hci", StringComparison.OrdinalIgnoreCase);
-        status.Write(looksReady ? "BT_WSL_PROBE_OK" : "BT_WSL_PROBE_WAIT", detail);
+        status.Write(looksReady ? "BT_WSL_PROBE_OK" : "BT_WSL_PROBE_WAIT", $"attempt={attempt}/5 detail={detail}");
+        return looksReady;
     }
 
     private async Task<bool> DeployLinuxBridgeAsync(string distro, StatusWriter status)
