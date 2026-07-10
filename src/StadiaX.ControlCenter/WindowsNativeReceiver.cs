@@ -70,35 +70,50 @@ internal sealed class WindowsNativeReceiver
 
             try
             {
-                var controllerGroup = Task.WhenAll(controllerTasks);
                 var shutdownTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
-                var completed = await Task.WhenAny(controllerGroup, shutdownTask).ConfigureAwait(false);
-                if (completed == shutdownTask)
+                var completed = await Task.WhenAny(tasks.Append(shutdownTask)).ConfigureAwait(false);
+                if (completed == shutdownTask || cancellationToken.IsCancellationRequested)
                 {
+                    linked.Cancel();
+                    try
+                    {
+                        await Task.WhenAll(tasks).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception ex) when (linked.IsCancellationRequested)
+                    {
+                        LogError("Windows Native worker shutdown reported after stop: {0}", ex.Message);
+                    }
+
                     return 0;
                 }
 
-                var controllerLoopsStopped = completed == controllerGroup;
+                var workerIndex = Array.IndexOf(tasks, completed);
+                var workerName = workerIndex >= 0 && workerIndex < controllerTasks.Length
+                    ? $"P{workerIndex + 1} controller loop"
+                    : "rumble server";
+                var workerFailure = completed.Exception?.GetBaseException();
                 linked.Cancel();
                 try
                 {
                     await Task.WhenAll(tasks).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!controllerLoopsStopped)
-                {
-                    return 0;
-                }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
                 {
                 }
-
-                if (controllerGroup.IsFaulted)
+                catch (Exception ex) when (workerFailure is not null)
                 {
-                    throw controllerGroup.Exception?.GetBaseException() ??
-                          new InvalidOperationException("Windows Native controller loop failed.");
+                    LogError("Worker shutdown after {0} failure also reported: {1}", workerName, ex.Message);
                 }
 
-                throw new InvalidOperationException("Windows Native controller loop stopped unexpectedly.");
+                if (workerFailure is not null)
+                {
+                    throw new InvalidOperationException($"Windows Native {workerName} failed: {workerFailure.Message}", workerFailure);
+                }
+
+                throw new InvalidOperationException($"Windows Native {workerName} stopped unexpectedly.");
             }
             catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
