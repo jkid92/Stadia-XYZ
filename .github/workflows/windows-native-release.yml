@@ -95,16 +95,26 @@ jobs:
 
       - name: Publish Windows Native GitHub release
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.package_version.outputs.release_tag }}
-          target_commitish: ${{ github.sha }}
-          name: Stadia X Windows Native ${{ steps.package_version.outputs.version }}
-          generate_release_notes: true
-          prerelease: true
-          make_latest: false
-          files: |
-            dist/Stadia-X-Windows-Native-*.zip
-            dist/Stadia-X-Windows-Native-*.zip.sha256
-            dist/Stadia-X-Windows-Native-*.exe
-            dist/Stadia-X-Windows-Native-*.exe.sha256
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.package_version.outputs.release_tag }}"
+          $title = "Stadia X Windows Native ${{ steps.package_version.outputs.version }}"
+          $assets = @(
+            Get-ChildItem -Path dist -Filter "Stadia-X-Windows-Native-*.zip"
+            Get-ChildItem -Path dist -Filter "Stadia-X-Windows-Native-*.sha256"
+            Get-ChildItem -Path dist -Filter "Stadia-X-Windows-Native-*.exe"
+          ) | Where-Object { $_ -and $_.PSIsContainer -eq $false } | Select-Object -ExpandProperty FullName -Unique
+          if ($assets.Count -eq 0) {
+            throw "No Windows Native release assets found under dist/."
+          }
+
+          gh release view $tag --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $ghArgs = @("release", "upload", $tag) + $assets + @("--repo", "${{ github.repository }}", "--clobber")
+            & gh @ghArgs
+          } else {
+            $ghArgs = @("release", "create", $tag) + $assets + @("--repo", "${{ github.repository }}", "--target", "${{ github.sha }}", "--title", $title, "--generate-notes", "--prerelease")
+            & gh @ghArgs
+          }
