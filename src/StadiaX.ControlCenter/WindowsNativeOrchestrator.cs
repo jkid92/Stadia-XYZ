@@ -478,11 +478,32 @@ internal sealed class WindowsNativeOrchestrator
 
     private IDisposable? TryAcquireStartLock(StatusWriter status)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_START_LOCK_FAILED", "Could not prepare the start lock directory: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_START_LOCK_DIRECTORY_FAILED", ("error", ex.Message));
+            return null;
+        }
+
         var path = StartLockPath();
         if (File.Exists(path))
         {
-            var age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(path);
+            TimeSpan age;
+            try
+            {
+                age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(path);
+            }
+            catch (Exception ex)
+            {
+                status.Write("WINDOWS_NATIVE_START_LOCK_FAILED", "Could not inspect the existing start lock: " + ex.Message);
+                AppDiagnosticsLogger.Record("WINDOWS_NATIVE_START_LOCK_INSPECT_FAILED", ("path", path), ("error", ex.Message));
+                return null;
+            }
+
             if (age <= StartLockMaxAge)
             {
                 status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", $"Existing start lock ageSeconds={(int)age.TotalSeconds}");
@@ -511,9 +532,10 @@ internal sealed class WindowsNativeOrchestrator
             status.Write("WINDOWS_NATIVE_START_LOCK_ACQUIRED", $"pid={Environment.ProcessId}");
             return new FileLock(stream, path);
         }
-        catch (IOException ex)
+        catch (Exception ex)
         {
             status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", "Could not acquire start lock: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_START_LOCK_ACQUIRE_FAILED", ("path", path), ("error", ex.Message));
             return null;
         }
     }
