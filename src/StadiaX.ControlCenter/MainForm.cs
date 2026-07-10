@@ -481,7 +481,7 @@ internal sealed class MainForm : Form
     {
         using var font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Regular);
         var measured = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width;
-        return Math.Clamp(measured + (IsCompactUi() ? 20 : 24), IsCompactUi() ? 52 : 60, IsCompactUi() ? 70 : 84);
+        return Math.Clamp(measured + (IsCompactUi() ? 20 : 24), IsCompactUi() ? 52 : 60, IsCompactUi() ? 96 : 112);
     }
 
     private TabPage BuildDashboardPage()
