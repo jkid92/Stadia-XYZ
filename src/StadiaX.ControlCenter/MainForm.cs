@@ -190,8 +190,11 @@ internal sealed class MainForm : Form
 
     private static (Size Minimum, Size Initial) CalculateStartupSizing(bool compactUi)
     {
+        var constrained = IsConstrainedUi();
         var desired = compactUi ? new Size(1120, 720) : new Size(1280, 820);
-        var desiredMinimum = compactUi ? new Size(900, 560) : new Size(980, 620);
+        var desiredMinimum = compactUi
+            ? new Size(constrained ? 820 : 1080, constrained ? 520 : 560)
+            : new Size(constrained ? 900 : 1100, constrained ? 560 : 620);
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
         var margin = area.Width < 900 || area.Height < 640 ? 20 : ScreenFitMargin;
         var available = new Size(
@@ -213,7 +216,7 @@ internal sealed class MainForm : Form
     private void ApplyHighDpiLayoutGuards()
     {
         var constrained = IsConstrainedUi();
-        var pageMinimum = constrained ? new Size(720, 460) : new Size(860, 540);
+        var pageMinimum = constrained ? new Size(500, 400) : new Size(760, 500);
         foreach (TabPage page in _tabs.TabPages)
         {
             page.AutoScroll = true;
@@ -319,7 +322,7 @@ internal sealed class MainForm : Form
         var left = new Panel
         {
             Dock = DockStyle.Left,
-            Width = constrained ? 272 : 318,
+            Width = constrained ? 248 : 318,
             Padding = IsCompactUi() ? new Padding(10) : new Padding(14)
         };
 
@@ -492,7 +495,7 @@ internal sealed class MainForm : Form
             RowCount = 3,
             Padding = new Padding(14)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 156 : 168));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 168 : 184));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 304 : 212));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
