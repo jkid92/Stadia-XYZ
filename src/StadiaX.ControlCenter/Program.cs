@@ -61,6 +61,12 @@ internal static class Program
             Environment.Exit(0);
             return;
         }
+        if (args.Contains("--ui-layout-test", StringComparer.OrdinalIgnoreCase))
+        {
+            ApplicationConfiguration.Initialize();
+            Environment.Exit(UiLayoutAudit.Run(paths));
+            return;
+        }
 
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm(paths));

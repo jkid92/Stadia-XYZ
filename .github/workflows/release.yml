@@ -70,6 +70,10 @@ jobs:
         shell: pwsh
         run: ./build/Build-CSharpControlCenter.ps1 -CopyToRoot
 
+      - name: Test UI layouts
+        shell: pwsh
+        run: ./build/Test-UiLayouts.ps1
+
       - name: Resolve package version
         id: package_version
         shell: pwsh

@@ -36,16 +36,21 @@ internal static class MainFormRuntimeTuner
     {
         foreach (Form form in Application.OpenForms)
         {
-            if (form.GetType().Name != "MainForm" || !PatchedForms.Add(form))
-            {
-                continue;
-            }
-
-            PatchVisualDesign(form);
-            PatchBluetoothLayout(form);
-            PatchLinuxSummary(form);
-            PatchControllerVisualizerRefresh(form);
+            ApplyForAudit(form);
         }
+    }
+
+    internal static void ApplyForAudit(Form form)
+    {
+        if (form.GetType().Name != "MainForm" || !PatchedForms.Add(form))
+        {
+            return;
+        }
+
+        PatchVisualDesign(form);
+        PatchBluetoothLayout(form);
+        PatchLinuxSummary(form);
+        PatchControllerVisualizerRefresh(form);
     }
 
     private static void PatchVisualDesign(Form form)
