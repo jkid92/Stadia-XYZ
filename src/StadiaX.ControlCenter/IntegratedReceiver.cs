@@ -74,28 +74,47 @@ internal sealed class IntegratedReceiver
             try
             {
                 var shutdownTask = Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
-                var completed = await Task.WhenAny(inputTask, macroTask, shutdownTask).ConfigureAwait(false);
-                if (completed == shutdownTask)
+                var workers = new[] { inputTask, macroTask };
+                var completed = await Task.WhenAny(workers.Append(shutdownTask)).ConfigureAwait(false);
+                if (completed == shutdownTask || cancellationToken.IsCancellationRequested)
                 {
+                    linked.Cancel();
+                    try
+                    {
+                        await Task.WhenAll(workers).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (linked.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception ex) when (linked.IsCancellationRequested)
+                    {
+                        LogError("Integrated receiver worker shutdown reported after stop: {0}", ex.Message);
+                    }
+
                     return 0;
                 }
 
+                var workerName = ReferenceEquals(completed, inputTask) ? "input loop" : "macro loop";
+                var workerFailure = completed.Exception?.GetBaseException();
                 linked.Cancel();
                 try
                 {
-                    await Task.WhenAll(inputTask, macroTask).ConfigureAwait(false);
+                    await Task.WhenAll(workers).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (linked.IsCancellationRequested)
                 {
-                    return 0;
+                }
+                catch (Exception ex) when (workerFailure is not null)
+                {
+                    LogError("Worker shutdown after {0} failure also reported: {1}", workerName, ex.Message);
                 }
 
-                if (completed.IsFaulted)
+                if (workerFailure is not null)
                 {
-                    throw completed.Exception?.GetBaseException() ?? new InvalidOperationException("Integrated receiver loop failed.");
+                    throw new InvalidOperationException($"Integrated receiver {workerName} failed: {workerFailure.Message}", workerFailure);
                 }
 
-                throw new InvalidOperationException("Integrated receiver loop stopped unexpectedly.");
+                throw new InvalidOperationException($"Integrated receiver {workerName} stopped unexpectedly.");
             }
             catch (OperationCanceledException) when (linked.IsCancellationRequested)
             {
