@@ -135,19 +135,26 @@ internal sealed class WindowsNativeOrchestrator
         try
         {
             exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
-            return exitCode;
         }
         catch (Exception ex)
         {
             status.Write("WINDOWS_NATIVE_RECEIVER_CRASHED", ex.Message);
-            return 1;
+            exitCode = 1;
         }
-        finally
-        {
-            await RestorePhysicalInputSafelyAsync(hidHide, status).ConfigureAwait(false);
-            status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", exitCode == 0 ? "OK" : "FAIL", $"Receiver exited with code {exitCode}");
-            status.Write("WINDOWS_NATIVE_EXITED", $"Windows Native receiver exited with code {exitCode}; physical input restore requested");
-        }
+
+        var inputRestored = await RestorePhysicalInputSafelyAsync(hidHide, status).ConfigureAwait(false);
+        var finalExitCode = exitCode == 0 && inputRestored ? 0 : 1;
+        status.WritePhase(
+            "Windows Native",
+            5,
+            StartPhaseCount,
+            "Shutdown",
+            finalExitCode == 0 ? "OK" : "FAIL",
+            $"Receiver exit={exitCode}; physical input restored={inputRestored}");
+        status.Write(
+            "WINDOWS_NATIVE_EXITED",
+            $"Windows Native receiver exited with code {finalExitCode}; receiver={exitCode} physicalInputRestored={inputRestored}");
+        return finalExitCode;
     }
 
     public async Task<int> StopAsync()
@@ -167,15 +174,16 @@ internal sealed class WindowsNativeOrchestrator
         status.Write(
             stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
             stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after termination attempt");
-        await RestorePhysicalInputSafelyAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
+        var inputRestored = await RestorePhysicalInputSafelyAsync(new HidHideManager(_paths, _runner), status).ConfigureAwait(false);
+        var stopCompleted = stopped && inputRestored;
         status.WritePhase(
             "Windows Native",
             5,
             StartPhaseCount,
             "Shutdown",
-            stopped ? "OK" : "WARN",
-            stopped ? "Stop completed and physical input restore requested" : "Stop could not confirm receiver exit; physical input restore requested");
-        return 0;
+            stopCompleted ? "OK" : "WARN",
+            $"Receiver stopped={stopped}; physical input restored={inputRestored}");
+        return stopCompleted ? 0 : 1;
     }
 
     private async Task<bool> EnsureHidHideAsync(HidHideManager hidHide, StatusWriter status)
@@ -439,16 +447,17 @@ internal sealed class WindowsNativeOrchestrator
         }
     }
 
-    private async Task RestorePhysicalInputSafelyAsync(HidHideManager hidHide, StatusWriter status)
+    private async Task<bool> RestorePhysicalInputSafelyAsync(HidHideManager hidHide, StatusWriter status)
     {
         try
         {
-            await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
+            return await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_WARN", "Physical input restore failed unexpectedly: " + ex.Message);
             status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "WARN", "Could not confirm HidHide cloak restore");
+            return false;
         }
     }
 
@@ -469,12 +478,12 @@ internal sealed class WindowsNativeOrchestrator
         }
     }
 
-    private async Task RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)
+    private async Task<bool> RestorePhysicalInputAsync(HidHideManager hidHide, StatusWriter status)
     {
         if (!hidHide.IsInstalled)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_SKIPPED", "HidHide is not installed; no cloak to disable");
-            return;
+            return true;
         }
 
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "START", "Disabling HidHide cloak without prompting for elevation");
@@ -487,6 +496,7 @@ internal sealed class WindowsNativeOrchestrator
             "Input restore",
             restore.ExitCode == 0 ? "OK" : "WARN",
             restore.ExitCode == 0 ? "Physical Stadia input restored" : "Could not confirm HidHide cloak restore");
+        return restore.ExitCode == 0;
     }
 
     private void ClearStopSignal(StatusWriter status)
