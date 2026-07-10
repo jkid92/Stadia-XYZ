@@ -184,6 +184,10 @@ internal sealed class BridgeOrchestrator
     public async Task<int> StopAsync()
     {
         var status = new StatusWriter(_paths, "teardown.log");
+        var warnings = false;
+        var receiverWasActive = TryGetActiveIntegratedReceiver(out _, out _);
+        var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
+        var hadBusSession = File.Exists(busFile);
         status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "START", "Stopping receiver and Linux session");
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
@@ -198,24 +202,39 @@ internal sealed class BridgeOrchestrator
             receiverStopped = await TerminateIntegratedReceiverIfActiveAsync(status).ConfigureAwait(false);
         }
 
-        await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
+        var wslShutdown = await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
+        var wslStopped = wslShutdown.ExitCode == 0;
+        status.Write(
+            wslStopped ? "WSL_SHUTDOWN_OK" : "WSL_SHUTDOWN_WARN",
+            $"exit={wslShutdown.ExitCode} detail={Shorten(FirstNonEmpty(wslShutdown.Error, wslShutdown.Output, "none"), 220)}");
+        warnings |= !receiverStopped || !wslStopped;
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         status.WritePhase(
             "Linux bridge",
             1,
             StopPhaseCount,
             "Stop receiver",
-            receiverStopped ? "OK" : "WARN",
-            receiverStopped
-                ? "Receiver stopped and WSL shutdown requested"
-                : "Receiver stop could not be confirmed; WSL shutdown requested");
+            receiverStopped && wslStopped ? "OK" : "WARN",
+            receiverStopped && wslStopped
+                ? "Receiver stopped and WSL shutdown completed"
+                : $"Receiver stopped={receiverStopped}; WSL shutdown completed={wslStopped}");
 
         status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "START", "Resolving adapter to detach");
         var busId = await ResolveBusIdForDetachAsync(status).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(busId))
         {
-            status.Write("BT_RESTORE_UNKNOWN", "No Bluetooth BUSID found for detach");
-            status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "WARN", "No Bluetooth BUSID found for detach");
+            var restoreExpected = receiverWasActive || hadBusSession;
+            status.Write(
+                restoreExpected ? "BT_RESTORE_UNKNOWN" : "BT_RESTORE_NOT_NEEDED",
+                restoreExpected ? "No Bluetooth BUSID found for detach" : "No active Bluetooth adapter session was recorded");
+            status.WritePhase(
+                "Linux bridge",
+                2,
+                StopPhaseCount,
+                "Restore Bluetooth",
+                restoreExpected ? "WARN" : "OK",
+                restoreExpected ? "No Bluetooth BUSID found for detach" : "No Bluetooth adapter session required restore");
+            warnings |= restoreExpected;
         }
         else
         {
@@ -224,21 +243,33 @@ internal sealed class BridgeOrchestrator
             status.Write("BT_RESTORE_DETACH_RESULT", $"exit={detach.ExitCode} detail={Shorten(FirstNonEmpty(detach.Error, detach.Output, "none"), 240)}");
             await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
             var unbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId }, _paths.Root, 15000).ConfigureAwait(false);
-            var forceUnbind = await SupportsForceUnbindAsync().ConfigureAwait(false)
-                ? await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false)
-                : new CommandResult(0, "Skipped: this usbipd version does not advertise unbind --force.", "");
-            status.Write("BT_RESTORE_UNBIND_RESULT", $"exit={unbind.ExitCode} forceExit={forceUnbind.ExitCode} detail={Shorten(FirstNonEmpty(forceUnbind.Error, forceUnbind.Output, unbind.Error, unbind.Output, "none"), 240)}");
-            var restoreLooksOk = detach.ExitCode == 0 || unbind.ExitCode == 0 || forceUnbind.ExitCode == 0;
+            CommandResult? forceUnbind = null;
+            if (await SupportsForceUnbindAsync().ConfigureAwait(false))
+            {
+                forceUnbind = await _runner.RunAsync("usbipd", new[] { "unbind", "--busid", busId, "--force" }, _paths.Root, 15000).ConfigureAwait(false);
+            }
+
+            status.Write(
+                "BT_RESTORE_UNBIND_RESULT",
+                $"exit={unbind.ExitCode} forceExit={(forceUnbind is null ? "skipped" : forceUnbind.ExitCode)} detail={Shorten(FirstNonEmpty(forceUnbind?.Error, forceUnbind?.Output, unbind.Error, unbind.Output, "none"), 240)}");
+            var restoreLooksOk = detach.ExitCode == 0 || unbind.ExitCode == 0 || forceUnbind?.ExitCode == 0;
             status.Write(restoreLooksOk ? "BT_RESTORE_OK" : "BT_RESTORE_WARN", "Bluetooth adapter restore commands completed");
             status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", restoreLooksOk ? "OK" : "WARN", $"Bluetooth BUSID {busId} restore commands completed");
-            var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
-            TryDeleteSessionFile(busFile, status, "BT_RESTORE_SESSION_FILE");
+            if (restoreLooksOk)
+            {
+                TryDeleteSessionFile(busFile, status, "BT_RESTORE_SESSION_FILE");
+            }
+            else
+            {
+                warnings = true;
+                status.Write("BT_RESTORE_SESSION_FILE_PRESERVED", "Kept bt_busid.txt so Bluetooth restore can be retried");
+            }
         }
 
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
-        status.Write("STOP_DONE", "Teardown complete");
-        status.WritePhase("Linux bridge", 3, StopPhaseCount, "Teardown", "OK", "Teardown complete");
-        return 0;
+        status.Write(warnings ? "STOP_DONE_WARN" : "STOP_DONE", warnings ? "Teardown completed with warnings" : "Teardown complete");
+        status.WritePhase("Linux bridge", 3, StopPhaseCount, "Teardown", warnings ? "WARN" : "OK", warnings ? "Teardown completed with warnings" : "Teardown complete");
+        return warnings ? 1 : 0;
     }
 
     private static IEnumerable<string> RequiredRuntimeFiles()
@@ -690,7 +721,11 @@ internal sealed class BridgeOrchestrator
     {
         try
         {
-            await StopAsync().ConfigureAwait(false);
+            var exitCode = await StopAsync().ConfigureAwait(false);
+            if (exitCode != 0)
+            {
+                status.Write("STOP_AFTER_RECEIVER_WARN", $"Bridge teardown after receiver exit completed with code {exitCode}");
+            }
         }
         catch (Exception ex)
         {
