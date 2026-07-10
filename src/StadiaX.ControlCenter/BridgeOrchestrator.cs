@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace StadiaX.ControlCenter;
 
@@ -8,6 +9,7 @@ internal sealed class BridgeOrchestrator
     private const int StopPhaseCount = 3;
     private static readonly TimeSpan ReceiverStopSignalMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan ReceiverReadyMarkerMaxAge = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan StartLockMaxAge = TimeSpan.FromSeconds(60);
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -25,6 +27,26 @@ internal sealed class BridgeOrchestrator
         var status = new StatusWriter(_paths, "start.log");
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
         status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
+        if (TryGetActiveIntegratedReceiver(out var activePid, out var activeDetail))
+        {
+            ReportAlreadyRunning(status, activePid, activeDetail);
+            return 0;
+        }
+
+        using var startLock = TryAcquireStartLock(status);
+        if (startLock is null)
+        {
+            status.Write("START_BUSY", "Another Linux bridge start request is already in progress");
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "WAIT", "Another start request is already in progress");
+            return 2;
+        }
+
+        if (TryGetActiveIntegratedReceiver(out activePid, out activeDetail))
+        {
+            ReportAlreadyRunning(status, activePid, activeDetail);
+            return 0;
+        }
+
         ClearReceiverStopSignal(status);
         ClearReceiverReadyMarker(status, "START");
         ClearControllerState(status, "START");
@@ -663,6 +685,77 @@ internal sealed class BridgeOrchestrator
         }
     }
 
+    private static void ReportAlreadyRunning(StatusWriter status, int pid, string detail)
+    {
+        status.Write("BRIDGE_ALREADY_RUNNING", $"Integrated receiver is already active pid={pid} detail={detail}");
+        status.Write("BRIDGE_READY", $"Linux bridge input is already running pid={pid}");
+        status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", "OK", $"Integrated receiver already active pid={pid}");
+    }
+
+    private IDisposable? TryAcquireStartLock(StatusWriter status)
+    {
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+        }
+        catch (Exception ex)
+        {
+            status.Write("START_LOCK_FAILED", "Could not prepare the start lock directory: " + ex.Message);
+            AppDiagnosticsLogger.Record("START_LOCK_DIRECTORY_FAILED", ("error", ex.Message));
+            return null;
+        }
+
+        var path = Path.Combine(_paths.LogDirectory, "bridge.start.lock");
+        if (File.Exists(path))
+        {
+            TimeSpan age;
+            try
+            {
+                age = DateTimeOffset.UtcNow - File.GetLastWriteTimeUtc(path);
+            }
+            catch (Exception ex)
+            {
+                status.Write("START_LOCK_FAILED", "Could not inspect the existing start lock: " + ex.Message);
+                AppDiagnosticsLogger.Record("START_LOCK_INSPECT_FAILED", ("path", path), ("error", ex.Message));
+                return null;
+            }
+
+            if (age <= StartLockMaxAge)
+            {
+                status.Write("START_LOCK_BUSY", $"Existing start lock ageSeconds={(int)age.TotalSeconds}");
+                return null;
+            }
+
+            try
+            {
+                File.Delete(path);
+                status.Write("START_LOCK_STALE", $"Removed stale start lock ageSeconds={(int)age.TotalSeconds}");
+            }
+            catch (Exception ex)
+            {
+                status.Write("START_LOCK_FAILED", "Could not remove stale start lock: " + ex.Message);
+                return null;
+            }
+        }
+
+        try
+        {
+            var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            using var writer = new StreamWriter(stream, Encoding.UTF8, 1024, leaveOpen: true);
+            writer.WriteLine($"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}");
+            writer.Flush();
+            stream.Flush();
+            status.Write("START_LOCK_ACQUIRED", $"pid={Environment.ProcessId}");
+            return new FileLock(stream, path);
+        }
+        catch (Exception ex)
+        {
+            status.Write("START_LOCK_BUSY", "Could not acquire start lock: " + ex.Message);
+            AppDiagnosticsLogger.Record("START_LOCK_ACQUIRE_FAILED", ("path", path), ("error", ex.Message));
+            return null;
+        }
+    }
+
     private bool TryWriteBluetoothSessionFile(string busId, StatusWriter status)
     {
         var path = Path.Combine(_paths.Root, "bt_busid.txt");
@@ -1170,5 +1263,23 @@ internal sealed class BridgeOrchestrator
         }
 
         return value[..maxLength] + "...";
+    }
+
+    private sealed class FileLock : IDisposable
+    {
+        private readonly FileStream _stream;
+        private readonly string _path;
+
+        public FileLock(FileStream stream, string path)
+        {
+            _stream = stream;
+            _path = path;
+        }
+
+        public void Dispose()
+        {
+            _stream.Dispose();
+            try { File.Delete(_path); } catch { }
+        }
     }
 }
