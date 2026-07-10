@@ -107,6 +107,7 @@ internal sealed class WindowsNativeOrchestrator
         if (hide.ExitCode != 0)
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_FAILED", FirstNonEmpty(hide.Error, hide.Output, "HidHide configuration failed"));
+            await RollbackPartialHidHideConfigurationAsync(hidHide, status).ConfigureAwait(false);
             status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "FAIL", "Could not configure HidHide");
             return 1;
         }
@@ -436,6 +437,23 @@ internal sealed class WindowsNativeOrchestrator
         {
             status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_WARN", "Physical input restore failed unexpectedly: " + ex.Message);
             status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "WARN", "Could not confirm HidHide cloak restore");
+        }
+    }
+
+    private async Task RollbackPartialHidHideConfigurationAsync(HidHideManager hidHide, StatusWriter status)
+    {
+        status.Write("WINDOWS_NATIVE_HIDHIDE_ROLLBACK_START", "Disabling the HidHide cloak after a partial input-isolation failure");
+        try
+        {
+            var rollback = await hidHide.DisableCloakAsync(elevated: false).ConfigureAwait(false);
+            status.Write(
+                rollback.ExitCode == 0 ? "WINDOWS_NATIVE_HIDHIDE_ROLLBACK_OK" : "WINDOWS_NATIVE_HIDHIDE_ROLLBACK_WARN",
+                $"exit={rollback.ExitCode} output={Shorten(FirstNonEmpty(rollback.Output, rollback.Error, "none"), 260)}");
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_HIDHIDE_ROLLBACK_WARN", "Unexpected HidHide rollback failure: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_HIDHIDE_ROLLBACK_FAILED", ("error", ex.Message));
         }
     }
 
