@@ -544,14 +544,7 @@ internal sealed class IntegratedReceiver
 
             if (shouldLog)
             {
-                try
-                {
-                    LogError("Controller telemetry write failed: {0}", ex.Message);
-                }
-                catch
-                {
-                    AppDiagnosticsLogger.Record("CONTROLLER_TELEMETRY_WRITE_WARN", ("error", ex.Message));
-                }
+                LogError("Controller telemetry write failed: {0}", ex.Message);
             }
         }
     }
@@ -626,11 +619,22 @@ internal sealed class IntegratedReceiver
 
     private void Log(string level, string format, params object[] args)
     {
-        var message = args.Length == 0 ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
-        var line = $"[{DateTime.Now}] {level}: {message}{Environment.NewLine}";
-        lock (_logLock)
+        try
         {
-            File.AppendAllText(_paths.ReceiverLog, line);
+            var message = args.Length == 0 ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
+            var line = $"[{DateTime.Now}] {level}: {message}{Environment.NewLine}";
+            lock (_logLock)
+            {
+                Directory.CreateDirectory(_paths.LogDirectory);
+                File.AppendAllText(_paths.ReceiverLog, line);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "RECEIVER_LOG_WRITE_WARN",
+                ("level", level),
+                ("error", ex.Message));
         }
     }
 
