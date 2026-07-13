@@ -46,7 +46,11 @@ internal sealed class BridgeOrchestrator
             return 0;
         }
 
-        ClearReceiverStopSignal(status);
+        if (!ClearReceiverStopSignal(status))
+        {
+            status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "FAIL", "Could not clear the previous receiver stop signal");
+            return 1;
+        }
         ClearReceiverReadyMarker(status, "START");
         ClearControllerState(status, "START");
 
@@ -190,7 +194,11 @@ internal sealed class BridgeOrchestrator
         status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "START", "Stopping receiver and Linux session");
         status.Write("STOP_START", "Stopping Stadia X and restoring Bluetooth");
 
-        SignalReceiverStop(status);
+        var stopSignaled = SignalReceiverStop(status);
+        status.Write(
+            stopSignaled ? "RECEIVER_STOP_SIGNAL" : "RECEIVER_STOP_SIGNAL_FALLBACK",
+            stopSignaled ? "Stop signal written; waiting for receiver shutdown" : "Stop signal could not be written; termination fallback may be required");
+        warnings |= !stopSignaled && (receiverWasActive || hadBusSession);
         ClearControllerState(status, "STOP");
         KillProcess("stadia_receiver");
         KillProcess("stadia-vigem-x86");
@@ -870,7 +878,7 @@ internal sealed class BridgeOrchestrator
         }
     }
 
-    private void ClearReceiverStopSignal(StatusWriter status)
+    private bool ClearReceiverStopSignal(StatusWriter status)
     {
         var path = ReceiverStopSignalPath();
         try
@@ -880,10 +888,14 @@ internal sealed class BridgeOrchestrator
                 File.Delete(path);
                 status.Write("RECEIVER_STOP_SIGNAL_CLEARED", "Removed receiver.stop from a previous session");
             }
+
+            return true;
         }
         catch (Exception ex)
         {
             status.Write("RECEIVER_STOP_SIGNAL_CLEAR_WARN", "Could not remove receiver.stop: " + ex.Message);
+            AppDiagnosticsLogger.Record("RECEIVER_STOP_SIGNAL_CLEAR_FAILED", ("error", ex.Message));
+            return false;
         }
     }
 
