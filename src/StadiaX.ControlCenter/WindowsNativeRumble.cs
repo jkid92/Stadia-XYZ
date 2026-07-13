@@ -291,6 +291,9 @@ internal static class WindowsNativeRumbleProtocol
 internal sealed class WindowsNativeRumbleWriter
 {
     private const byte StadiaRumbleReportId = 5;
+    private const int DuplicateWindowMs = 4;
+    private const int SuccessLogIntervalMs = 1000;
+    private const int ErrorLogIntervalMs = 5000;
 
     private readonly HidDevice _device;
     private readonly HidStream _stream;
@@ -301,7 +304,8 @@ internal sealed class WindowsNativeRumbleWriter
     private byte _lastLarge;
     private byte _lastSmall;
     private long _lastTick;
-    private bool _hasLoggedFailure;
+    private long _nextSuccessLogTick;
+    private long _nextErrorLogTick;
 
     public WindowsNativeRumbleWriter(
         HidDevice device,
@@ -317,66 +321,80 @@ internal sealed class WindowsNativeRumbleWriter
 
     public void Send(byte largeMotor, byte smallMotor)
     {
+        string? errorToLog = null;
+        var logSuccess = false;
         lock (_lock)
         {
             var now = Environment.TickCount64;
             if (_lastTick != 0 &&
                 now - _lastTick >= 0 &&
-                now - _lastTick < 4 &&
+                now - _lastTick < DuplicateWindowMs &&
                 _lastLarge == largeMotor &&
                 _lastSmall == smallMotor)
             {
                 return;
             }
 
-            _lastLarge = largeMotor;
-            _lastSmall = smallMotor;
-            _lastTick = now;
-
             if (!TrySendOutputReport(largeMotor, smallMotor, out var error))
             {
-                if (!_hasLoggedFailure || largeMotor != 0 || smallMotor != 0)
+                if (now >= _nextErrorLogTick)
                 {
-                    _logError(
-                        "Windows Native rumble write failed: {0}",
-                        new object[] { error });
-                    _hasLoggedFailure = true;
+                    _nextErrorLogTick = now + ErrorLogIntervalMs;
+                    errorToLog = error;
                 }
-                return;
             }
-
-            if (largeMotor != 0 || smallMotor != 0)
+            else
             {
-                _logInfo(
-                    "Windows Native rumble sent large={0} small={1}",
-                    new object[] { largeMotor, smallMotor });
+                _lastLarge = largeMotor;
+                _lastSmall = smallMotor;
+                _lastTick = now;
+                _nextErrorLogTick = 0;
+                if (largeMotor == 0 && smallMotor == 0)
+                {
+                    _nextSuccessLogTick = 0;
+                }
+                else if (now >= _nextSuccessLogTick)
+                {
+                    _nextSuccessLogTick = now + SuccessLogIntervalMs;
+                    logSuccess = true;
+                }
             }
+        }
+
+        if (errorToLog is not null)
+        {
+            _logError("Windows Native rumble write failed: {0}", new object[] { errorToLog });
+        }
+        else if (logSuccess)
+        {
+            _logInfo(
+                "Windows Native rumble sent large={0} small={1}",
+                new object[] { largeMotor, smallMotor });
         }
     }
 
     private bool TrySendOutputReport(byte largeMotor, byte smallMotor, out string error)
     {
         error = "";
-        var maxOutputLength = _device.GetMaxOutputReportLength();
-        if (maxOutputLength <= 0)
-        {
-            error = "HID device does not expose an output report.";
-            return false;
-        }
-
-        if (maxOutputLength < 5)
-        {
-            error = $"HID output report is too short for Stadia rumble: {maxOutputLength} byte(s).";
-            return false;
-        }
-
-        var buffer = new byte[maxOutputLength];
-        buffer[0] = StadiaRumbleReportId;
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(1, 2), ScaleRumble(largeMotor));
-        BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(3, 2), ScaleRumble(smallMotor));
-
         try
         {
+            var maxOutputLength = _device.GetMaxOutputReportLength();
+            if (maxOutputLength <= 0)
+            {
+                error = "HID device does not expose an output report.";
+                return false;
+            }
+
+            if (maxOutputLength < 5)
+            {
+                error = $"HID output report is too short for Stadia rumble: {maxOutputLength} byte(s).";
+                return false;
+            }
+
+            var buffer = new byte[maxOutputLength];
+            buffer[0] = StadiaRumbleReportId;
+            BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(1, 2), ScaleRumble(largeMotor));
+            BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(3, 2), ScaleRumble(smallMotor));
             _stream.Write(buffer);
             return true;
         }
