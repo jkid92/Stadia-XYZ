@@ -939,10 +939,11 @@ internal sealed class MainForm : Form
     private TabPage BuildWindowsNativePage()
     {
         var page = CreatePage("Win Native", "Windows Native");
+        var constrained = IsConstrainedUi();
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 52));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 178 : 194));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 280 : IsCompactUi() ? 230 : 260));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
@@ -976,14 +977,39 @@ internal sealed class MainForm : Form
         _windowsNativePhaseLabel.ForeColor = Color.FromArgb(92, 106, 126);
         statusLayout.Controls.Add(_windowsNativePhaseLabel, 0, 2);
 
-        var actions = CreateFullWidthToolbarFlow();
-        actions.Dock = DockStyle.Fill;
-        actions.Padding = new Padding(0);
-        AddFlowButton(actions, "Probe", async () => await ProbeWindowsNativeAsync());
-        AddFlowButton(actions, "Start native", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-        AddFlowButton(actions, "Stop native", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-        AddFlowButton(actions, "Test input", () => SelectTabIfExists("Controller Test"));
-        AddFlowButton(actions, "Open probe", () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+        var actionColumns = constrained ? 2 : 3;
+        var actionRows = constrained ? 3 : 2;
+        var actions = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = actionColumns,
+            RowCount = actionRows,
+            Margin = new Padding(0)
+        };
+        for (var column = 0; column < actionColumns; column++)
+        {
+            actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / actionColumns));
+        }
+        for (var row = 0; row < actionRows; row++)
+        {
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / actionRows));
+        }
+        if (constrained)
+        {
+            AddActionGridButton(actions, "Probe", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
+            AddActionGridButton(actions, "Start native", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+            AddActionGridButton(actions, "Stop native", 0, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Test"));
+            AddActionGridButton(actions, "Open probe", 0, 2, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+        }
+        else
+        {
+            AddActionGridButton(actions, "Probe", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
+            AddActionGridButton(actions, "Start native", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+            AddActionGridButton(actions, "Stop native", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+            AddActionGridButton(actions, "Test input", 0, 1, 1, () => SelectTabIfExists("Controller Test"));
+            AddActionGridButton(actions, "Open probe", 1, 1, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+        }
         statusLayout.Controls.Add(actions, 0, 3);
         layout.Controls.Add(statusGroup, 0, 0);
 
