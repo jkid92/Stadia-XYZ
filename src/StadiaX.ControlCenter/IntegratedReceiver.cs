@@ -168,21 +168,25 @@ internal sealed class IntegratedReceiver
 
     private bool WriteReadyMarker()
     {
+        var path = ReadyMarkerPath();
+        var tempPath = path + ".tmp";
         try
         {
             Directory.CreateDirectory(_paths.LogDirectory);
             using var process = Process.GetCurrentProcess();
-            File.WriteAllLines(ReadyMarkerPath(), new[]
+            File.WriteAllLines(tempPath, new[]
             {
                 $"timestamp={DateTimeOffset.UtcNow:O}",
                 $"pid={Environment.ProcessId}",
                 $"processStartUtc={process.StartTime.ToUniversalTime():O}",
                 $"bridgeIp={_bridgeIp}"
             });
+            File.Move(tempPath, path, overwrite: true);
             return true;
         }
         catch (Exception ex)
         {
+            TryDeleteReadyMarkerFile(tempPath);
             LogError("Receiver ready marker write failed: {0}", ex.Message);
             _status.Write("RECEIVER_READY_MARKER_FAILED", ex.Message);
             return false;
@@ -191,17 +195,33 @@ internal sealed class IntegratedReceiver
 
     private void ClearReadyMarker()
     {
+        foreach (var path in new[] { ReadyMarkerPath(), ReadyMarkerPath() + ".tmp" })
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("Receiver ready marker cleanup failed for {0}: {1}", Path.GetFileName(path), ex.Message);
+            }
+        }
+    }
+
+    private static void TryDeleteReadyMarkerFile(string path)
+    {
         try
         {
-            var path = ReadyMarkerPath();
             if (File.Exists(path))
             {
                 File.Delete(path);
             }
         }
-        catch (Exception ex)
+        catch
         {
-            LogError("Receiver ready marker cleanup failed: {0}", ex.Message);
         }
     }
 
