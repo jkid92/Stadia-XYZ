@@ -858,13 +858,16 @@ internal sealed class BridgeOrchestrator
     private bool TryWriteBluetoothSessionFile(string busId, StatusWriter status)
     {
         var path = Path.Combine(_paths.Root, "bt_busid.txt");
+        var tempPath = path + ".tmp";
         try
         {
-            File.WriteAllText(path, busId + Environment.NewLine);
+            File.WriteAllText(tempPath, busId + Environment.NewLine);
+            File.Move(tempPath, path, overwrite: true);
             return true;
         }
         catch (Exception ex)
         {
+            TryDeleteFile(tempPath);
             status.Write("BT_SESSION_FILE_WRITE_FAILED", "Could not write bt_busid.txt: " + ex.Message);
             AppDiagnosticsLogger.Record("BT_SESSION_FILE_WRITE_FAILED", ("path", path), ("busId", busId), ("error", ex.Message));
             return false;
