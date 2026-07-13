@@ -119,10 +119,22 @@ internal sealed class WindowsNativeOrchestrator
         var appPath = ResolveCurrentAppPath();
         status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "START", "Registering app and hiding physical Stadia HID input");
         status.Write("WINDOWS_NATIVE_HIDHIDE_START", $"Registering {appPath} and hiding {devices.Length} physical Stadia HID device(s)");
-        var hide = await hidHide.ConfigureStadiaDevicesAsync(
-            appPath,
-            devices.Select(device => device.DeviceInstancePath).ToArray(),
-            elevated: !IsAdministrator()).ConfigureAwait(false);
+        CommandResult hide;
+        try
+        {
+            hide = await hidHide.ConfigureStadiaDevicesAsync(
+                appPath,
+                devices.Select(device => device.DeviceInstancePath).ToArray(),
+                elevated: !IsAdministrator()).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_HIDHIDE_FAILED", "HidHide configuration raised an exception: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_HIDHIDE_EXCEPTION", ("error", ex.ToString()));
+            await RollbackPartialHidHideConfigurationAsync(hidHide, status).ConfigureAwait(false);
+            status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "FAIL", "Could not configure HidHide");
+            return 1;
+        }
         status.Write("WINDOWS_NATIVE_HIDHIDE_RESULT", $"exit={hide.ExitCode} output={Shorten(FirstNonEmpty(hide.Output, hide.Error, "none"), 260)}");
 
         if (hide.ExitCode != 0)
@@ -135,23 +147,28 @@ internal sealed class WindowsNativeOrchestrator
 
         status.WritePhase("Windows Native", 3, StartPhaseCount, "Input isolation", "OK", "Physical Stadia input is hidden from games");
         status.Write("WINDOWS_NATIVE_HIDHIDE_OK", "Physical Stadia HID devices are hidden; HidHide cloak remains enabled");
-        using var cancellation = new CancellationTokenSource();
-        using var stopWatcher = StartStopWatcher(cancellation);
-        var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
-        status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "START", $"Creating {devices.Length} virtual Xbox 360 controller slot(s)");
-        status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
         var exitCode = 1;
+        var inputRestored = false;
         try
         {
+            using var cancellation = new CancellationTokenSource();
+            using var stopWatcher = StartStopWatcher(cancellation);
+            var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
+            status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "START", $"Creating {devices.Length} virtual Xbox 360 controller slot(s)");
+            status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
             exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             status.Write("WINDOWS_NATIVE_RECEIVER_CRASHED", ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_RECEIVER_CRASHED", ("error", ex.ToString()));
             exitCode = 1;
         }
+        finally
+        {
+            inputRestored = await RestorePhysicalInputSafelyAsync(hidHide, status).ConfigureAwait(false);
+        }
 
-        var inputRestored = await RestorePhysicalInputSafelyAsync(hidHide, status).ConfigureAwait(false);
         var finalExitCode = exitCode == 0 && inputRestored ? 0 : 1;
         status.WritePhase(
             "Windows Native",
