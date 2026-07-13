@@ -10,35 +10,56 @@ internal sealed class StatusWriter
     public StatusWriter(AppPaths paths, string logFileName)
     {
         _paths = paths;
-        Directory.CreateDirectory(paths.LogDirectory);
         _logPath = Path.Combine(paths.LogDirectory, logFileName);
     }
 
     public void Reset(string code, string message)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
         var line = BuildLine(code, message);
         lock (Sync)
         {
-            File.WriteAllText(_logPath, line);
+            WriteLineSafely(_logPath, line, append: false);
             if (!_logPath.Equals(_paths.StatusLog, StringComparison.OrdinalIgnoreCase))
             {
-                File.WriteAllText(_paths.StatusLog, line);
+                WriteLineSafely(_paths.StatusLog, line, append: false);
             }
         }
     }
 
     public void Write(string code, string message)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
         var line = BuildLine(code, message);
         lock (Sync)
         {
-            File.AppendAllText(_logPath, line);
+            WriteLineSafely(_logPath, line, append: true);
             if (!_logPath.Equals(_paths.StatusLog, StringComparison.OrdinalIgnoreCase))
             {
-                File.AppendAllText(_paths.StatusLog, line);
+                WriteLineSafely(_paths.StatusLog, line, append: true);
             }
+        }
+    }
+
+    private static void WriteLineSafely(string path, string line, bool append)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            if (append)
+            {
+                File.AppendAllText(path, line);
+            }
+            else
+            {
+                File.WriteAllText(path, line);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "STATUS_LOG_WRITE_WARN",
+                ("file", Path.GetFileName(path)),
+                ("mode", append ? "append" : "reset"),
+                ("error", ex.Message));
         }
     }
 
