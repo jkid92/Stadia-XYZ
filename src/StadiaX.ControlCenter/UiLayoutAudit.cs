@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace StadiaX.ControlCenter;
 
 internal static class UiLayoutAudit
@@ -10,9 +12,16 @@ internal static class UiLayoutAudit
         var issues = new HashSet<string>(StringComparer.Ordinal);
         var observations = new List<string>();
 
-        using var form = new MainForm(paths) { ShowInTaskbar = false };
+        using var form = new MainForm(paths, auditMode: true)
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000),
+            Opacity = 1
+        };
         MainFormRuntimeTuner.ApplyForAudit(form);
-        form.CreateControl();
+        form.Show();
+        Application.DoEvents();
 
         var tabs = Descendants(form).OfType<TabControl>().FirstOrDefault(control => control.TabPages.Count > 0);
         if (tabs is null)
@@ -21,6 +30,8 @@ internal static class UiLayoutAudit
         }
         else
         {
+            var snapshotPath = SaveSnapshot(form, tabs, paths, density);
+            observations.Add($"snapshot={snapshotPath}");
             foreach (var requestedSize in AuditSizes(density))
             {
                 form.Size = requestedSize;
@@ -31,6 +42,7 @@ internal static class UiLayoutAudit
                 {
                     tabs.SelectedTab = page;
                     LayoutTree(form);
+                    Application.DoEvents();
                     ValidateTree(form, $"{requestedSize.Width}x{requestedSize.Height}/{page.Text}", issues);
                 }
             }
@@ -60,6 +72,52 @@ internal static class UiLayoutAudit
         return issues.Count == 0 ? 0 : 1;
     }
 
+    private static string SaveSnapshot(Form form, TabControl tabs, AppPaths paths, string density)
+    {
+        form.Size = SnapshotSize(density);
+        tabs.SelectedIndex = 0;
+        LayoutTree(form);
+        Application.DoEvents();
+
+        var snapshotPath = Path.Combine(paths.LogDirectory, $"ui-layout-audit-{density}.png");
+        Directory.CreateDirectory(paths.LogDirectory);
+        form.Refresh();
+        Application.DoEvents();
+        using var bitmap = new Bitmap(Math.Max(1, form.Width), Math.Max(1, form.Height));
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            var hdc = graphics.GetHdc();
+            try
+            {
+                if (!PrintWindow(form.Handle, hdc, PrintWindowRenderFullContent))
+                {
+                    graphics.ReleaseHdc(hdc);
+                    hdc = IntPtr.Zero;
+                    form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                }
+            }
+            finally
+            {
+                if (hdc != IntPtr.Zero)
+                {
+                    graphics.ReleaseHdc(hdc);
+                }
+            }
+        }
+        bitmap.Save(snapshotPath, System.Drawing.Imaging.ImageFormat.Png);
+        return snapshotPath;
+    }
+
+    private static Size SnapshotSize(string density)
+    {
+        return density switch
+        {
+            "constrained" => new Size(1024, 720),
+            "comfortable" => new Size(1280, 820),
+            _ => new Size(1120, 720)
+        };
+    }
+
     private static IReadOnlyList<Size> AuditSizes(string density)
     {
         return density switch
@@ -86,7 +144,7 @@ internal static class UiLayoutAudit
                         ValidateSingleLineText(tab, tab.Text, selectedFont, 12, scenario, issues);
                     }
                     break;
-                case Label label when !label.AutoSize && !label.AutoEllipsis:
+                case Label label when !label.AutoSize:
                     ValidateLabelText(label, scenario, issues);
                     break;
                 case GroupBox group:
@@ -147,11 +205,13 @@ internal static class UiLayoutAudit
         var available = new Size(
             Math.Max(1, label.ClientSize.Width - label.Padding.Horizontal),
             Math.Max(1, label.ClientSize.Height - label.Padding.Vertical));
+        var flags = (label.AutoEllipsis ? TextFormatFlags.SingleLine : TextFormatFlags.WordBreak) |
+                    TextFormatFlags.NoPadding;
         var measured = TextRenderer.MeasureText(
             label.Text,
             label.Font,
             new Size(available.Width, int.MaxValue),
-            TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+            flags);
         if (measured.Height > available.Height + 2)
         {
             issues.Add($"{scenario}: label '{Shorten(label.Text)}' needs {measured.Height}px but {available.Height}px is available.");
@@ -189,4 +249,11 @@ internal static class UiLayoutAudit
         value = value.ReplaceLineEndings(" ").Trim();
         return value.Length <= 48 ? value : value[..48] + "...";
     }
+
+    private const uint PrintWindowRenderFullContent = 0x00000002;
+
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PrintWindow(IntPtr windowHandle, IntPtr deviceContext, uint flags);
 }

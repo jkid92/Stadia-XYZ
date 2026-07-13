@@ -11,6 +11,7 @@ internal sealed class MainForm : Form
     private const int ScreenFitMargin = 48;
 
     private readonly AppPaths _paths;
+    private readonly bool _auditMode;
     private readonly ProcessRunner _runner = new();
     private readonly ReleaseChecker _releaseChecker = new();
     private readonly RequirementChecker _requirementChecker;
@@ -92,9 +93,14 @@ internal sealed class MainForm : Form
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
 
-    public MainForm(AppPaths paths)
+    public MainForm(AppPaths paths) : this(paths, auditMode: false)
+    {
+    }
+
+    internal MainForm(AppPaths paths, bool auditMode)
     {
         _paths = paths;
+        _auditMode = auditMode;
         _requirementChecker = new RequirementChecker(paths, _runner);
         _selfTestService = new SelfTestService(paths, _requirementChecker);
         _native = new NativeControlServices(paths, _runner);
@@ -118,6 +124,11 @@ internal sealed class MainForm : Form
 
         Shown += async (_, _) =>
         {
+            if (_auditMode)
+            {
+                return;
+            }
+
             try
             {
                 LogUserAction("App shown");
@@ -210,7 +221,9 @@ internal sealed class MainForm : Form
     private void ApplyHighDpiLayoutGuards()
     {
         var constrained = IsConstrainedUi();
-        var pageMinimum = constrained ? new Size(500, 400) : new Size(760, 500);
+        var pageMinimum = constrained
+            ? new Size(500, 680)
+            : IsCompactUi() ? new Size(680, 500) : new Size(760, 500);
         foreach (TabPage page in _tabs.TabPages)
         {
             page.AutoScroll = true;
@@ -227,7 +240,7 @@ internal sealed class MainForm : Form
 
     private void EnsureWindowFitsDisplay()
     {
-        if (WindowState != FormWindowState.Normal)
+        if (_auditMode || WindowState != FormWindowState.Normal)
         {
             return;
         }
@@ -325,8 +338,8 @@ internal sealed class MainForm : Form
             ColumnCount = 1,
             RowCount = 3
         };
-        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 238 : 266));
-        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 116 : 126));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 238 : IsCompactUi() ? 266 : 278));
+        sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 116 : IsCompactUi() ? 126 : 138));
         sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.Controls.Add(sidebarLayout);
 
@@ -387,6 +400,7 @@ internal sealed class MainForm : Form
             RowCount = 2,
             BackColor = Color.FromArgb(248, 250, 252)
         };
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 38 : 42));
         shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
@@ -498,7 +512,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(14)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 168 : 184));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 304 : 212));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 370 : IsCompactUi() ? 212 : 240));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
@@ -1087,8 +1101,8 @@ internal sealed class MainForm : Form
         AddEditorRow(panel, 2, "Preferred pad", _profileSlotCombo);
         _profileAutoConnectCheck.Text = "Use at startup";
         panel.Controls.Add(_profileAutoConnectCheck, 1, 3);
-        AddButton(panel, "Save profile", 1, 4, SaveProfile);
-        AddButton(panel, "Use Linux selected", 1, 5, UseLinuxSelectedAsProfile);
+        AddButton(panel, "Save profile", 0, 4, SaveProfile, columnSpan: 2);
+        AddButton(panel, "Use Linux selected", 0, 5, UseLinuxSelectedAsProfile, columnSpan: 2);
         layout.Controls.Add(editor, 1, 0);
         return page;
     }
@@ -1110,7 +1124,7 @@ internal sealed class MainForm : Form
         var telemetryGroup = CreateGroup("Telemetry");
         var telemetryLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(10) };
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 46 : 48));
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -3831,7 +3845,7 @@ internal sealed class MainForm : Form
         AddButton(parent, text, x, y, width, () => { _ = RunLoggedActionWithDialogAsync(text, action); });
     }
 
-    private void AddButton(TableLayoutPanel parent, string text, int column, int row, Action action)
+    private Button AddButton(TableLayoutPanel parent, string text, int column, int row, Action action, int columnSpan = 1)
     {
         var button = new Button { Text = text, Dock = DockStyle.Fill, MinimumSize = new Size(IsCompactUi() ? 116 : 140, IsCompactUi() ? 30 : 34), Margin = new Padding(4) };
         button.Click += (_, _) =>
@@ -3840,6 +3854,11 @@ internal sealed class MainForm : Form
             action();
         };
         parent.Controls.Add(button, column, row);
+        if (columnSpan > 1)
+        {
+            parent.SetColumnSpan(button, columnSpan);
+        }
+        return button;
     }
 
     private void AddFlowButton(FlowLayoutPanel parent, string text, Action action, Color? backColor = null, Color? foreColor = null)
