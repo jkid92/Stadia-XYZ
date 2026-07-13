@@ -14,11 +14,13 @@ internal sealed class WindowsNativeReceiver
     private readonly IReadOnlyList<WindowsNativeHidDevice>? _initialDevices;
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly object _logLock = new();
+    private readonly object _telemetryErrorLock = new();
     private readonly WindowsNativeRumbleWriter?[] _rumbleWriters = new WindowsNativeRumbleWriter?[MaxControllers];
     private readonly VigemNative.X360Notification _rumbleCallback;
     private readonly IntPtr[] _targets = new IntPtr[MaxControllers];
 
     private IntPtr _client;
+    private DateTimeOffset _nextTelemetryErrorLog = DateTimeOffset.MinValue;
 
     public WindowsNativeReceiver(
         AppPaths paths,
@@ -225,7 +227,7 @@ internal sealed class WindowsNativeReceiver
                             LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
                         }
 
-                        _telemetryWriter.Write(controllerIndex, state);
+                        WriteTelemetrySafely(controllerIndex, state);
                     }
                 }
                 finally
@@ -328,13 +330,32 @@ internal sealed class WindowsNativeReceiver
             TryLogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
         }
 
+        WriteTelemetrySafely(controllerIndex, default);
+    }
+
+    private void WriteTelemetrySafely(int controllerIndex, ControllerState state)
+    {
         try
         {
-            _telemetryWriter.Write(controllerIndex, default);
+            _telemetryWriter.Write(controllerIndex, state);
         }
         catch (Exception ex)
         {
-            TryLogError("P{0} telemetry neutral reset failed: {1}", controllerIndex + 1, ex.Message);
+            var now = DateTimeOffset.UtcNow;
+            var shouldLog = false;
+            lock (_telemetryErrorLock)
+            {
+                if (now >= _nextTelemetryErrorLog)
+                {
+                    _nextTelemetryErrorLog = now.AddSeconds(5);
+                    shouldLog = true;
+                }
+            }
+
+            if (shouldLog)
+            {
+                TryLogError("P{0} controller telemetry write failed: {1}", controllerIndex + 1, ex.Message);
+            }
         }
     }
 
