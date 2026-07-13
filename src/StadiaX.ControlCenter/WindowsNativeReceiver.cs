@@ -328,7 +328,7 @@ internal sealed class WindowsNativeReceiver
         }
         catch (Exception ex)
         {
-            TryLogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
+            LogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
         }
 
         WriteTelemetrySafely(controllerIndex, default);
@@ -355,7 +355,7 @@ internal sealed class WindowsNativeReceiver
 
             if (shouldLog)
             {
-                TryLogError("P{0} controller telemetry write failed: {1}", controllerIndex + 1, ex.Message);
+                LogError("P{0} controller telemetry write failed: {1}", controllerIndex + 1, ex.Message);
             }
         }
     }
@@ -462,20 +462,25 @@ internal sealed class WindowsNativeReceiver
 
     private void LogError(string format, params object[] args) => Log("ERROR", format, args);
 
-    private void TryLogError(string format, params object[] args)
-    {
-        try { LogError(format, args); } catch { }
-    }
-
     private void Log(string level, string format, params object[] args)
     {
-        var message = args.Length == 0 ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
-        var line = $"[{DateTime.Now}] {level}: pid={Environment.ProcessId} {message}{Environment.NewLine}";
-        lock (_logLock)
+        try
         {
-            Directory.CreateDirectory(_paths.LogDirectory);
-            File.AppendAllText(_paths.ReceiverLog, line);
-            File.AppendAllText(Path.Combine(_paths.LogDirectory, "windows-native.log"), line);
+            var message = args.Length == 0 ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args);
+            var line = $"[{DateTime.Now}] {level}: pid={Environment.ProcessId} {message}{Environment.NewLine}";
+            lock (_logLock)
+            {
+                Directory.CreateDirectory(_paths.LogDirectory);
+                File.AppendAllText(_paths.ReceiverLog, line);
+                File.AppendAllText(Path.Combine(_paths.LogDirectory, "windows-native.log"), line);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_RECEIVER_LOG_WRITE_WARN",
+                ("level", level),
+                ("error", ex.Message));
         }
     }
 }
