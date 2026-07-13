@@ -21,7 +21,21 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 
 $selfContained = if ($FrameworkDependent) { "false" } else { "true" }
 
-dotnet publish $project `
+$dotnetCandidates = @(
+    (Get-Command dotnet -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+    (Join-Path $env:USERPROFILE ".dotnet\dotnet.exe")
+) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -Unique
+
+$dotnet = $dotnetCandidates | Where-Object {
+    $sdks = & $_ --list-sdks 2>$null
+    $LASTEXITCODE -eq 0 -and $sdks
+} | Select-Object -First 1
+
+if (-not $dotnet) {
+    throw "A .NET SDK is required to build the C# control center."
+}
+
+& $dotnet publish $project `
     --configuration $Configuration `
     --runtime win-x64 `
     --self-contained $selfContained `
@@ -30,6 +44,10 @@ dotnet publish $project `
     -p:PublishTrimmed=false `
     -p:DebugType=embedded `
     --output $OutputDirectory
+
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet publish failed with exit code $LASTEXITCODE."
+}
 
 if ($CopyToRoot) {
     $exe = Join-Path $OutputDirectory "StadiaX.exe"
