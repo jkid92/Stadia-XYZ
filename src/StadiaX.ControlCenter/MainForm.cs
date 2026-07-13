@@ -95,6 +95,7 @@ internal sealed class MainForm : Form
     private bool _linuxRefreshInProgress;
     private bool _suppressSelectionLogging;
     private IReadOnlyList<LinuxBluetoothDevice> _lastLinuxBluetoothDevices = Array.Empty<LinuxBluetoothDevice>();
+    private DateTimeOffset _operationStartedAt = DateTimeOffset.MinValue;
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private IReadOnlyList<WindowsNativeHidDevice> _lastWindowsNativeDevices = Array.Empty<WindowsNativeHidDevice>();
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
@@ -2029,26 +2030,6 @@ internal sealed class MainForm : Form
         return string.IsNullOrWhiteSpace(value) ? "-" : value;
     }
 
-    private static string ExtractMarkedValue(string text, string marker, string? nextMarker)
-    {
-        var start = text.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (start < 0)
-        {
-            return "";
-        }
-
-        start += marker.Length;
-        var end = string.IsNullOrWhiteSpace(nextMarker)
-            ? text.Length
-            : text.IndexOf(nextMarker, start, StringComparison.OrdinalIgnoreCase);
-        if (end < 0)
-        {
-            end = text.Length;
-        }
-
-        return text[start..end].Trim();
-    }
-
     private static string EmptyAsNone(string value)
     {
         return string.IsNullOrWhiteSpace(value) ? "none" : value;
@@ -2639,37 +2620,63 @@ internal sealed class MainForm : Form
         _statusLogBox.Text = statusText;
         _windowsNativeLogBox.Text = string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText;
         _windowsNativeLogPageBox.Text = string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText;
-        UpdateWindowsNativePhaseLabel(string.IsNullOrWhiteSpace(windowsNativeText) ? statusText : windowsNativeText);
+        UpdateWindowsNativePhaseLabel(statusText + Environment.NewLine + windowsNativeText);
         _userActionLogBox.Text = actionText;
         _appDiagnosticsLogBox.Text = appDiagnosticsText;
     }
 
     private void UpdateWindowsNativePhaseLabel(string text)
     {
-        var phaseLine = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-            .LastOrDefault(line =>
-                line.Contains("STATUS:PHASE|", StringComparison.OrdinalIgnoreCase) &&
-                line.Contains("flow=Windows Native", StringComparison.OrdinalIgnoreCase));
-        if (string.IsNullOrWhiteSpace(phaseLine))
+        if (!ConnectionPhaseParser.TryParseLatest(text, "Windows Native", out var phase) || phase is null)
         {
             _windowsNativePhaseLabel.Text = "Phase: waiting for Windows Native";
             _windowsNativePhaseLabel.ForeColor = Color.FromArgb(92, 106, 126);
             return;
         }
 
-        var payload = phaseLine[(phaseLine.IndexOf('|') + 1)..];
-        var step = ExtractMarkedValue(payload, "step=", " phase=");
-        var phase = ExtractMarkedValue(payload, "phase=", " state=");
-        var state = ExtractMarkedValue(payload, "state=", " detail=");
-        var detail = ExtractMarkedValue(payload, "detail=", null);
-        _windowsNativePhaseLabel.Text = $"Phase {EmptyAsDash(step)} - {EmptyAsDash(phase)} ({EmptyAsDash(state)}): {EmptyAsDash(detail)}";
-        _windowsNativePhaseLabel.ForeColor = state.ToUpperInvariant() switch
+        var detail = phase.IsTimeout
+            ? $"Timeout - {phase.Phase}: {phase.Detail}"
+            : $"{phase.Phase}: {phase.Detail}";
+        var stateColor = phase.State switch
         {
             "OK" => Color.FromArgb(34, 120, 72),
-            "FAIL" => Color.FromArgb(180, 45, 45),
+            "FAIL" or "TIMEOUT" => Color.FromArgb(180, 45, 45),
             "WAIT" or "WARN" or "INSTALL" => Color.FromArgb(170, 104, 0),
             _ => Color.FromArgb(45, 91, 150)
         };
+        _windowsNativePhaseLabel.Text = $"Phase {phase.Step}/{phase.Total} - {phase.Phase} ({phase.State}): {phase.Detail}";
+        _windowsNativePhaseLabel.ForeColor = stateColor;
+
+        var title = _operationTitleLabel.Text;
+        if ((!title.StartsWith("Starting Windows Native", StringComparison.OrdinalIgnoreCase) &&
+             !title.StartsWith("Stopping Windows Native", StringComparison.OrdinalIgnoreCase)) ||
+            phase.Timestamp < _operationStartedAt)
+        {
+            return;
+        }
+
+        var percent = phase.IsTerminal ? 100 : phase.ProgressPercent;
+        _windowsNativeStatusLabel.Text = detail;
+        _windowsNativeStatusLabel.ForeColor = stateColor;
+        _windowsNativeProgress.Value = ClampProgress(percent);
+        switch (phase.State)
+        {
+            case "FAIL":
+            case "TIMEOUT":
+                FailOperationProgress(title, detail);
+                break;
+            case "WARN":
+            case "WAIT":
+            case "INSTALL":
+                WarnOperationProgress(title, detail, percent);
+                break;
+            case "OK" when phase.IsTerminal:
+                CompleteOperationProgress(title, detail);
+                break;
+            default:
+                SetOperationProgress(title, detail, percent);
+                break;
+        }
     }
 
     private void RefreshSelectionLabels()
@@ -2803,6 +2810,7 @@ internal sealed class MainForm : Form
 
     private void BeginOperationProgress(string title, string detail, int percent = 0)
     {
+        _operationStartedAt = DateTimeOffset.Now;
         SetOperationProgress(title, detail, percent);
     }
 
@@ -2834,12 +2842,19 @@ internal sealed class MainForm : Form
     private void CompleteOperationProgress(string title, string detail)
     {
         SetOperationProgress(title, detail, 100);
+        _operationDetailLabel.ForeColor = Color.FromArgb(34, 120, 72);
     }
 
     private void FailOperationProgress(string title, string detail)
     {
         SetOperationProgress(title, detail, 100);
         _operationDetailLabel.ForeColor = Color.FromArgb(180, 45, 45);
+    }
+
+    private void WarnOperationProgress(string title, string detail, int percent)
+    {
+        SetOperationProgress(title, detail, percent);
+        _operationDetailLabel.ForeColor = Color.FromArgb(170, 104, 0);
     }
 
     private void ResetOperationDetailColor()
