@@ -57,6 +57,7 @@ internal static class WindowsNativeRuntime
         {
             var marker = File.ReadAllText(readyPath).Trim();
             var timestamp = ReadMarkerTimestamp(marker, readyPath);
+            var processStart = ReadProcessStartTimestamp(marker, timestamp, out var hasExactProcessStart);
             foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
@@ -78,7 +79,7 @@ internal static class WindowsNativeRuntime
             if (pid > 0)
             {
                 using var process = Process.GetProcessById(pid);
-                if (!process.HasExited && LooksLikeReceiverProcess(process) && ProcessMatchesMarker(process, timestamp))
+                if (!process.HasExited && LooksLikeReceiverProcess(process) && ProcessMatchesMarker(process, processStart, hasExactProcessStart))
                 {
                     controllers = Math.Clamp(controllers, 1, MaxControllers);
                     return true;
@@ -112,8 +113,9 @@ internal static class WindowsNativeRuntime
         {
             var marker = File.ReadAllText(readyPath).Trim();
             var timestamp = ReadMarkerTimestamp(marker, readyPath);
+            var processStart = ReadProcessStartTimestamp(marker, timestamp, out var hasExactProcessStart);
             var candidate = Process.GetProcessById(pid);
-            if (!candidate.HasExited && LooksLikeReceiverProcess(candidate) && ProcessMatchesMarker(candidate, timestamp))
+            if (!candidate.HasExited && LooksLikeReceiverProcess(candidate) && ProcessMatchesMarker(candidate, processStart, hasExactProcessStart))
             {
                 process = candidate;
                 return true;
@@ -143,16 +145,37 @@ internal static class WindowsNativeRuntime
         return new DateTimeOffset(File.GetLastWriteTimeUtc(readyPath), TimeSpan.Zero);
     }
 
-    private static bool ProcessMatchesMarker(Process process, DateTimeOffset markerTimestamp)
+    private static DateTimeOffset ReadProcessStartTimestamp(string marker, DateTimeOffset fallback, out bool hasExactProcessStart)
+    {
+        foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+            if (pair.Length == 2 &&
+                pair[0].Equals("processStartUtc", StringComparison.OrdinalIgnoreCase) &&
+                DateTimeOffset.TryParse(pair[1], out var processStart))
+            {
+                hasExactProcessStart = true;
+                return processStart;
+            }
+        }
+
+        hasExactProcessStart = false;
+        return fallback;
+    }
+
+    private static bool ProcessMatchesMarker(Process process, DateTimeOffset expectedStart, bool hasExactProcessStart)
     {
         try
         {
             var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-            return startedAt <= markerTimestamp.ToUniversalTime().AddSeconds(15);
+            var expectedStartUtc = expectedStart.ToUniversalTime();
+            return hasExactProcessStart
+                ? (startedAt - expectedStartUtc).Duration() <= TimeSpan.FromSeconds(2)
+                : startedAt <= expectedStartUtc.AddSeconds(15);
         }
         catch
         {
-            return true;
+            return !hasExactProcessStart;
         }
     }
 

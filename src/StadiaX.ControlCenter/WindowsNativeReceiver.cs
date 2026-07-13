@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HidSharp;
 using HidSharp.Reports;
 using HidSharp.Reports.Input;
@@ -442,9 +443,10 @@ internal sealed class WindowsNativeReceiver
     private void WriteReadyMarker(int controllerCount)
     {
         Directory.CreateDirectory(_paths.LogDirectory);
+        using var process = Process.GetCurrentProcess();
         File.WriteAllText(
             WindowsNativeRuntime.ReadyPath(_paths),
-            $"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}|controllers={controllerCount}{Environment.NewLine}");
+            $"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}|controllers={controllerCount}|processStartUtc={process.StartTime.ToUniversalTime():O}{Environment.NewLine}");
     }
 
     private void DeleteReadyMarker()
