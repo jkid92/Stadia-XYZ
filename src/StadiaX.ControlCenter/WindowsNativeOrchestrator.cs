@@ -25,12 +25,9 @@ internal sealed class WindowsNativeOrchestrator
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
-        ClearStopSignal(status);
         if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeControllers))
         {
-            status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={activePid} controllers={activeControllers}");
-            status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {activeControllers} controller(s)");
-            status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={activePid}");
+            ReportAlreadyRunning(status, activePid, activeControllers);
             return 0;
         }
         using var startLock = TryAcquireStartLock(status);
@@ -39,6 +36,18 @@ internal sealed class WindowsNativeOrchestrator
             status.Write("WINDOWS_NATIVE_START_BUSY", "Another Windows Native start request is already in progress");
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "WAIT", "Another start request is already in progress");
             return 2;
+        }
+
+        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out activePid, out activeControllers))
+        {
+            ReportAlreadyRunning(status, activePid, activeControllers);
+            return 0;
+        }
+
+        if (!ClearStopSignal(status))
+        {
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "Could not clear the previous receiver stop signal");
+            return 1;
         }
         ClearControllerState(status, "START");
 
@@ -162,9 +171,11 @@ internal sealed class WindowsNativeOrchestrator
         var status = new StatusWriter(_paths, "windows-native.log");
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "START", "Stop requested");
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
-        SignalStop(status);
+        var stopSignaled = SignalStop(status);
         ClearControllerState(status, "STOP");
-        status.Write("WINDOWS_NATIVE_STOP_SIGNAL", "Stop signal written; waiting for receiver shutdown");
+        status.Write(
+            stopSignaled ? "WINDOWS_NATIVE_STOP_SIGNAL" : "WINDOWS_NATIVE_STOP_SIGNAL_FALLBACK",
+            stopSignaled ? "Stop signal written; waiting for receiver shutdown" : "Stop signal could not be written; termination fallback may be required");
         var stopped = await WaitForReceiverStopAsync(status).ConfigureAwait(false);
         if (!stopped)
         {
@@ -182,8 +193,15 @@ internal sealed class WindowsNativeOrchestrator
             StartPhaseCount,
             "Shutdown",
             stopCompleted ? "OK" : "WARN",
-            $"Receiver stopped={stopped}; physical input restored={inputRestored}");
+            $"Stop signal written={stopSignaled}; receiver stopped={stopped}; physical input restored={inputRestored}");
         return stopCompleted ? 0 : 1;
+    }
+
+    private static void ReportAlreadyRunning(StatusWriter status, int pid, int controllers)
+    {
+        status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={pid} controllers={controllers}");
+        status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {controllers} controller(s)");
+        status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={pid}");
     }
 
     private async Task<bool> EnsureHidHideAsync(HidHideManager hidHide, StatusWriter status)
@@ -499,7 +517,7 @@ internal sealed class WindowsNativeOrchestrator
         return restore.ExitCode == 0;
     }
 
-    private void ClearStopSignal(StatusWriter status)
+    private bool ClearStopSignal(StatusWriter status)
     {
         var path = StopSignalPath();
         try
@@ -509,10 +527,14 @@ internal sealed class WindowsNativeOrchestrator
                 File.Delete(path);
                 status.Write("WINDOWS_NATIVE_STOP_SIGNAL_CLEARED", "Removed windows-native.stop from a previous session");
             }
+
+            return true;
         }
         catch (Exception ex)
         {
             status.Write("WINDOWS_NATIVE_STOP_SIGNAL_CLEAR_WARN", "Could not remove windows-native.stop: " + ex.Message);
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_STOP_SIGNAL_CLEAR_FAILED", ("error", ex.Message));
+            return false;
         }
     }
 
