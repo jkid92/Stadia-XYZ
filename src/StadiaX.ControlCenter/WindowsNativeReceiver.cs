@@ -331,7 +331,7 @@ internal sealed class WindowsNativeReceiver
             LogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
         }
 
-        WriteTelemetrySafely(controllerIndex, default);
+        DeactivateTelemetrySafely(controllerIndex);
     }
 
     private void WriteTelemetrySafely(int controllerIndex, ControllerState state)
@@ -342,21 +342,38 @@ internal sealed class WindowsNativeReceiver
         }
         catch (Exception ex)
         {
-            var now = DateTimeOffset.UtcNow;
-            var shouldLog = false;
-            lock (_telemetryErrorLock)
-            {
-                if (now >= _nextTelemetryErrorLog)
-                {
-                    _nextTelemetryErrorLog = now.AddSeconds(5);
-                    shouldLog = true;
-                }
-            }
+            ReportTelemetryError(controllerIndex, ex);
+        }
+    }
 
-            if (shouldLog)
+    private void DeactivateTelemetrySafely(int controllerIndex)
+    {
+        try
+        {
+            _telemetryWriter.Deactivate(controllerIndex);
+        }
+        catch (Exception ex)
+        {
+            ReportTelemetryError(controllerIndex, ex);
+        }
+    }
+
+    private void ReportTelemetryError(int controllerIndex, Exception ex)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var shouldLog = false;
+        lock (_telemetryErrorLock)
+        {
+            if (now >= _nextTelemetryErrorLog)
             {
-                LogError("P{0} controller telemetry write failed: {1}", controllerIndex + 1, ex.Message);
+                _nextTelemetryErrorLog = now.AddSeconds(5);
+                shouldLog = true;
             }
+        }
+
+        if (shouldLog)
+        {
+            LogError("P{0} controller telemetry write failed: {1}", controllerIndex + 1, ex.Message);
         }
     }
 

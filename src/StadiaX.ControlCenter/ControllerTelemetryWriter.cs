@@ -21,6 +21,16 @@ internal sealed class ControllerTelemetryWriter
 
     public void Write(int controllerIndex, ControllerState state)
     {
+        WriteCore(controllerIndex, state, connected: true, force: false);
+    }
+
+    public void Deactivate(int controllerIndex)
+    {
+        WriteCore(controllerIndex, default, connected: false, force: true);
+    }
+
+    private void WriteCore(int controllerIndex, ControllerState state, bool connected, bool force)
+    {
         if (controllerIndex < 0 || controllerIndex >= MaxControllers)
         {
             return;
@@ -34,14 +44,19 @@ internal sealed class ControllerTelemetryWriter
         {
             var telemetry = _telemetry[controllerIndex];
             telemetry.State = state;
-            telemetry.Packets++;
-            if (telemetry.FirstSeenMs == 0)
+            telemetry.Connected = connected;
+            if (connected)
             {
-                telemetry.FirstSeenMs = tickMs;
+                telemetry.Packets++;
+                if (telemetry.FirstSeenMs == 0)
+                {
+                    telemetry.FirstSeenMs = tickMs;
+                }
+
+                telemetry.LastSeenMs = tickMs;
             }
 
-            telemetry.LastSeenMs = tickMs;
-            if (now - _lastWrite < TimeSpan.FromMilliseconds(33))
+            if (!force && now - _lastWrite < TimeSpan.FromMilliseconds(33))
             {
                 return;
             }
@@ -64,11 +79,11 @@ internal sealed class ControllerTelemetryWriter
             for (var i = 0; i < snapshot.Length; i++)
             {
                 var telemetry = snapshot[i];
-                var active = telemetry.LastSeenMs > 0 && tickMs - telemetry.LastSeenMs < 5000;
+                var active = telemetry.Connected && telemetry.LastSeenMs > 0 && tickMs - telemetry.LastSeenMs < 5000;
                 var elapsed = telemetry.FirstSeenMs > 0 && telemetry.LastSeenMs >= telemetry.FirstSeenMs
                     ? (telemetry.LastSeenMs - telemetry.FirstSeenMs) / 1000d
                     : 0d;
-                var pps = elapsed > 0 ? telemetry.Packets / elapsed : 0d;
+                var pps = active && elapsed > 0 ? telemetry.Packets / elapsed : 0d;
 
                 writer.WriteStartObject();
                 writer.WriteNumber("index", i);
@@ -125,6 +140,7 @@ internal sealed class ControllerTelemetryWriter
 
     private sealed class ControllerTelemetryState
     {
+        public bool Connected { get; set; }
         public ControllerState State { get; set; }
         public ulong Packets { get; set; }
         public long FirstSeenMs { get; set; }
@@ -134,6 +150,7 @@ internal sealed class ControllerTelemetryWriter
         {
             return new ControllerTelemetryState
             {
+                Connected = Connected,
                 State = State,
                 Packets = Packets,
                 FirstSeenMs = FirstSeenMs,
