@@ -9,6 +9,7 @@ internal static class Program
             args.Contains("--dpi-preview=100", StringComparer.OrdinalIgnoreCase))
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
+            Environment.SetEnvironmentVariable("STADIAX_UI_CONSTRAINED", "0");
         }
         if (args.Contains("--constrained-ui", StringComparer.OrdinalIgnoreCase) ||
             args.Contains("--dpi-preview=200", StringComparer.OrdinalIgnoreCase))
@@ -20,6 +21,7 @@ internal static class Program
             args.Contains("--classic-ui", StringComparer.OrdinalIgnoreCase))
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "comfortable");
+            Environment.SetEnvironmentVariable("STADIAX_UI_CONSTRAINED", "0");
         }
         if (args.Contains("--demo-bluetooth", StringComparer.OrdinalIgnoreCase))
         {
