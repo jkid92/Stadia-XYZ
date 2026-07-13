@@ -9,6 +9,7 @@ internal sealed class BridgeOrchestrator
     private const int StopPhaseCount = 3;
     private static readonly TimeSpan ReceiverStopSignalMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan StartLockMaxAge = TimeSpan.FromSeconds(60);
+    private const string WslSessionFileName = "wsl_distro_session.txt";
 
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
@@ -131,6 +132,11 @@ internal sealed class BridgeOrchestrator
         }
         status.Write("WSL_DISTRO_SELECTED", $"Using WSL distro {distro}");
         status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "OK", $"Using WSL distro {distro}");
+        if (!TryWriteWslSessionFile(distro, status))
+        {
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", "Could not persist the WSL distro for safe teardown");
+            return 1;
+        }
 
         if (!await EnsureKernelAsync(distro, status).ConfigureAwait(false))
         {
@@ -230,6 +236,14 @@ internal sealed class BridgeOrchestrator
     public async Task<int> StopAsync()
     {
         var status = new StatusWriter(_paths, "teardown.log");
+        using var stopLock = TryAcquireStopLock(status);
+        if (stopLock is null)
+        {
+            status.Write("STOP_BUSY", "Another bridge teardown is already in progress");
+            status.WritePhase("Linux bridge", 1, StopPhaseCount, "Stop receiver", "WAIT", "Another teardown is already in progress");
+            return 2;
+        }
+
         var warnings = false;
         var receiverWasActive = TryGetActiveIntegratedReceiver(out _, out _);
         var busFile = Path.Combine(_paths.Root, "bt_busid.txt");
@@ -252,22 +266,19 @@ internal sealed class BridgeOrchestrator
             receiverStopped = await TerminateIntegratedReceiverIfActiveAsync(status).ConfigureAwait(false);
         }
 
-        var wslShutdown = await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
-        var wslStopped = wslShutdown.ExitCode == 0;
-        status.Write(
-            wslStopped ? "WSL_SHUTDOWN_OK" : "WSL_SHUTDOWN_WARN",
-            $"exit={wslShutdown.ExitCode} detail={Shorten(FirstNonEmpty(wslShutdown.Error, wslShutdown.Output, "none"), 220)}");
-        warnings |= !receiverStopped || !wslStopped;
+        var distro = await ResolveDistroForStopAsync(status).ConfigureAwait(false);
+        var linuxStopped = await StopLinuxCoreAsync(distro, status).ConfigureAwait(false);
+        warnings |= !receiverStopped || !linuxStopped;
         await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
         status.WritePhase(
             "Linux bridge",
             1,
             StopPhaseCount,
             "Stop receiver",
-            receiverStopped && wslStopped ? "OK" : "WARN",
-            receiverStopped && wslStopped
-                ? "Receiver stopped and WSL shutdown completed"
-                : $"Receiver stopped={receiverStopped}; WSL shutdown completed={wslStopped}");
+            receiverStopped && linuxStopped ? "OK" : "WARN",
+            receiverStopped && linuxStopped
+                ? "Receiver and Stadia Linux processes stopped"
+                : $"Receiver stopped={receiverStopped}; Linux processes stopped={linuxStopped}");
 
         status.WritePhase("Linux bridge", 2, StopPhaseCount, "Restore Bluetooth", "START", "Resolving adapter to detach");
         var busId = await ResolveBusIdForDetachAsync(status).ConfigureAwait(false);
@@ -317,11 +328,152 @@ internal sealed class BridgeOrchestrator
         }
 
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        if (!warnings)
+        {
+            TryDeleteSessionFile(WslSessionPath(), status, "WSL_SESSION_FILE");
+        }
         status.Write(warnings ? "STOP_DONE_WARN" : "STOP_DONE", warnings ? "Teardown completed with warnings" : "Teardown complete");
         status.WritePhase("Linux bridge", 3, StopPhaseCount, "Teardown", warnings ? "WARN" : "OK", warnings ? "Teardown completed with warnings" : "Teardown complete");
         return warnings ? 1 : 0;
     }
 
+    private bool TryWriteWslSessionFile(string distro, StatusWriter status)
+    {
+        var path = WslSessionPath();
+        var tempPath = path + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, distro + Environment.NewLine);
+            File.Move(tempPath, path, overwrite: true);
+            status.Write("WSL_SESSION_FILE_READY", $"Recorded teardown distro {distro}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            TryDeleteFile(tempPath);
+            status.Write("WSL_SESSION_FILE_WRITE_FAILED", "Could not record the WSL teardown distro: " + ex.Message);
+            AppDiagnosticsLogger.Record("WSL_SESSION_FILE_WRITE_FAILED", ("path", path), ("error", ex.Message));
+            return false;
+        }
+    }
+
+    private async Task<string> ResolveDistroForStopAsync(StatusWriter status)
+    {
+        var path = WslSessionPath();
+        if (File.Exists(path))
+        {
+            try
+            {
+                var recorded = File.ReadAllText(path).Trim();
+                if (IsSafeDistroName(recorded))
+                {
+                    status.Write("WSL_STOP_DISTRO_RECORDED", $"Using recorded teardown distro {recorded}");
+                    return recorded;
+                }
+
+                status.Write("WSL_STOP_DISTRO_INVALID", "Ignored invalid WSL distro session file");
+            }
+            catch (Exception ex)
+            {
+                status.Write("WSL_STOP_DISTRO_READ_WARN", "Could not read the WSL distro session file: " + ex.Message);
+            }
+        }
+
+        var resolved = await _resolver.ResolveAsync(Environment.GetEnvironmentVariable("STADIA_X_WSL_DISTRO")).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            status.Write("WSL_STOP_DISTRO_FALLBACK", $"Using resolved teardown distro {resolved}");
+        }
+        return resolved;
+    }
+
+    private async Task<bool> StopLinuxCoreAsync(string distro, StatusWriter status)
+    {
+        if (!IsSafeDistroName(distro))
+        {
+            status.Write("WSL_CORE_STOP_SKIPPED", "No safe WSL distro was available for targeted Stadia cleanup");
+            return true;
+        }
+
+        var running = await _runner.RunAsync(
+            "wsl",
+            new[] { "-l", "--running", "-q" },
+            _paths.Root,
+            10000).ConfigureAwait(false);
+        var runningDistros = running.Output
+            .Replace("\0", "", StringComparison.Ordinal)
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(item => item.Trim());
+        if (running.ExitCode == 0 && !runningDistros.Contains(distro, StringComparer.OrdinalIgnoreCase))
+        {
+            status.Write("WSL_CORE_STOP_NOT_RUNNING", $"WSL distro {distro} is not running");
+            return true;
+        }
+
+        const string script = "set +e; " +
+                              "pkill -TERM -x stadia_bridge 2>/dev/null || true; " +
+                              "pkill -TERM -f '^/bin/bash /opt/stadia-x/start.sh' 2>/dev/null || true; " +
+                              "for i in 1 2 3 4 5 6 7 8 9 10; do " +
+                              "if ! pgrep -x stadia_bridge >/dev/null && ! pgrep -f '^/bin/bash /opt/stadia-x/start.sh' >/dev/null; then exit 0; fi; " +
+                              "sleep 0.2; done; " +
+                              "pkill -KILL -x stadia_bridge 2>/dev/null || true; " +
+                              "pkill -KILL -f '^/bin/bash /opt/stadia-x/start.sh' 2>/dev/null || true; " +
+                              "sleep 0.2; " +
+                              "! pgrep -x stadia_bridge >/dev/null && ! pgrep -f '^/bin/bash /opt/stadia-x/start.sh' >/dev/null";
+        var result = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "-u", "root", "bash", "-lc", script },
+            _paths.Root,
+            15000).ConfigureAwait(false);
+        var stopped = result.ExitCode == 0;
+        status.Write(
+            stopped ? "WSL_CORE_STOP_OK" : "WSL_CORE_STOP_WARN",
+            stopped
+                ? $"Stopped only Stadia processes in {distro}; other WSL workloads were left running"
+                : $"Could not confirm Stadia process shutdown in {distro}: {Shorten(FirstNonEmpty(result.Error, result.Output, "none"), 220)}");
+        return stopped;
+    }
+
+    private IDisposable? TryAcquireStopLock(StatusWriter status)
+    {
+        Mutex? mutex = null;
+        try
+        {
+            mutex = new Mutex(false, @"Local\StadiaX.BridgeStop");
+            try
+            {
+                if (!mutex.WaitOne(0))
+                {
+                    mutex.Dispose();
+                    return null;
+                }
+            }
+            catch (AbandonedMutexException)
+            {
+            }
+
+            status.Write("STOP_LOCK_ACQUIRED", $"pid={Environment.ProcessId}");
+            return new MutexLock(mutex);
+        }
+        catch (Exception ex)
+        {
+            mutex?.Dispose();
+            status.Write("STOP_LOCK_FAILED", "Could not acquire the bridge teardown lock: " + ex.Message);
+            AppDiagnosticsLogger.Record("STOP_LOCK_FAILED", ("error", ex.Message));
+            return null;
+        }
+    }
+
+    private string WslSessionPath()
+    {
+        return Path.Combine(_paths.Root, WslSessionFileName);
+    }
+
+    private static bool IsSafeDistroName(string? name)
+    {
+        return !string.IsNullOrWhiteSpace(name) &&
+               name.Trim().All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '.' or '-');
+    }
     private static IEnumerable<string> RequiredRuntimeFiles()
     {
         yield return "start.sh";
@@ -413,7 +565,6 @@ internal sealed class BridgeOrchestrator
 
     private async Task CleanupOldSessionAsync(string distro, StatusWriter status, DateTimeOffset startRequestedAt)
     {
-        SignalReceiverStop(status);
         var legacyReceiverRunning = Process.GetProcessesByName("stadia_receiver").Length > 0;
         var linuxSessionRunning = false;
         if (!string.IsNullOrWhiteSpace(distro))
@@ -443,9 +594,9 @@ internal sealed class BridgeOrchestrator
                 _paths.Root,
                 10000).ConfigureAwait(false);
         }
-        await _runner.RunAsync("wsl", new[] { "--shutdown" }, _paths.Root, 20000).ConfigureAwait(false);
-        await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
-        ClearReceiverStopSignal(status);
+        await StopLinuxCoreAsync(distro, status).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        ClearReceiverStopSignal(status, startRequestedAt);
     }
 
     private async Task<bool> WaitForWslNetworkAsync(string distro)
@@ -768,7 +919,15 @@ internal sealed class BridgeOrchestrator
         finally
         {
             status.Write("RECEIVER_EXITED", $"Integrated receiver exited with code {exitCode}");
-            teardownSucceeded = await StopBridgeSafelyAsync(status).ConfigureAwait(false);
+            if (ReceiverStopSignalIsActive())
+            {
+                status.Write("STOP_AFTER_RECEIVER_DELEGATED", "External Stop request owns bridge teardown");
+                teardownSucceeded = true;
+            }
+            else
+            {
+                teardownSucceeded = await StopBridgeSafelyAsync(status).ConfigureAwait(false);
+            }
         }
 
         if (exitCode == 0 && !teardownSucceeded)
@@ -1458,6 +1617,27 @@ internal sealed class BridgeOrchestrator
         return value[..maxLength] + "...";
     }
 
+    private sealed class MutexLock : IDisposable
+    {
+        private Mutex? _mutex;
+
+        public MutexLock(Mutex mutex)
+        {
+            _mutex = mutex;
+        }
+
+        public void Dispose()
+        {
+            var mutex = Interlocked.Exchange(ref _mutex, null);
+            if (mutex is null)
+            {
+                return;
+            }
+
+            try { mutex.ReleaseMutex(); } catch (ApplicationException) { }
+            mutex.Dispose();
+        }
+    }
     private sealed class FileLock : IDisposable
     {
         private readonly FileStream _stream;
