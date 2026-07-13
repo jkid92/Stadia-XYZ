@@ -8,6 +8,7 @@ namespace StadiaX.ControlCenter;
 internal sealed class WindowsNativeReceiver
 {
     private const int MaxControllers = 4;
+    private const int HidPresenceProbeIntervalMs = 2000;
 
     private readonly AppPaths _paths;
     private readonly StatusWriter _status;
@@ -184,6 +185,7 @@ internal sealed class WindowsNativeReceiver
                 var mapper = new WindowsNativeHidMapper(hidDevice);
                 var rumbleWriter = new WindowsNativeRumbleWriter(hidDevice, stream, LogInfo, LogError);
                 var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
+                var nextPresenceProbe = Environment.TickCount64 + HidPresenceProbeIntervalMs;
                 _rumbleWriters[controllerIndex] = rumbleWriter;
                 reconnectAttempt = 0;
                 neutralized = false;
@@ -208,6 +210,16 @@ internal sealed class WindowsNativeReceiver
                         }
                         catch (TimeoutException)
                         {
+                            var now = Environment.TickCount64;
+                            if (now >= nextPresenceProbe)
+                            {
+                                nextPresenceProbe = now + HidPresenceProbeIntervalMs;
+                                if (FindHidDevice(currentDevice.FileSystemName) is null)
+                                {
+                                    throw new IOException($"{currentDevice.FriendlyName} disappeared from Windows HID");
+                                }
+                            }
+
                             continue;
                         }
 
