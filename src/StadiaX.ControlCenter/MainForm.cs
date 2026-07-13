@@ -92,6 +92,7 @@ internal sealed class MainForm : Form
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
+    private DateTime _lastTelemetryFailureLogUtc = DateTime.MinValue;
 
     public MainForm(AppPaths paths) : this(paths, auditMode: false)
     {
@@ -139,7 +140,8 @@ internal sealed class MainForm : Form
             }
             catch (Exception ex)
             {
-                _statusLabel.Text = "Initial refresh failed";
+                var reason = RecordUiFailure("Initial refresh", ex);
+                FailOperationProgress("Initial refresh", $"Failed - {reason}");
                 _diagnosticsBox.Text = ex.ToString();
                 _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
             }
@@ -1293,7 +1295,7 @@ internal sealed class MainForm : Form
         };
 
         _batteryTimer.Interval = 30000;
-        _batteryTimer.Tick += (_, _) => { _ = RunActionWithDialogAsync(() => UpdateBatteryAsync()); };
+        _batteryTimer.Tick += (_, _) => { _ = RunActionWithDialogAsync("Battery refresh", () => UpdateBatteryAsync(), showDialog: false); };
     }
 
     private void ConfigureTray()
@@ -2001,6 +2003,14 @@ internal sealed class MainForm : Form
             AddListRow(_controllerList, "-", "ERROR", ex.Message, Color.FromArgb(180, 45, 45));
             _controllerVisualizer.SetTelemetry(null, "Controller telemetry could not be read.");
             _controllerVisualStatusLabel.Text = "Telemetry read failed";
+            if (_lastTelemetryFailureLogUtc <= DateTime.UtcNow - TimeSpan.FromSeconds(30))
+            {
+                _lastTelemetryFailureLogUtc = DateTime.UtcNow;
+                AppDiagnosticsLogger.Record(
+                    "CONTROLLER_TELEMETRY_READ_FAILED",
+                    ("exceptionType", ex.GetType().FullName),
+                    ("error", ex.ToString()));
+            }
             RefreshDashboardUi();
             RefreshPairingWizardStatus();
             return;
@@ -2706,6 +2716,7 @@ internal sealed class MainForm : Form
         {
             _diagnosticsBox.Text = ex.ToString();
             _statusLabel.Text = "Update check failed";
+            throw;
         }
     }
 
@@ -2781,7 +2792,8 @@ internal sealed class MainForm : Form
             }
             catch (Exception ex)
             {
-                FailOperationProgress("Starting bridge", "Could not refresh Linux Bluetooth devices");
+                var reason = RecordUiFailure("Post-start Linux Bluetooth refresh", ex);
+                FailOperationProgress("Starting bridge", $"Bluetooth refresh failed - {reason}");
                 MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -2930,6 +2942,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            RecordUiFailure("Save Bluetooth BUSID", ex);
             MessageBox.Show(ex.Message, "Bluetooth BUSID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
@@ -2959,6 +2972,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            RecordUiFailure("Save WSL distro", ex);
             MessageBox.Show(ex.Message, "WSL distro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
@@ -3216,6 +3230,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
+            RecordUiFailure("Save controller profile", ex);
             MessageBox.Show(ex.Message, "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
@@ -3698,7 +3713,7 @@ internal sealed class MainForm : Form
             LogUserSelection("Battery overlay toggled", ("enabled", _batteryOverlayCheck.Checked.ToString()));
             if (_batteryOverlayCheck.Checked)
             {
-                _ = RunActionWithDialogAsync(() => UpdateBatteryAsync());
+                _ = RunActionWithDialogAsync("Battery overlay refresh", () => UpdateBatteryAsync(), showDialog: true);
             }
             else
             {
@@ -3888,7 +3903,7 @@ internal sealed class MainForm : Form
         AddFlowButton(parent, text, () => { _ = RunLoggedActionWithDialogAsync(text, action); });
     }
 
-    private static async Task RunActionWithDialogAsync(Func<Task> action)
+    private async Task RunActionWithDialogAsync(string actionName, Func<Task> action, bool showDialog)
     {
         try
         {
@@ -3896,7 +3911,11 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            var reason = RecordUiFailure(actionName, ex, includeUserAction: showDialog);
+            if (showDialog)
+            {
+                MessageBox.Show(reason, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
         }
     }
 
@@ -3960,6 +3979,21 @@ internal sealed class MainForm : Form
                 .Replace("\n", " ", StringComparison.Ordinal)
                 .Trim();
         return message.Length <= 240 ? message : message[..237] + "...";
+    }
+
+    private string RecordUiFailure(string operation, Exception exception, bool includeUserAction = true)
+    {
+        var reason = FormatOperationErrorForUser(exception);
+        if (includeUserAction)
+        {
+            LogUserAction("UI operation failed", ("operation", operation), ("reason", reason));
+        }
+        AppDiagnosticsLogger.Record(
+            "UI_OPERATION_FAILED",
+            ("operation", operation),
+            ("exceptionType", exception.GetType().FullName),
+            ("error", exception.ToString()));
+        return reason;
     }
 
     private static void AddEditorRow(TableLayoutPanel panel, int row, string labelText, Control editor)
