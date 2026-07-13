@@ -23,6 +23,7 @@ internal sealed class BridgeOrchestrator
 
     public async Task<int> StartAsync()
     {
+        var startRequestedAt = DateTimeOffset.UtcNow;
         var status = new StatusWriter(_paths, "start.log");
         status.Reset("START_REQUESTED", "Start requested from StadiaX.exe");
         status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "START", "Checking runtime files and host tools");
@@ -46,10 +47,18 @@ internal sealed class BridgeOrchestrator
             return 0;
         }
 
-        if (!ClearReceiverStopSignal(status))
+        if (!ClearReceiverStopSignal(status, startRequestedAt))
         {
             status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "FAIL", "Could not clear the previous receiver stop signal");
             return 1;
+        }
+        using var cancellation = new CancellationTokenSource();
+        await using var stopWatcher = StartReceiverStopWatcher(cancellation);
+        if (ReceiverStopSignalIsActive())
+        {
+            cancellation.Cancel();
+            ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites");
+            return 0;
         }
         ClearReceiverReadyMarker(status, "START");
         ClearControllerState(status, "START");
@@ -62,17 +71,24 @@ internal sealed class BridgeOrchestrator
             return 1;
         }
 
-        if (!await _runner.CommandExistsAsync("usbipd", _paths.Root).ConfigureAwait(false))
+        if (!await _runner.CommandExistsAsync("usbipd", _paths.Root, cancellation.Token).ConfigureAwait(false))
         {
             status.Write("USBIPD_MISSING", "usbipd was not found; launching winget install");
             status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "INSTALL", "usbipd is missing; requesting winget install");
-            await _runner.RunAsync("winget", new[] { "install", "usbipd" }, _paths.Root, 120000, createNoWindow: false).ConfigureAwait(false);
+            await _runner.RunAsync(
+                "winget",
+                new[] { "install", "usbipd" },
+                _paths.Root,
+                120000,
+                createNoWindow: false,
+                cancellationToken: cancellation.Token).ConfigureAwait(false);
+            if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
             status.Write("RESTART_REQUIRED", "usbipd install was requested; restart Windows before starting again");
             status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "WAIT", "Restart Windows after usbipd install");
             return 2;
         }
 
-        if (!await _runner.CommandExistsAsync("wsl", _paths.Root).ConfigureAwait(false))
+        if (!await _runner.CommandExistsAsync("wsl", _paths.Root, cancellation.Token).ConfigureAwait(false))
         {
             status.Write("WSL_MISSING", "wsl.exe is missing");
             status.WritePhase("Linux bridge", 1, StartPhaseCount, "Prerequisites", "FAIL", "wsl.exe is missing");
@@ -87,13 +103,26 @@ internal sealed class BridgeOrchestrator
         {
             status.Write("WSL_DISTRO_MISSING", "No usable WSL distro found; launching Ubuntu install");
             status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "INSTALL", "No usable distro found; requesting Ubuntu install");
-            await _runner.RunAsync("wsl", new[] { "--install", "-d", "Ubuntu" }, _paths.Root, 120000, createNoWindow: false).ConfigureAwait(false);
+            await _runner.RunAsync(
+                "wsl",
+                new[] { "--install", "-d", "Ubuntu" },
+                _paths.Root,
+                120000,
+                createNoWindow: false,
+                cancellationToken: cancellation.Token).ConfigureAwait(false);
+            if (ReportStartCancelled(cancellation.Token, status, 2, "WSL distro")) return 0;
             status.Write("RESTART_REQUIRED", "Ubuntu install was requested; restart Windows before starting again");
             status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "WAIT", "Restart Windows after Ubuntu install");
             return 2;
         }
 
-        var wslCheck = await _runner.RunAsync("wsl", new[] { "-d", distro, "echo", "ok" }, _paths.Root, 15000).ConfigureAwait(false);
+        var wslCheck = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "echo", "ok" },
+            _paths.Root,
+            15000,
+            cancellationToken: cancellation.Token).ConfigureAwait(false);
+        if (ReportStartCancelled(cancellation.Token, status, 2, "WSL distro")) return 0;
         if (wslCheck.ExitCode != 0)
         {
             status.Write("WSL_DISTRO_START_FAILED", $"WSL distro {distro} did not start correctly");
@@ -108,13 +137,15 @@ internal sealed class BridgeOrchestrator
             status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", "WSL USB/HID kernel support is not ready");
             return 1;
         }
-        await CleanupOldSessionAsync(distro, status).ConfigureAwait(false);
+        await CleanupOldSessionAsync(distro, status, startRequestedAt).ConfigureAwait(false);
+        if (ReportStartCancelled(cancellation.Token, status, 2, "WSL cleanup")) return 0;
 
         status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "START", $"Starting WSL distro {distro}");
         status.Write("WSL_START", $"Starting WSL distro {distro}");
         await _runner.RunAsync("wsl", new[] { "-d", distro, "echo", "WSL Booted" }, _paths.Root, 15000).ConfigureAwait(false);
         if (!await WaitForWslNetworkAsync(distro).ConfigureAwait(false))
         {
+            if (ReportStartCancelled(cancellation.Token, status, 2, "WSL network")) return 0;
             status.Write("WSL_NETWORK_TIMEOUT", "Timed out waiting for WSL network");
             status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "FAIL", "Timed out waiting for WSL network");
             return 1;
@@ -140,10 +171,12 @@ internal sealed class BridgeOrchestrator
 
         if (!await AttachBluetoothAsync(distro, busId, status).ConfigureAwait(false))
         {
+            if (ReportStartCancelled(cancellation.Token, status, 3, "Bluetooth adapter")) return 0;
             status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "FAIL", "Could not attach Bluetooth adapter to WSL");
             await RollbackFailedStartAsync(status, "Bluetooth adapter attach").ConfigureAwait(false);
             return 1;
         }
+        if (ReportStartCancelled(cancellation.Token, status, 3, "Bluetooth adapter")) return 0;
 
         status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "START", "Deploying and starting BlueZ bridge");
         if (!await DeployLinuxBridgeAsync(distro, status).ConfigureAwait(false))
@@ -154,6 +187,11 @@ internal sealed class BridgeOrchestrator
         }
 
         var linuxStarted = await StartLinuxCoreAsync(distro, status).ConfigureAwait(false);
+        if (ReportStartCancelled(cancellation.Token, status, 4, "Linux core"))
+        {
+            await RollbackFailedStartAsync(status, "Stop request").ConfigureAwait(false);
+            return 0;
+        }
         if (!linuxStarted)
         {
             status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "FAIL", "Could not start Linux core");
@@ -179,7 +217,12 @@ internal sealed class BridgeOrchestrator
 
         status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", "START", "Starting integrated Windows receiver");
         status.Write("RECEIVER_START", "Starting Windows receiver");
-        var receiverExit = await RunIntegratedReceiverAndStopAsync(wslIp, status).ConfigureAwait(false);
+        if (ReportStartCancelled(cancellation.Token, status, 5, "Controller discovery"))
+        {
+            await RollbackFailedStartAsync(status, "Stop request").ConfigureAwait(false);
+            return 0;
+        }
+        var receiverExit = await RunIntegratedReceiverAndStopAsync(wslIp, status, cancellation.Token).ConfigureAwait(false);
         status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", receiverExit == 0 ? "OK" : "FAIL", $"Integrated receiver exited with code {receiverExit}");
         return receiverExit;
     }
@@ -368,7 +411,7 @@ internal sealed class BridgeOrchestrator
         return true;
     }
 
-    private async Task CleanupOldSessionAsync(string distro, StatusWriter status)
+    private async Task CleanupOldSessionAsync(string distro, StatusWriter status, DateTimeOffset startRequestedAt)
     {
         SignalReceiverStop(status);
         var legacyReceiverRunning = Process.GetProcessesByName("stadia_receiver").Length > 0;
@@ -386,7 +429,7 @@ internal sealed class BridgeOrchestrator
         if (!legacyReceiverRunning && !linuxSessionRunning)
         {
             await Task.Delay(TimeSpan.FromMilliseconds(750)).ConfigureAwait(false);
-            ClearReceiverStopSignal(status);
+            ClearReceiverStopSignal(status, startRequestedAt);
             return;
         }
 
@@ -697,7 +740,7 @@ internal sealed class BridgeOrchestrator
         return result.Output.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
     }
 
-    private async Task<int> RunIntegratedReceiverAndStopAsync(string wslIp, StatusWriter status)
+    private async Task<int> RunIntegratedReceiverAndStopAsync(string wslIp, StatusWriter status, CancellationToken cancellationToken)
     {
         try
         {
@@ -710,14 +753,12 @@ internal sealed class BridgeOrchestrator
             AppDiagnosticsLogger.Record("RECEIVER_START_LOG_WRITE_WARN", ("error", ex.Message));
         }
 
-        using var cancellation = new CancellationTokenSource();
-        using var stopWatcher = StartReceiverStopWatcher(cancellation);
         var receiver = new IntegratedReceiver(_paths, wslIp, status);
         var exitCode = 1;
         var teardownSucceeded = false;
         try
         {
-            exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
+            exitCode = await receiver.RunAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -776,6 +817,21 @@ internal sealed class BridgeOrchestrator
         }
     }
 
+    private static bool ReportStartCancelled(
+        CancellationToken cancellationToken,
+        StatusWriter status,
+        int phase,
+        string phaseName)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        status.Write("START_CANCELLED", $"Stop requested during {phaseName}");
+        status.WritePhase("Linux bridge", phase, StartPhaseCount, phaseName, "WAIT", "Start cancelled by Stop request");
+        return true;
+    }
     private static void ReportAlreadyRunning(StatusWriter status, int pid, string detail)
     {
         status.Write("BRIDGE_ALREADY_RUNNING", $"Integrated receiver is already active pid={pid} detail={detail}");
@@ -882,16 +938,27 @@ internal sealed class BridgeOrchestrator
             {
                 if (ReceiverStopSignalIsActive())
                 {
-                    cancellation.Cancel();
+                    TryCancel(cancellation);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                cancellation.Cancel();
+                AppDiagnosticsLogger.Record("RECEIVER_STOP_WATCHER_WARN", ("error", ex.Message));
+                TryCancel(cancellation);
             }
         }, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500));
     }
 
+    private static void TryCancel(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
     private bool SignalReceiverStop(StatusWriter? status = null)
     {
         try
@@ -908,13 +975,23 @@ internal sealed class BridgeOrchestrator
         }
     }
 
-    private bool ClearReceiverStopSignal(StatusWriter status)
+    private bool ClearReceiverStopSignal(StatusWriter status, DateTimeOffset? startRequestedAt = null)
     {
         var path = ReceiverStopSignalPath();
         try
         {
             if (File.Exists(path))
             {
+                var text = File.ReadLines(path).FirstOrDefault()?.Trim();
+                var timestamp = DateTimeOffset.TryParse(text, out var parsed)
+                    ? parsed.ToUniversalTime()
+                    : new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+                if (startRequestedAt.HasValue && timestamp >= startRequestedAt.Value)
+                {
+                    status.Write("RECEIVER_STOP_SIGNAL_PENDING", "Retained Stop request received during startup");
+                    return true;
+                }
+
                 File.Delete(path);
                 status.Write("RECEIVER_STOP_SIGNAL_CLEARED", "Removed receiver.stop from a previous session");
             }

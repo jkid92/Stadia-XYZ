@@ -3448,7 +3448,7 @@ internal sealed class MainForm : Form
 
         try
         {
-            var process = Process.Start(startInfo);
+            using var process = Process.Start(startInfo);
             var pid = process?.Id.ToString() ?? "unknown";
             LogUserAction(
                 "Launch self command started",

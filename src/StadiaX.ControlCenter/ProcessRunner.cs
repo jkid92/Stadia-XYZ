@@ -7,7 +7,12 @@ internal sealed record CommandResult(int ExitCode, string Output, string Error);
 
 internal sealed class ProcessRunner
 {
-    public async Task<CommandResult> RunAsync(string fileName, string arguments, string workingDirectory, int timeoutMilliseconds = 30000)
+    public async Task<CommandResult> RunAsync(
+        string fileName,
+        string arguments,
+        string workingDirectory,
+        int timeoutMilliseconds = 30000,
+        CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -22,7 +27,7 @@ internal sealed class ProcessRunner
             StandardErrorEncoding = Encoding.UTF8
         };
 
-        return await RunProcessAsync(startInfo, timeoutMilliseconds).ConfigureAwait(false);
+        return await RunProcessAsync(startInfo, timeoutMilliseconds, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<CommandResult> RunAsync(
@@ -31,7 +36,8 @@ internal sealed class ProcessRunner
         string workingDirectory,
         int timeoutMilliseconds = 30000,
         IReadOnlyDictionary<string, string>? environment = null,
-        bool createNoWindow = true)
+        bool createNoWindow = true,
+        CancellationToken cancellationToken = default)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -56,10 +62,13 @@ internal sealed class ProcessRunner
             }
         }
 
-        return await RunProcessAsync(startInfo, timeoutMilliseconds).ConfigureAwait(false);
+        return await RunProcessAsync(startInfo, timeoutMilliseconds, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<CommandResult> RunProcessAsync(ProcessStartInfo startInfo, int timeoutMilliseconds)
+    private static async Task<CommandResult> RunProcessAsync(
+        ProcessStartInfo startInfo,
+        int timeoutMilliseconds,
+        CancellationToken cancellationToken)
     {
         var startedAt = Stopwatch.StartNew();
         var commandId = Guid.NewGuid().ToString("N")[..8];
@@ -106,9 +115,10 @@ internal sealed class ProcessRunner
         process.BeginErrorReadLine();
 
         using var timeout = new CancellationTokenSource(timeoutMilliseconds);
+        using var waitCancellation = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token, cancellationToken);
         try
         {
-            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            await process.WaitForExitAsync(waitCancellation.Token).ConfigureAwait(false);
             process.WaitForExit();
         }
         catch (OperationCanceledException)
@@ -129,15 +139,18 @@ internal sealed class ProcessRunner
             }
             var outputText = Snapshot(output, outputLock);
             var errorText = Snapshot(error, errorLock);
+            var cancelledByCaller = cancellationToken.IsCancellationRequested;
             AppDiagnosticsLogger.Record(
-                "PROCESS_TIMEOUT",
+                cancelledByCaller ? "PROCESS_CANCELLED" : "PROCESS_TIMEOUT",
                 ("id", commandId),
                 ("file", startInfo.FileName),
                 ("elapsedMs", startedAt.ElapsedMilliseconds.ToString()),
                 ("cleanupObservedExit", cleanupObservedExit.ToString()),
                 ("outputBytes", outputText.Length.ToString()),
                 ("errorBytes", errorText.Length.ToString()));
-            return new CommandResult(-1, outputText, $"Timed out after {timeoutMilliseconds} ms.");
+            return cancelledByCaller
+                ? new CommandResult(-2, outputText, "Cancelled by stop request.")
+                : new CommandResult(-1, outputText, $"Timed out after {timeoutMilliseconds} ms.");
         }
 
         var result = new CommandResult(process.ExitCode, Snapshot(output, outputLock), Snapshot(error, errorLock));
@@ -161,9 +174,12 @@ internal sealed class ProcessRunner
         }
     }
 
-    public async Task<bool> CommandExistsAsync(string commandName, string workingDirectory)
+    public async Task<bool> CommandExistsAsync(
+        string commandName,
+        string workingDirectory,
+        CancellationToken cancellationToken = default)
     {
-        var result = await RunAsync("where.exe", commandName, workingDirectory, 10000).ConfigureAwait(false);
+        var result = await RunAsync("where.exe", commandName, workingDirectory, 10000, cancellationToken).ConfigureAwait(false);
         return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.Output);
     }
 
