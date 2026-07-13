@@ -60,6 +60,11 @@ internal sealed class NativeControlServices
     private readonly AppPaths _paths;
     private readonly ProcessRunner _runner;
     private readonly WslDistroResolver _wslResolver;
+    private string _liveInputDistroCache = "";
+    private ControllerTelemetrySnapshot? _lastLiveInputSnapshot;
+    private DateTime _lastLiveInputProbeUtc = DateTime.MinValue;
+    private DateTime _lastLiveInputTelemetryLogUtc = DateTime.MinValue;
+    private DateTime _lastLiveInputTelemetryFailureLogUtc = DateTime.MinValue;
 
     public NativeControlServices(AppPaths paths, ProcessRunner runner)
     {
@@ -209,12 +214,16 @@ internal sealed class NativeControlServices
             return Array.Empty<LinuxBluetoothDevice>();
         }
 
+        await EnsureBluetoothAdapterAttachedAsync(distro).ConfigureAwait(false);
+
         scanSeconds = Math.Clamp(scanSeconds, 0, 20);
-        var infoTimeoutSeconds = scanSeconds > 0 ? 3 : 1;
-        var listTimeoutSeconds = scanSeconds > 0 ? 4 : 2;
-        var commandTimeoutMs = scanSeconds > 0 ? Math.Max(15000, (scanSeconds + 8) * 1000) : 7000;
+        var listTimeoutSeconds = 2;
+        var commandTimeoutMs = scanSeconds > 0 ? Math.Max(30000, (scanSeconds + 22) * 1000) : 10000;
         var scanCommand = scanSeconds > 0
-            ? $"timeout {scanSeconds + 2} bluetoothctl --timeout {scanSeconds} scan on >/dev/null 2>&1 || true; "
+            ? $"scan_log=/tmp/stadia-x-ui-scan-$(id -u).log; rm -f \"$scan_log\"; timeout {scanSeconds + 2}s bluetoothctl --timeout {scanSeconds} scan on > \"$scan_log\" 2>&1 || true; timeout 2s bluetoothctl scan off >/dev/null 2>&1 || true; "
+            : "scan_log=/tmp/stadia-x-ui-scan-$(id -u).log; ";
+        var scanLogPipe = scanSeconds > 0
+            ? "[ -s \"$scan_log\" ] && cat \"$scan_log\" | parse_lines; "
             : "";
         var knownMacs = string.Join(" ",
             GetSelectedControllerMacs()
@@ -222,38 +231,46 @@ internal sealed class NativeControlServices
                 .Where(IsMac)
                 .Select(m => m.ToUpperInvariant())
                 .Distinct(StringComparer.OrdinalIgnoreCase));
-        var knownMacLoop = string.IsNullOrWhiteSpace(knownMacs)
-            ? ""
-            : $"for mac in {knownMacs}; do emit_device \"$mac\" \"\"; done; ";
 
         var script =
             "if ! command -v bluetoothctl >/dev/null 2>&1; then echo \"__ERROR__|bluetoothctl missing\"; exit 0; fi; " +
             scanCommand +
-            "emit_device() { " +
-            "mac=\"$1\"; name=\"$2\"; [ -z \"$mac\" ] && return; " +
-            $"info=\"$(timeout {infoTimeoutSeconds}s bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
-            "printf \"%s\\n\" \"$info\" | grep -Eiq \"Name:|Alias:|Connected:|UUID:\" || [ -n \"$name\" ] || return; " +
-            "[ -z \"$name\" ] && name=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Name:/ {print $2; exit}')\"; " +
-            "paired=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Paired:/ {print $2; exit}')\"; " +
-            "trusted=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Trusted:/ {print $2; exit}')\"; " +
-            "connected=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Connected:/ {print $2; exit}')\"; " +
-            "battery=\"$(printf \"%s\\n\" \"$info\" | awk -F'[()]' '/Battery Percentage:/ {print $2; exit}')\"; " +
-            "name=\"${name//|//}\"; paired=\"${paired//|//}\"; trusted=\"${trusted//|//}\"; connected=\"${connected//|//}\"; battery=\"${battery//|//}\"; " +
-            "printf '%s|%s|%s|%s|%s|%s\\n' \"$mac\" \"$name\" \"$paired\" \"$trusted\" \"$connected\" \"$battery\"; " +
-            "}; " +
-            "emit_list() { " +
-            "filter=\"$1\"; " +
-            $"if [ -z \"$filter\" ]; then timeout {listTimeoutSeconds}s bluetoothctl devices 2>/dev/null; else timeout {listTimeoutSeconds}s bluetoothctl devices \"$filter\" 2>/dev/null; fi | while IFS= read -r line; do " +
-            "mac=\"$(printf '%s\\n' \"$line\" | grep -Eo '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}' | head -n 1)\"; " +
-            "[ -z \"$mac\" ] && continue; " +
-            "name=\"${line#*$mac}\"; name=\"${name# }\"; " +
-            "emit_device \"$mac\" \"$name\"; " +
+            "parse_lines() { " +
+            "grep -Eo '([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}.*' | while IFS= read -r tail; do " +
+            "mac=\"${tail%% *}\"; name=\"${tail#\"$mac\"}\"; name=\"${name# }\"; " +
+            "case \"$tail\" in *Controller*) continue;; esac; " +
+            "case \"$name\" in RSSI:*|TxPower:*|ManufacturerData:*|ServiceData:*|Flags:*|UUIDs:*|Connected:*|Paired:*|Trusted:*|Class:*|Icon:*|Alias:*|Name:*|Discovering:*) continue;; esac; " +
+            "printf '%s|%s\\n' \"$mac\" \"$name\"; " +
             "done; " +
             "}; " +
-            "emit_list \"\"; emit_list Connected; emit_list Paired; emit_list Trusted; emit_list Bonded; " +
-            knownMacLoop;
+            "info_value() { printf '%s\\n' \"$1\" | sed -n \"s/^[[:space:]]*$2:[[:space:]]*//Ip\" | head -n 1; }; " +
+            "emit_device() { " +
+            "mac=\"$1\"; fallback_name=\"$2\"; " +
+            "info=\"$(timeout 3s bluetoothctl info \"$mac\" 2>/dev/null || true)\"; " +
+            "name=\"$(info_value \"$info\" Name)\"; [ -z \"$name\" ] && name=\"$(info_value \"$info\" Alias)\"; [ -z \"$name\" ] && name=\"$fallback_name\"; [ -z \"$name\" ] && name=\"(unknown)\"; " +
+            "paired=\"$(info_value \"$info\" Paired)\"; trusted=\"$(info_value \"$info\" Trusted)\"; connected=\"$(info_value \"$info\" Connected)\"; " +
+            "battery=\"$(printf '%s\\n' \"$info\" | sed -nE 's/.*Battery Percentage:.*\\(([0-9]+)\\).*/\\1/p' | head -n 1)\"; " +
+            "name=\"${name//|/}\"; printf '%s|%s|%s|%s|%s|%s\\n' \"$mac\" \"$name\" \"$paired\" \"$trusted\" \"$connected\" \"$battery\"; " +
+            "}; " +
+            "{ " +
+            scanLogPipe +
+            "for filter in _ Connected Paired Trusted Bonded; do " +
+            $"if [ \"$filter\" = _ ]; then timeout {listTimeoutSeconds}s bluetoothctl devices 2>/dev/null; else timeout {listTimeoutSeconds}s bluetoothctl devices \"$filter\" 2>/dev/null; fi; " +
+            "done | parse_lines; " +
+            "} | while IFS='|' read -r mac name; do " +
+            "mac=\"${mac^^}\"; case \" $seen \" in *\" $mac \"*) continue;; esac; seen=\"$seen $mac\"; " +
+            "emit_device \"$mac\" \"$name\"; " +
+            "done";
 
-        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, commandTimeoutMs).ConfigureAwait(false);
+        var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "--exec", "bash", "-lc", script }, _paths.Root, commandTimeoutMs).ConfigureAwait(false);
+        AppDiagnosticsLogger.Record(
+            "LINUX_BT_RAW_RESULT",
+            ("scanSeconds", scanSeconds.ToString()),
+            ("exitCode", result.ExitCode.ToString()),
+            ("outputBytes", result.Output.Length.ToString()),
+            ("errorBytes", result.Error.Length.ToString()),
+            ("outputSample", TruncateForDiagnostics(result.Output, 500)),
+            ("errorSample", TruncateForDiagnostics(result.Error, 300)));
         var devices = new List<LinuxBluetoothDevice>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in result.Output.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
@@ -360,9 +377,11 @@ internal sealed class NativeControlServices
             return new CommandResult(-1, "", "No WSL distro resolved.");
         }
 
+        await EnsureBluetoothAdapterAttachedAsync(distro).ConfigureAwait(false);
+
         command = command.ToLowerInvariant() switch
         {
-            "pair" => BuildLinuxBluetoothCommandScript(mac, ("Trust device", "trust", 8), ("Pair device", "pair", 24), ("Connect device", "connect", 24)),
+            "pair" => BuildLinuxBluetoothPairScript(mac),
             "trust" => BuildLinuxBluetoothCommandScript(mac, ("Trust device", "trust", 8)),
             "pair-only" => BuildLinuxBluetoothCommandScript(mac, ("Pair device", "pair", 24)),
             "connect" => BuildLinuxBluetoothCommandScript(mac, ("Connect device", "connect", 24)),
@@ -371,7 +390,85 @@ internal sealed class NativeControlServices
             _ => BuildLinuxBluetoothInfoScript(mac)
         };
 
-        return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", command }, _paths.Root, 45000).ConfigureAwait(false);
+        return await _runner.RunAsync("wsl", new[] { "-d", distro, "-u", "root", "--exec", "bash", "-lc", command }, _paths.Root, 60000).ConfigureAwait(false);
+    }
+
+    private async Task EnsureBluetoothAdapterAttachedAsync(string distro)
+    {
+        if (IsBluetoothDemoMode)
+        {
+            return;
+        }
+
+        IReadOnlyList<UsbipdDevice> devices;
+        try
+        {
+            devices = await GetUsbipdDevicesAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record("BT_ATTACH_PREFLIGHT_FAILED", ("stage", "list"), ("error", ex.Message));
+            return;
+        }
+
+        var selectedBusId = GetSelectedBluetoothBusId();
+        var selected = !string.IsNullOrWhiteSpace(selectedBusId)
+            ? devices.FirstOrDefault(device => device.BusId.Equals(selectedBusId, StringComparison.OrdinalIgnoreCase))
+            : null;
+        var adapter = selected ?? devices.FirstOrDefault(device => device.IsBluetooth);
+        if (adapter is null || string.IsNullOrWhiteSpace(adapter.BusId))
+        {
+            AppDiagnosticsLogger.Record("BT_ATTACH_PREFLIGHT_SKIPPED", ("reason", "no_adapter"), ("selectedBusId", selectedBusId));
+            return;
+        }
+
+        if (adapter.State.Contains("Attached", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        AppDiagnosticsLogger.Record(
+            "BT_ATTACH_PREFLIGHT_START",
+            ("busId", adapter.BusId),
+            ("state", adapter.State),
+            ("name", adapter.Name),
+            ("distro", distro));
+
+        var wake = await _runner.RunAsync("wsl", new[] { "-d", distro, "--exec", "bash", "-lc", "true" }, _paths.Root, 12000).ConfigureAwait(false);
+        AppDiagnosticsLogger.Record(
+            "BT_ATTACH_PREFLIGHT_WAKE_WSL",
+            ("distro", distro),
+            ("exitCode", wake.ExitCode.ToString()),
+            ("detail", TruncateForDiagnostics(FirstNonEmpty(wake.Error, wake.Output, "none"), 180)));
+
+        var bind = await _runner.RunAsync("usbipd", new[] { "bind", "--busid", adapter.BusId, "--force" }, _paths.Root, 20000).ConfigureAwait(false);
+        AppDiagnosticsLogger.Record(
+            "BT_ATTACH_PREFLIGHT_BIND",
+            ("busId", adapter.BusId),
+            ("exitCode", bind.ExitCode.ToString()),
+            ("detail", TruncateForDiagnostics(FirstNonEmpty(bind.Error, bind.Output, "none"), 240)));
+
+        var attach = await _runner.RunAsync("usbipd", new[] { "attach", "--wsl", "--busid", adapter.BusId }, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
+        if (attach.ExitCode != 0 &&
+            FirstNonEmpty(attach.Error, attach.Output).Contains("no WSL 2 distribution running", StringComparison.OrdinalIgnoreCase))
+        {
+            await _runner.RunAsync("wsl", new[] { "-d", distro, "--exec", "bash", "-lc", "sleep 1" }, _paths.Root, 12000).ConfigureAwait(false);
+            attach = await _runner.RunAsync("usbipd", new[] { "attach", "--wsl", "--busid", adapter.BusId }, _paths.Root, 30000, createNoWindow: false).ConfigureAwait(false);
+        }
+        AppDiagnosticsLogger.Record(
+            "BT_ATTACH_PREFLIGHT_ATTACH",
+            ("busId", adapter.BusId),
+            ("exitCode", attach.ExitCode.ToString()),
+            ("detail", TruncateForDiagnostics(FirstNonEmpty(attach.Error, attach.Output, "none"), 240)));
+
+        if (attach.ExitCode == 0)
+        {
+            await _runner.RunAsync(
+                "wsl",
+                new[] { "-d", distro, "-u", "root", "--exec", "bash", "-lc", "systemctl restart bluetooth >/dev/null 2>&1 || true; sleep 1; bluetoothctl power on >/dev/null 2>&1 || true" },
+                _paths.Root,
+                12000).ConfigureAwait(false);
+        }
     }
 
     private static string BuildLinuxBluetoothInfoScript(string mac)
@@ -382,6 +479,139 @@ internal sealed class NativeControlServices
             $"mac='{mac}'",
             "echo \"Final BlueZ info:\"",
             "timeout 5s bluetoothctl info \"$mac\" 2>&1 || true"
+        });
+    }
+
+    private static string BuildLinuxBluetoothPairScript(string mac)
+    {
+        return string.Join("\n", new[]
+        {
+            "if ! command -v bluetoothctl >/dev/null 2>&1; then echo \"bluetoothctl missing\"; exit 127; fi",
+            $"mac='{mac}'",
+            "agent_pid=\"\"",
+            "cleanup_agent() { [ -n \"$agent_pid\" ] && kill \"$agent_pid\" >/dev/null 2>&1 || true; }",
+            "trap cleanup_agent EXIT",
+            "print_state() {",
+            "  info=\"$(timeout 5s bluetoothctl info \"$mac\" 2>&1 || true)\"",
+            "  paired=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Paired:/ {print $2; exit}')\"",
+            "  trusted=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Trusted:/ {print $2; exit}')\"",
+            "  connected=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Connected:/ {print $2; exit}')\"",
+            "  name=\"$(printf \"%s\\n\" \"$info\" | awk -F': ' '/Name:/ {print $2; exit}')\"",
+            "  echo \"State: name=${name:-unknown} paired=${paired:-unknown} trusted=${trusted:-unknown} connected=${connected:-unknown}\"",
+            "}",
+            "state_value() { timeout 5s bluetoothctl info \"$mac\" 2>/dev/null | awk -F': ' -v key=\"$1\" '$1 ~ \"^[[:space:]]*\" key \"$\" {print $2; exit}'; }",
+            "wait_state() {",
+            "  key=\"$1\"",
+            "  want=\"$2\"",
+            "  seconds=\"$3\"",
+            "  i=0",
+            "  while [ \"$i\" -lt \"$seconds\" ]; do",
+            "    value=\"$(state_value \"$key\")\"",
+            "    [ \"${value,,}\" = \"${want,,}\" ] && return 0",
+            "    sleep 1",
+            "    i=$((i + 1))",
+            "  done",
+            "  return 1",
+            "}",
+            "start_agent() {",
+            "  if ! python3 -c 'import dbus, dbus.service, dbus.mainloop.glib; from gi.repository import GLib' >/dev/null 2>&1; then",
+            "    echo \"Python D-Bus agent dependencies are missing; continuing with bluetoothctl agent fallback.\"",
+            "    return 1",
+            "  fi",
+            "  cat >/tmp/stadia-x-ui-agent.py <<'PY'",
+            "import dbus",
+            "import dbus.service",
+            "import dbus.mainloop.glib",
+            "from gi.repository import GLib",
+            "BUS_NAME = 'org.bluez'",
+            "AGENT_MANAGER_IFACE = 'org.bluez.AgentManager1'",
+            "AGENT_IFACE = 'org.bluez.Agent1'",
+            "AGENT_PATH = '/stadiax/ui_agent'",
+            "class Agent(dbus.service.Object):",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='', out_signature='')",
+            "    def Release(self): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='s')",
+            "    def RequestPinCode(self, device): return '0000'",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')",
+            "    def DisplayPinCode(self, device, pincode): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='u')",
+            "    def RequestPasskey(self, device): return dbus.UInt32(0)",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='ouq', out_signature='')",
+            "    def DisplayPasskey(self, device, passkey, entered): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='ou', out_signature='')",
+            "    def RequestConfirmation(self, device, passkey): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='')",
+            "    def RequestAuthorization(self, device): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')",
+            "    def AuthorizeService(self, device, uuid): pass",
+            "    @dbus.service.method(AGENT_IFACE, in_signature='', out_signature='')",
+            "    def Cancel(self): pass",
+            "dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)",
+            "bus = dbus.SystemBus()",
+            "agent = Agent(bus, AGENT_PATH)",
+            "manager = dbus.Interface(bus.get_object(BUS_NAME, '/org/bluez'), AGENT_MANAGER_IFACE)",
+            "try:",
+            "    manager.RegisterAgent(AGENT_PATH, 'NoInputNoOutput')",
+            "except dbus.exceptions.DBusException:",
+            "    pass",
+            "manager.RequestDefaultAgent(AGENT_PATH)",
+            "print('Stadia X UI BlueZ auto-agent ready', flush=True)",
+            "GLib.MainLoop().run()",
+            "PY",
+            "  python3 /tmp/stadia-x-ui-agent.py >/tmp/stadia-x-ui-agent.log 2>&1 &",
+            "  agent_pid=$!",
+            "  sleep 1",
+            "  if ! kill -0 \"$agent_pid\" >/dev/null 2>&1; then",
+            "    echo \"BlueZ auto-agent failed to start:\"",
+            "    cat /tmp/stadia-x-ui-agent.log 2>/dev/null || true",
+            "    agent_pid=\"\"",
+            "    return 1",
+            "  fi",
+            "  echo \"BlueZ auto-agent started (pid $agent_pid).\"",
+            "  return 0",
+            "}",
+            "echo \"Step: prepare adapter\"",
+            "timeout 5s bluetoothctl power on 2>&1 || true",
+            "timeout 5s bluetoothctl pairable on 2>&1 || true",
+            "print_state",
+            "paired_now=\"$(state_value Paired)\"",
+            "connected_now=\"$(state_value Connected)\"",
+            "if [ \"${paired_now,,}\" != \"yes\" ] && [ \"${connected_now,,}\" != \"yes\" ] && timeout 3s bluetoothctl info \"$mac\" >/dev/null 2>&1; then",
+            "  echo \"Removing stale non-paired BlueZ cache entry for $mac before explicit Pair.\"",
+            "  timeout 8s bluetoothctl remove \"$mac\" 2>&1 || true",
+            "  sleep 1",
+            "fi",
+            "if ! timeout 3s bluetoothctl info \"$mac\" >/dev/null 2>&1; then",
+            "  echo \"Device is not in BlueZ cache; scanning for 12 seconds.\"",
+            "  timeout 14s bluetoothctl --timeout 12 scan on 2>&1 || true",
+            "  timeout 2s bluetoothctl scan off >/dev/null 2>&1 || true",
+            "fi",
+            "echo",
+            "echo \"Step: start pairing agent\"",
+            "start_agent || timeout 5s bluetoothctl agent NoInputNoOutput 2>&1 || true",
+            "timeout 5s bluetoothctl pairable on 2>&1 || true",
+            "echo",
+            "echo \"Step: pair device\"",
+            "timeout 30s bluetoothctl pair \"$mac\" 2>&1 || true",
+            "if wait_state Paired yes 18; then",
+            "  echo \"Pair confirmed by BlueZ.\"",
+            "else",
+            "  echo \"Pair was not confirmed by BlueZ within 18 seconds.\"",
+            "fi",
+            "timeout 8s bluetoothctl trust \"$mac\" 2>&1 || true",
+            "echo",
+            "echo \"Step: connect device\"",
+            "timeout 24s bluetoothctl connect \"$mac\" 2>&1 || true",
+            "if wait_state Connected yes 12; then",
+            "  echo \"Connect confirmed by BlueZ.\"",
+            "else",
+            "  echo \"Connect was not confirmed by BlueZ within 12 seconds.\"",
+            "fi",
+            "print_state",
+            "final=\"$(timeout 5s bluetoothctl info \"$mac\" 2>&1 || true)\"",
+            "if printf \"%s\\n\" \"$final\" | grep -qi 'Connected:[[:space:]]*yes'; then exit 0; fi",
+            "if printf \"%s\\n\" \"$final\" | grep -qi 'Paired:[[:space:]]*yes'; then exit 1; fi",
+            "exit 2"
         });
     }
 
@@ -657,6 +887,27 @@ internal sealed class NativeControlServices
         return existing;
     }
 
+    private static string TruncateForDiagnostics(string value, int maxLength)
+    {
+        value = value.Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+        return value.Length <= maxLength ? value : value[..maxLength] + "...";
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return "";
+    }
+
     private static string ReadFileBestEffort(string path)
     {
         try
@@ -693,7 +944,7 @@ bluetoothctl default-agent 2>&1 || true
 bluetoothctl show 2>&1 || true
 bluetoothctl devices 2>&1 || true
 """;
-        return await _runner.RunAsync("wsl", new[] { "-d", distro, "--", "bash", "-lc", script }, _paths.Root, 30000).ConfigureAwait(false);
+        return await _runner.RunAsync("wsl", new[] { "-d", distro, "--exec", "bash", "-lc", script }, _paths.Root, 30000).ConfigureAwait(false);
     }
 
     public async Task<string> CreateCapacityReportAsync()
@@ -849,13 +1100,13 @@ bluetoothctl devices 2>&1 || true
     {
         if (!File.Exists(_paths.ControllerState))
         {
-            return new ControllerTelemetrySnapshot(DateTimeOffset.Now, Array.Empty<ControllerTelemetryRow>());
+            return ReadLiveLinuxInputTelemetryOrEmpty(DateTimeOffset.Now);
         }
 
         var dataTimestamp = ControllerTelemetryTimestamp(_paths.ControllerState);
         if (!IsControllerTelemetryFileFresh(_paths.ControllerState))
         {
-            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
+            return ReadLiveLinuxInputTelemetryOrEmpty(dataTimestamp);
         }
 
         JsonDocument document;
@@ -865,22 +1116,331 @@ bluetoothctl devices 2>&1 || true
         }
         catch (IOException)
         {
-            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
+            return ReadLiveLinuxInputTelemetryOrEmpty(dataTimestamp);
         }
         catch (JsonException)
         {
-            return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
+            return ReadLiveLinuxInputTelemetryOrEmpty(dataTimestamp);
         }
 
         using (document)
         {
             if (!document.RootElement.TryGetProperty("controllers", out var controllers) || controllers.ValueKind != JsonValueKind.Array)
             {
-                return new ControllerTelemetrySnapshot(dataTimestamp, Array.Empty<ControllerTelemetryRow>());
+                return ReadLiveLinuxInputTelemetryOrEmpty(dataTimestamp);
             }
 
-            return ReadControllerRows(controllers, dataTimestamp);
+            var snapshot = ReadControllerRows(controllers, dataTimestamp);
+            return snapshot.Controllers.Count > 0 ? snapshot : ReadLiveLinuxInputTelemetryOrEmpty(dataTimestamp);
         }
+    }
+
+    private ControllerTelemetrySnapshot ReadLiveLinuxInputTelemetryOrEmpty(DateTimeOffset fallbackTimestamp)
+    {
+        var live = TryReadLiveLinuxInputTelemetry();
+        return live ?? new ControllerTelemetrySnapshot(fallbackTimestamp, Array.Empty<ControllerTelemetryRow>());
+    }
+
+    private ControllerTelemetrySnapshot? TryReadLiveLinuxInputTelemetry()
+    {
+        var now = DateTime.UtcNow;
+        var probeInterval = _lastLiveInputSnapshot?.Controllers.Count > 0
+            ? TimeSpan.FromSeconds(1.5)
+            : TimeSpan.FromSeconds(5);
+        if (_lastLiveInputProbeUtc > now - probeInterval)
+        {
+            return _lastLiveInputSnapshot?.Controllers.Count > 0 ? _lastLiveInputSnapshot : null;
+        }
+
+        _lastLiveInputProbeUtc = now;
+        var distro = ResolveLiveInputDistroQuick();
+        if (string.IsNullOrWhiteSpace(distro))
+        {
+            return null;
+        }
+
+        const string script = """
+import fcntl
+import glob
+import json
+import os
+import re
+import struct
+
+EVIOCGABS_BASE=(2<<30)|(24<<16)|(0x45<<8)|0x40
+EVIOCGKEY=(2<<30)|(96<<16)|(0x45<<8)|0x18
+ABS_X=0
+ABS_Y=1
+ABS_Z=2
+ABS_RZ=5
+ABS_GAS=9
+ABS_BRAKE=10
+ABS_HAT0X=16
+ABS_HAT0Y=17
+KEYS={
+    'a':0x130,
+    'b':0x131,
+    'x':0x133,
+    'y':0x134,
+    'lb':0x136,
+    'rb':0x137,
+    'select':0x13a,
+    'start':0x13b,
+    'stadia':0x13c,
+    'l3':0x13d,
+    'r3':0x13e,
+    'assistant':0x2c0,
+}
+
+def stadia_events():
+    events=[]
+    try:
+        text=open('/proc/bus/input/devices','r',encoding='utf-8',errors='ignore').read()
+    except Exception:
+        text=''
+    for block in text.split('\n\n'):
+        if 'Stadia' not in block and '18D1:9400' not in block and '18d1:9400' not in block:
+            continue
+        handlers=re.search(r'H: Handlers=(.*)', block)
+        if not handlers:
+            continue
+        for handler in handlers.group(1).split():
+            if handler.startswith('event'):
+                path='/dev/input/'+handler
+                if os.path.exists(path):
+                    events.append(path)
+    if events:
+        return sorted(dict.fromkeys(events))
+    return sorted(glob.glob('/dev/input/event*'))
+
+def abs_info(fd, code):
+    try:
+        data=fcntl.ioctl(fd, EVIOCGABS_BASE+code, b'\0'*24)
+        value,minv,maxv,fuzz,flat,res=struct.unpack('iiiiii', data)
+        return value,minv,maxv
+    except OSError:
+        return None
+
+def stick_value(info):
+    if not info:
+        return 0
+    value,minv,maxv=info
+    if value == 0 and minv == 1 and maxv == 255:
+        value = 128
+    centered = value - 128
+    scaled = int((centered * 32767) / 127)
+    return max(-32767, min(32767, scaled))
+
+def trigger_value(info):
+    if not info:
+        return 0
+    value,_,_=info
+    return max(0, min(255, int(value)))
+
+def key_state(fd):
+    buttons={name:False for name in KEYS}
+    try:
+        bits=fcntl.ioctl(fd, EVIOCGKEY, b'\0'*96)
+    except OSError:
+        return buttons
+    for name,code in KEYS.items():
+        buttons[name]=bool(bits[code//8] & (1 << (code % 8)))
+    return buttons
+
+controllers=[]
+for index,path in enumerate(stadia_events()[:4]):
+    try:
+        fd=os.open(path, os.O_RDONLY|os.O_NONBLOCK)
+    except OSError:
+        continue
+    buttons=key_state(fd)
+    hatx=abs_info(fd, ABS_HAT0X)
+    haty=abs_info(fd, ABS_HAT0Y)
+    if hatx:
+        buttons['dpad_left']=hatx[0] < 0
+        buttons['dpad_right']=hatx[0] > 0
+    else:
+        buttons['dpad_left']=False
+        buttons['dpad_right']=False
+    if haty:
+        buttons['dpad_up']=haty[0] < 0
+        buttons['dpad_down']=haty[0] > 0
+    else:
+        buttons['dpad_up']=False
+        buttons['dpad_down']=False
+    axes={
+        'trigger_left':trigger_value(abs_info(fd, ABS_BRAKE)),
+        'trigger_right':trigger_value(abs_info(fd, ABS_GAS)),
+        'stick_lx':stick_value(abs_info(fd, ABS_X)),
+        'stick_ly':stick_value(abs_info(fd, ABS_Y)),
+        'stick_rx':stick_value(abs_info(fd, ABS_Z)),
+        'stick_ry':stick_value(abs_info(fd, ABS_RZ)),
+    }
+    os.close(fd)
+    controllers.append({
+        'index':index,
+        'active':True,
+        'last_seen_age_ms':0,
+        'packets':1,
+        'pps':0,
+        'buttons':buttons,
+        'axes':axes,
+    })
+print(json.dumps({'controllers':controllers}, separators=(',',':')))
+""";
+
+        try
+        {
+            var result = RunLiveInputProbe(distro, script, 1200);
+
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Output))
+            {
+                RecordLiveInputTelemetryFailure("command", distro, FirstNonEmpty(result.Error, result.Output, "no output"));
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(result.Output);
+            if (!document.RootElement.TryGetProperty("controllers", out var controllers) || controllers.ValueKind != JsonValueKind.Array)
+            {
+                RecordLiveInputTelemetryFailure("json", distro, "missing controllers array");
+                return null;
+            }
+
+            var snapshot = ReadControllerRows(controllers, DateTimeOffset.Now);
+            if (snapshot.Controllers.Count > 0)
+            {
+                _lastLiveInputSnapshot = snapshot;
+                RecordLiveInputTelemetrySuccess(distro, snapshot.Controllers.Count);
+                return snapshot;
+            }
+
+            _lastLiveInputSnapshot = null;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            RecordLiveInputTelemetryFailure(ex.GetType().Name, distro, ex.Message);
+            return null;
+        }
+    }
+
+    private CommandResult RunLiveInputProbe(string distro, string script, int timeoutMilliseconds)
+    {
+        var startInfo = new System.Diagnostics.ProcessStartInfo
+        {
+            FileName = "wsl",
+            WorkingDirectory = _paths.Root,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8
+        };
+        foreach (var argument in new[] { "-d", distro, "-u", "root", "--exec", "python3", "-c", script })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        try
+        {
+            using var process = new System.Diagnostics.Process { StartInfo = startInfo };
+            var output = new StringBuilder();
+            var error = new StringBuilder();
+            process.OutputDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) error.AppendLine(e.Data); };
+            if (!process.Start())
+            {
+                return new CommandResult(-1, "", "Process did not start.");
+            }
+
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            if (!process.WaitForExit(timeoutMilliseconds))
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return new CommandResult(-1, output.ToString(), $"Timed out after {timeoutMilliseconds} ms.");
+            }
+
+            process.WaitForExit();
+            return new CommandResult(process.ExitCode, output.ToString(), error.ToString());
+        }
+        catch (Exception ex)
+        {
+            return new CommandResult(-1, "", ex.Message);
+        }
+    }
+
+    private string ResolveLiveInputDistroQuick()
+    {
+        var selected = GetSelectedWslDistro();
+        if (!string.IsNullOrWhiteSpace(selected))
+        {
+            _liveInputDistroCache = selected;
+            return selected;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_liveInputDistroCache))
+        {
+            return _liveInputDistroCache;
+        }
+
+        try
+        {
+            var result = _runner.RunAsync("wsl.exe", new[] { "-l", "-q" }, _paths.Root, 1200).GetAwaiter().GetResult();
+            if (result.ExitCode == 0)
+            {
+                var distros = result.Output
+                    .Replace("\0", "", StringComparison.Ordinal)
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => line.Trim().TrimStart('*').Trim())
+                    .Where(IsSafeDistroName)
+                    .ToArray();
+                var ubuntu = distros.FirstOrDefault(d => d.StartsWith("Ubuntu", StringComparison.OrdinalIgnoreCase));
+                _liveInputDistroCache = ubuntu ?? distros.FirstOrDefault() ?? "";
+            }
+        }
+        catch (Exception ex)
+        {
+            RecordLiveInputTelemetryFailure("distro", "", ex.Message);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_liveInputDistroCache))
+        {
+            return _liveInputDistroCache;
+        }
+
+        _liveInputDistroCache = "Ubuntu";
+        return _liveInputDistroCache;
+    }
+
+    private void RecordLiveInputTelemetrySuccess(string distro, int count)
+    {
+        if (_lastLiveInputTelemetryLogUtc > DateTime.UtcNow - TimeSpan.FromSeconds(15))
+        {
+            return;
+        }
+
+        _lastLiveInputTelemetryLogUtc = DateTime.UtcNow;
+        AppDiagnosticsLogger.Record(
+            "CONTROLLER_TELEMETRY_LIVE_INPUT_FALLBACK",
+            ("distro", distro),
+            ("controllers", count.ToString()));
+    }
+
+    private void RecordLiveInputTelemetryFailure(string stage, string distro, string detail)
+    {
+        if (_lastLiveInputTelemetryFailureLogUtc > DateTime.UtcNow - TimeSpan.FromSeconds(15))
+        {
+            return;
+        }
+
+        _lastLiveInputTelemetryFailureLogUtc = DateTime.UtcNow;
+        AppDiagnosticsLogger.Record(
+            "CONTROLLER_TELEMETRY_LIVE_INPUT_FAILED",
+            ("stage", stage),
+            ("distro", distro),
+            ("detail", TruncateForDiagnostics(detail, 260)));
     }
 
     public static bool IsControllerTelemetryFileFresh(string path)
@@ -1156,7 +1716,7 @@ bluetoothctl devices 2>&1 || true
 
         var result = await _runner.RunAsync(
             "wsl",
-            new[] { "-d", distro, "--", "bash", "-lc", $"timeout 3s bluetoothctl info '{mac}' 2>/dev/null || true" },
+            new[] { "-d", distro, "--exec", "bash", "-lc", $"timeout 3s bluetoothctl info '{mac}' 2>/dev/null || true" },
             _paths.Root,
             5000).ConfigureAwait(false);
 

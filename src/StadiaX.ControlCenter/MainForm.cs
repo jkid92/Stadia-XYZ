@@ -1183,7 +1183,7 @@ internal sealed class MainForm : Form
         telemetryLayout.Controls.Add(_controllerList, 0, 4);
         layout.Controls.Add(telemetryGroup, 0, 0);
 
-        page.Controls.Add(BuildTopPanel("Reads logs/controller-state.json from the native receiver",
+        page.Controls.Add(BuildTopPanel("Reads receiver telemetry, with direct Linux input fallback",
             ("Refresh", RefreshControllerTelemetry),
             ("Open state", () => OpenFileIfExists(_paths.ControllerState))));
         return page;
@@ -1910,7 +1910,7 @@ internal sealed class MainForm : Form
             _lastLinuxBluetoothRefreshUtc = DateTime.UtcNow;
         }
 
-        var stadia = knownDevices.Where(d => d.IsStadia || d.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var stadia = knownDevices.Where(IsBatteryReportableDevice).ToArray();
         UpdateBatteryIndicator(stadia);
         AppDiagnosticsLogger.Record(
             "BATTERY_REFRESH",
@@ -1960,6 +1960,19 @@ internal sealed class MainForm : Form
     {
         return _lastLinuxBluetoothDevices.Count > 0 &&
                _lastLinuxBluetoothRefreshUtc >= DateTime.UtcNow - TimeSpan.FromSeconds(60);
+    }
+
+    private static bool IsBatteryReportableDevice(LinuxBluetoothDevice device)
+    {
+        var isStadia = device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase);
+        if (!isStadia)
+        {
+            return false;
+        }
+
+        return device.BatteryPercent.HasValue ||
+               IsLiveBluetoothConnected(device) ||
+               device.Source.Equals(BluetoothDeviceSources.Receiver, StringComparison.OrdinalIgnoreCase);
     }
 
     private void RefreshProfiles()
@@ -3148,9 +3161,7 @@ internal sealed class MainForm : Form
 
                 if (isPairCommand)
                 {
-                    await RunStageAsync(device, "trust", "Trusting", TimeSpan.FromSeconds(5));
-                    await RunStageAsync(device, "pair-only", "Pairing", TimeSpan.FromSeconds(22));
-                    await RunStageAsync(device, "connect", "Connecting", TimeSpan.FromSeconds(22));
+                    await RunStageAsync(device, "pair", "Pairing", TimeSpan.FromSeconds(35));
                 }
                 else
                 {

@@ -192,6 +192,7 @@ internal sealed class BridgeOrchestrator
             return 1;
         }
 
+        var linuxStatusOffset = GetFileLength(_paths.LinuxStatusLog);
         var linuxStarted = await StartLinuxCoreAsync(distro, status).ConfigureAwait(false);
         if (ReportStartCancelled(cancellation.Token, status, 4, "Linux core"))
         {
@@ -207,7 +208,14 @@ internal sealed class BridgeOrchestrator
         status.WritePhase("Linux bridge", 4, StartPhaseCount, "Linux core", "OK", "Linux core launch requested");
 
         status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "START", "Waiting for BlueZ pairing and input readiness");
-        await Task.Delay(TimeSpan.FromSeconds(8)).ConfigureAwait(false);
+        if (!await WaitForLinuxInputReadyAsync(status, cancellation.Token, linuxStatusOffset).ConfigureAwait(false))
+        {
+            if (ReportStartCancelled(cancellation.Token, status, 5, "Controller discovery")) return 0;
+            status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "FAIL", "Linux did not expose a controller input device");
+            await RollbackFailedStartAsync(status, "Linux controller input was not ready").ConfigureAwait(false);
+            return 1;
+        }
+
         var wslIp = await GetWslIpAsync(distro).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(wslIp))
         {
@@ -218,7 +226,7 @@ internal sealed class BridgeOrchestrator
         else
         {
             status.Write("WSL_IP_READY", $"Detected WSL IP {wslIp}");
-            status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "OK", $"Detected WSL IP {wslIp}");
+            status.WritePhase("Linux bridge", 5, StartPhaseCount, "Controller discovery", "OK", $"Linux input is ready; WSL IP {wslIp}");
         }
 
         status.WritePhase("Linux bridge", 6, StartPhaseCount, "Windows receiver", "START", "Starting integrated Windows receiver");
@@ -484,7 +492,19 @@ internal sealed class BridgeOrchestrator
     private async Task<bool> EnsureKernelAsync(string distro, StatusWriter status)
     {
         status.Write("WSL_KERNEL_CHECK", "Checking WSL USB/HID kernel support");
-        var kernel = await _runner.RunAsync("wsl", new[] { "-d", distro, "-u", "root", "bash", "-lc", "modprobe vhci-hcd 2>/dev/null; lsmod | grep -q vhci_hcd" }, _paths.Root, 20000).ConfigureAwait(false);
+        var kernelProbe =
+            "(test -e /sys/devices/platform/vhci_hcd.0 || test -e /sys/bus/platform/devices/vhci_hcd.0 || test -d /sys/module/vhci_hcd || modprobe vhci_hcd 2>/dev/null || modprobe vhci-hcd 2>/dev/null || true); " +
+            "(test -e /dev/uhid || modprobe uhid 2>/dev/null || true); " +
+            "vhci_ok=0; " +
+            "test -e /sys/devices/platform/vhci_hcd.0 && vhci_ok=1; " +
+            "test -e /sys/bus/platform/devices/vhci_hcd.0 && vhci_ok=1; " +
+            "test -d /sys/module/vhci_hcd && vhci_ok=1; " +
+            "zcat /proc/config.gz 2>/dev/null | grep -q '^CONFIG_USBIP_VHCI_HCD=y' && vhci_ok=1; " +
+            "uhid_ok=0; " +
+            "test -e /dev/uhid && uhid_ok=1; " +
+            "zcat /proc/config.gz 2>/dev/null | grep -q '^CONFIG_UHID=y' && uhid_ok=1; " +
+            "test \"$vhci_ok\" = 1 -a \"$uhid_ok\" = 1";
+        var kernel = await _runner.RunAsync("wsl", new[] { "-d", distro, "-u", "root", "bash", "-lc", kernelProbe }, _paths.Root, 20000).ConfigureAwait(false);
         if (kernel.ExitCode == 0)
         {
             status.Write("WSL_KERNEL_OK", "WSL kernel already supports USB HID");
@@ -499,7 +519,15 @@ internal sealed class BridgeOrchestrator
             return false;
         }
 
-        var targetKernel = Path.Combine(userProfile, "wsl_kernel");
+        var preferredKernel = Path.Combine(userProfile, "wsl_kernel_stadiax");
+        var targetKernel = File.Exists(preferredKernel)
+            ? preferredKernel
+            : Path.Combine(userProfile, "wsl_kernel");
+        if (File.Exists(preferredKernel))
+        {
+            status.Write("WSL_KERNEL_PREFERRED", "Using the installed Stadia X WSL kernel");
+        }
+
         if (!File.Exists(targetKernel))
         {
             if (!File.Exists(sourceKernel))
@@ -540,7 +568,7 @@ internal sealed class BridgeOrchestrator
 
                 File.WriteAllText(wslConfig, "[wsl2]\n" +
                                             kernelSetting + "\n" +
-                                            "memory=800MB\nprocessors=2\nswap=800MB\n");
+                                            "memory=4GB\nprocessors=2\nswap=2GB\n");
                 status.Write("WSL_KERNEL_CONFIGURED", "Configured .wslconfig to use the custom WSL kernel");
             }
         }
@@ -648,10 +676,10 @@ internal sealed class BridgeOrchestrator
             if (IsBusId(saved))
             {
                 var savedDevice = FindUsbipdBus(usbipdDevices, saved);
-                if (!canVerifyUsbipd || (savedDevice is not null && LooksLikeBluetoothUsbipdLine(savedDevice.Line)))
+                if (!canVerifyUsbipd || savedDevice is not null)
                 {
                     status.Write(
-                        "BT_SELECTED_SOURCE",
+                        savedDevice is not null && !LooksLikeBluetoothUsbipdLine(savedDevice.Line) ? "BT_SELECTED_SOURCE_WARN" : "BT_SELECTED_SOURCE",
                         savedDevice is not null
                             ? $"Using saved Bluetooth BUSID {saved} ({Shorten(savedDevice.Line, 180)})"
                             : $"Using saved Bluetooth BUSID {saved} without usbipd list verification");
@@ -660,9 +688,7 @@ internal sealed class BridgeOrchestrator
 
                 status.Write(
                     "BT_SELECTED_SOURCE_IGNORED",
-                    savedDevice is null
-                        ? $"Ignoring saved BUSID {saved}; BUSID was not found in usbipd list"
-                        : $"Ignoring saved BUSID {saved}; usbipd no longer reports it as a Bluetooth adapter");
+                    $"Ignoring saved BUSID {saved}; BUSID was not found in usbipd list");
             }
             else if (!string.IsNullOrWhiteSpace(saved))
             {
@@ -889,6 +915,96 @@ internal sealed class BridgeOrchestrator
     {
         var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", "hostname -I 2>/dev/null" }, _paths.Root, 10000).ConfigureAwait(false);
         return result.Output.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim() ?? "";
+    }
+
+    private async Task<bool> WaitForLinuxInputReadyAsync(StatusWriter status, CancellationToken cancellationToken, long linuxStatusOffset)
+    {
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            var statusText = ReadFileFromOffset(_paths.LinuxStatusLog, linuxStatusOffset);
+            if (statusText.Contains("STATUS:INPUT_READY|", StringComparison.Ordinal))
+            {
+                status.Write("LINUX_INPUT_READY", LastStatusLine(statusText, "STATUS:INPUT_READY|"));
+                return true;
+            }
+
+            if (statusText.Contains("STATUS:CONTROLLER_NOT_FOUND|", StringComparison.Ordinal) ||
+                statusText.Contains("STATUS:INPUT_TIMEOUT|", StringComparison.Ordinal) ||
+                statusText.Contains("STATUS:INPUT_RECONNECT_FAILED|", StringComparison.Ordinal))
+            {
+                status.Write("LINUX_INPUT_FAILED", LastStatusLine(statusText, "STATUS:"));
+                return false;
+            }
+
+            if (attempt > 0 && attempt % 15 == 0)
+            {
+                status.Write("LINUX_INPUT_WAIT", "Still waiting for Linux controller input readiness");
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+        }
+
+        status.Write("LINUX_INPUT_TIMEOUT", "Timed out waiting for Linux controller input readiness");
+        return false;
+    }
+
+    private static long GetFileLength(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static string ReadFileFromOffset(string path, long offset)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return "";
+            }
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (offset > 0 && offset >= stream.Length)
+            {
+                return "";
+            }
+
+            if (offset > 0 && offset < stream.Length)
+            {
+                stream.Seek(offset, SeekOrigin.Begin);
+            }
+            using var reader = new StreamReader(stream);
+            return reader.ReadToEnd();
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static string LastStatusLine(string text, string contains)
+    {
+        var lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+        for (var i = lines.Length - 1; i >= 0; i--)
+        {
+            if (lines[i].Contains(contains, StringComparison.Ordinal))
+            {
+                return Shorten(lines[i], 240);
+            }
+        }
+
+        return "No matching Linux status line";
     }
 
     private async Task<int> RunIntegratedReceiverAndStopAsync(string wslIp, StatusWriter status, CancellationToken cancellationToken)

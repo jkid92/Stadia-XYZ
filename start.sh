@@ -377,6 +377,56 @@ wait_for_bluetooth_device() {
     return 1
 }
 
+linux_input_ready() {
+    ls /dev/input/event* >/dev/null 2>&1
+}
+
+wait_for_input_device_quiet() {
+    local seconds="${1:-10}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$seconds" ]; do
+        if linux_input_ready; then
+            return 0
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+ensure_controller_input() {
+    local mac="$1"
+
+    if wait_for_input_device_quiet 8; then
+        return 0
+    fi
+
+    status "INPUT_RECONNECT_START" "Controller $mac is connected but no Linux input device exists; reconnecting HID"
+    for attempt in $(seq 1 3); do
+        bluetoothctl disconnect "$mac" >/dev/null 2>&1 || true
+        sleep 2
+        configure_bluetooth_pairing
+        timeout 20 bluetoothctl <<BTCTL >/tmp/stadia-x-input-reconnect-${mac//:/}-attempt-${attempt}.log 2>&1 || true
+power on
+agent NoInputNoOutput
+default-agent
+pairable on
+trust $mac
+connect $mac
+trust $mac
+info $mac
+BTCTL
+        if wait_for_input_device_quiet 10; then
+            status "INPUT_RECONNECT_OK" "Linux input device appeared for controller $mac on attempt $attempt"
+            return 0
+        fi
+        status "INPUT_RECONNECT_RETRY" "No Linux input device for controller $mac after reconnect attempt $attempt/3"
+    done
+
+    status "INPUT_RECONNECT_FAILED" "Controller $mac is connected but Linux did not expose an input device"
+    return 1
+}
+
 connect_stadia_controller() {
     local mac="$1"
     local label="$2"
@@ -396,7 +446,8 @@ connect_stadia_controller() {
         bluetoothctl trust "$mac" >/dev/null 2>&1 || true
         status "CONTROLLER_CONNECTED" "Controller $mac already connected"
         log "Controller $mac already connected."
-        return 0
+        ensure_controller_input "$mac"
+        return $?
     fi
 
     status "CONNECT_START" "Connecting to controller $mac"
@@ -404,9 +455,11 @@ connect_stadia_controller() {
     for attempt in $(seq 1 8); do
         configure_bluetooth_pairing
         bluetoothctl scan on >/dev/null 2>&1 || true
-        if [ "$attempt" -eq 4 ]; then
+        if [ "$attempt" -eq 4 ] && [ "${STADIA_X_ALLOW_REPAIR:-0}" = "1" ]; then
             bluetoothctl remove "$mac" >/dev/null 2>&1 || true
             sleep 1
+        elif [ "$attempt" -eq 4 ]; then
+            status "CONNECT_REPAIR_SKIPPED" "Keeping existing pairing for $mac; set STADIA_X_ALLOW_REPAIR=1 to remove and re-pair"
         fi
         timeout 18 bluetoothctl <<BTCTL >/tmp/stadia-x-pair-${mac//:/}-attempt-${attempt}.log 2>&1 || true
 power on
@@ -441,7 +494,8 @@ BTCTL
     if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
         bluetoothctl trust "$mac" >/dev/null 2>&1 || true
         status "CONTROLLER_CONNECTED" "Controller $mac connected"
-        return 0
+        ensure_controller_input "$mac"
+        return $?
     fi
 
     status "CONTROLLER_NOT_CONNECTED" "Controller $mac was seen but did not connect"
@@ -556,9 +610,9 @@ status "CONTROLLERS_READY" "$CONNECTED_COUNT Stadia controller(s) connected"
 # Wait for input device to appear
 status "INPUT_WAIT" "Waiting for Linux input device"
 log "Waiting for input device to appear..."
-TIMEOUT=15
+TIMEOUT=25
 while [ $TIMEOUT -gt 0 ]; do
-    if ls /dev/input/event* 2>/dev/null | grep -q event; then
+    if linux_input_ready; then
         INPUT_EVENTS=$(ls /dev/input/event* | tr '\n' ' ')
         INPUT_COUNT=$(echo "$INPUT_EVENTS" | wc -w)
         status "INPUT_READY" "Input device(s) confirmed ($INPUT_COUNT): $INPUT_EVENTS"
@@ -572,8 +626,8 @@ done
 if [ $TIMEOUT -eq 0 ]; then
     status "INPUT_TIMEOUT" "No input device appeared after connecting"
     echo "[WARNING] No input device appeared after connecting."
-    echo "[WARNING] This usually means missing kernel modules (joydev, hid_generic)."
-    echo "[WARNING] Fix: run 'wsl --update' in Windows, restart, and try again."
+    echo "[WARNING] Bluetooth is connected, but Linux did not expose an input device."
+    exit 1
 fi
 
 # Get Windows host IP â€” the default gateway from WSL's perspective
