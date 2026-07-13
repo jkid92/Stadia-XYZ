@@ -931,22 +931,54 @@ bluetoothctl devices 2>&1 || true
     {
         Directory.CreateDirectory(_paths.SupportBundleDirectory);
         var reportPath = Path.Combine(_paths.SupportBundleDirectory, "StadiaX-session-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".md");
-        var devices = await GetUsbipdDevicesAsync().ConfigureAwait(false);
         var winBt = await GetWindowsBluetoothDevicesAsync().ConfigureAwait(false);
-        var selectedMacs = GetSelectedControllerMacs();
+        var requirements = await new RequirementChecker(_paths, _runner).RunAsync().ConfigureAwait(false);
+        var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var receiverPid, out var virtualPads);
+        IReadOnlyList<WindowsNativeHidDevice> hidDevices = Array.Empty<WindowsNativeHidDevice>();
+        string? hidScanError = null;
+        try
+        {
+            var hidHide = new HidHideManager(_paths, _runner);
+            hidDevices = await new WindowsNativeHidScanner(hidHide).FindStadiaControllersAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            hidScanError = ex.Message;
+            AppDiagnosticsLogger.Record("SESSION_REPORT_HID_SCAN_WARN", ("error", ex.ToString()));
+        }
 
         var lines = new List<string>
         {
-            "# Stadia X Session Report",
+            "# Stadia X Windows Native Session Report",
             "",
             $"- Created: {DateTimeOffset.Now:o}",
-            $"- Root: {_paths.Root}",
             $"- Version: {_paths.Version}",
-            $"- Selected Bluetooth BUSID: {EmptyAsNone(GetSelectedBluetoothBusId())}",
-            $"- Selected WSL distro: {EmptyAsNone(GetSelectedWslDistro())}",
-            $"- Selected controller MACs: {(selectedMacs.Count > 0 ? string.Join(", ", selectedMacs) : "automatic")}",
-            $"- usbipd devices: {devices.Count}",
+            $"- Windows: {Environment.OSVersion.VersionString}",
+            $"- 64-bit OS/process: {Environment.Is64BitOperatingSystem}/{Environment.Is64BitProcess}",
+            $"- Receiver active: {receiverActive}",
+            $"- Receiver PID: {(receiverActive ? receiverPid : 0)}",
+            $"- Virtual Xbox 360 pads: {(receiverActive ? virtualPads : 0)}",
+            $"- Stadia HID devices: {hidDevices.Count}",
+            $"- HidHide matches: {hidDevices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath))}",
+            $"- HID scan error: {EmptyAsNone(hidScanError ?? "")}",
             $"- Windows Bluetooth devices: {winBt.Count}",
+            "",
+            "## Requirements",
+            ""
+        };
+        lines.AddRange(requirements.Select(check => $"- {check.Name}: {check.State} - {check.Details}"));
+        lines.AddRange(new[]
+        {
+            "",
+            "## Stadia HID Devices",
+            ""
+        });
+        lines.AddRange(hidDevices.Count == 0
+            ? new[] { "- none visible" }
+            : hidDevices.Select((device, index) =>
+                $"- P{index + 1}: {EmptyAsNone(device.FriendlyName)} [{device.VendorId:X4}:{device.ProductId:X4}] input={device.MaxInputReportLength} HidHide={(string.IsNullOrWhiteSpace(device.DeviceInstancePath) ? "missing" : "matched")}"));
+        lines.AddRange(new[]
+        {
             "",
             "## Recent Status",
             "```",
@@ -963,11 +995,16 @@ bluetoothctl devices 2>&1 || true
             LogReader.Tail(_paths.AppDiagnosticsLog, 80),
             "```",
             "",
-            "## Recent Linux Log",
+            "## Recent Windows Native Log",
             "```",
-            LogReader.Tail(_paths.LinuxLog, 80),
+            LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native.log"), 120),
+            "```",
+            "",
+            "## Latest Windows Native Probe",
+            "```",
+            LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt"), 120),
             "```"
-        };
+        });
 
         await File.WriteAllTextAsync(reportPath, string.Join(Environment.NewLine, lines)).ConfigureAwait(false);
         return reportPath;
@@ -991,18 +1028,14 @@ bluetoothctl devices 2>&1 || true
         foreach (var path in new[]
         {
             _paths.StatusLog,
-            _paths.LinuxStatusLog,
-            _paths.LinuxLog,
             _paths.UserActionLog,
             _paths.AppDiagnosticsLog,
-            _paths.BluetoothDiagnostics,
-            _paths.ReceiverLog,
             _paths.ControllerState,
-            _paths.SelectedBluetoothBusId,
-            _paths.SelectedControllerMacs,
-            _paths.SelectedWslDistro,
-            _paths.ControllerProfiles,
-            _paths.MacroConfig,
+            Path.Combine(_paths.LogDirectory, "windows-native.log"),
+            Path.Combine(_paths.LogDirectory, "windows-native-probe.txt"),
+            Path.Combine(_paths.LogDirectory, "self-test.txt"),
+            Path.Combine(_paths.LogDirectory, "self-test.json"),
+            WindowsNativeRuntime.ReadyPath(_paths),
             _paths.VersionFile
         })
         {
@@ -1014,8 +1047,8 @@ bluetoothctl devices 2>&1 || true
         var commandReport = new StringBuilder();
         foreach (var command in new[]
         {
-            ("usbipd", new[] { "list" }),
-            ("wsl", new[] { "-l", "-v" })
+            ("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", "Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue | Format-List Name,Status,StartType" }),
+            ("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'HID\\VID_18D1&PID_9400*' } | Select-Object Status,FriendlyName,InstanceId | Format-List" })
         })
         {
             commandReport.AppendLine("== " + command.Item1 + " " + string.Join(" ", command.Item2) + " ==");
