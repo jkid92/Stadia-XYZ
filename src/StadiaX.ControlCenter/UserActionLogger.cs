@@ -18,7 +18,11 @@ internal sealed class UserActionLogger
         var line = new StringBuilder()
             .Append(DateTimeOffset.Now.ToString("O"))
             .Append(" | ")
-            .Append(Sanitize(action));
+            .Append(Sanitize(action))
+            .Append(" | session=")
+            .Append(AppDiagnosticsLogger.CurrentSessionId)
+            .Append(" | pid=")
+            .Append(Environment.ProcessId);
 
         foreach (var detail in details)
         {

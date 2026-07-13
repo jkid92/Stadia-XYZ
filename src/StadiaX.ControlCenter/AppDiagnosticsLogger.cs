@@ -5,11 +5,23 @@ namespace StadiaX.ControlCenter;
 internal static class AppDiagnosticsLogger
 {
     private static readonly object Sync = new();
+    private static readonly string SessionId = Guid.NewGuid().ToString("N")[..8];
     private static string? _path;
+
+    public static string CurrentSessionId => SessionId;
 
     public static void Initialize(AppPaths paths)
     {
-        _path = paths.AppDiagnosticsLog;
+        lock (Sync)
+        {
+            if (string.Equals(_path, paths.AppDiagnosticsLog, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _path = paths.AppDiagnosticsLog;
+        }
+
         Record("LOGGER_INIT", ("root", paths.Root), ("version", paths.Version));
     }
 
@@ -27,7 +39,11 @@ internal static class AppDiagnosticsLogger
             var line = new StringBuilder()
                 .Append(DateTimeOffset.Now.ToString("O"))
                 .Append(" | ")
-                .Append(Sanitize(action));
+                .Append(Sanitize(action))
+                .Append(" | session=")
+                .Append(SessionId)
+                .Append(" | pid=")
+                .Append(Environment.ProcessId);
 
             foreach (var detail in details)
             {
