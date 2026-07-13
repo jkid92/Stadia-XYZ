@@ -699,13 +699,22 @@ internal sealed class BridgeOrchestrator
 
     private async Task<int> RunIntegratedReceiverAndStopAsync(string wslIp, StatusWriter status)
     {
-        Directory.CreateDirectory(_paths.LogDirectory);
-        await File.AppendAllTextAsync(_paths.ReceiverLog, $"[{DateTime.Now}] Starting integrated receiver for {wslIp}{Environment.NewLine}").ConfigureAwait(false);
+        try
+        {
+            Directory.CreateDirectory(_paths.LogDirectory);
+            await File.AppendAllTextAsync(_paths.ReceiverLog, $"[{DateTime.Now}] Starting integrated receiver for {wslIp}{Environment.NewLine}").ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write("RECEIVER_LOG_WRITE_WARN", "Could not append the integrated receiver startup log: " + ex.Message);
+            AppDiagnosticsLogger.Record("RECEIVER_START_LOG_WRITE_WARN", ("error", ex.Message));
+        }
 
         using var cancellation = new CancellationTokenSource();
         using var stopWatcher = StartReceiverStopWatcher(cancellation);
         var receiver = new IntegratedReceiver(_paths, wslIp, status);
         var exitCode = 1;
+        var teardownSucceeded = false;
         try
         {
             exitCode = await receiver.RunAsync(cancellation.Token).ConfigureAwait(false);
@@ -718,13 +727,19 @@ internal sealed class BridgeOrchestrator
         finally
         {
             status.Write("RECEIVER_EXITED", $"Integrated receiver exited with code {exitCode}");
-            await StopBridgeSafelyAsync(status).ConfigureAwait(false);
+            teardownSucceeded = await StopBridgeSafelyAsync(status).ConfigureAwait(false);
+        }
+
+        if (exitCode == 0 && !teardownSucceeded)
+        {
+            status.Write("RECEIVER_EXIT_TEARDOWN_FAILED", "Receiver stopped, but Linux bridge teardown did not complete cleanly");
+            return 1;
         }
 
         return exitCode;
     }
 
-    private async Task StopBridgeSafelyAsync(StatusWriter status)
+    private async Task<bool> StopBridgeSafelyAsync(StatusWriter status)
     {
         try
         {
@@ -733,10 +748,14 @@ internal sealed class BridgeOrchestrator
             {
                 status.Write("STOP_AFTER_RECEIVER_WARN", $"Bridge teardown after receiver exit completed with code {exitCode}");
             }
+
+            return exitCode == 0;
         }
         catch (Exception ex)
         {
             status.Write("STOP_AFTER_RECEIVER_WARN", "Bridge teardown after receiver exit failed: " + ex.Message);
+            AppDiagnosticsLogger.Record("STOP_AFTER_RECEIVER_FAILED", ("error", ex.Message));
+            return false;
         }
     }
 
