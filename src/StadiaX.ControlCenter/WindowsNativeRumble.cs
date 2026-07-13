@@ -13,9 +13,12 @@ internal static class WindowsNativeRuntime
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
 
+    public static string ReadyTempPath(AppPaths paths) => ReadyPath(paths) + ".tmp";
+
     public static void ClearReadyMarker(AppPaths paths)
     {
         TryDeleteFile(ReadyPath(paths));
+        TryDeleteFile(ReadyTempPath(paths));
     }
 
     public static (IReadOnlyList<string> Removed, IReadOnlyList<string> Warnings) ClearControllerStateFiles(AppPaths paths)

@@ -444,18 +444,17 @@ internal sealed class WindowsNativeReceiver
     {
         Directory.CreateDirectory(_paths.LogDirectory);
         using var process = Process.GetCurrentProcess();
+        var path = WindowsNativeRuntime.ReadyPath(_paths);
+        var tempPath = WindowsNativeRuntime.ReadyTempPath(_paths);
         File.WriteAllText(
-            WindowsNativeRuntime.ReadyPath(_paths),
+            tempPath,
             $"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}|controllers={controllerCount}|processStartUtc={process.StartTime.ToUniversalTime():O}{Environment.NewLine}");
+        File.Move(tempPath, path, overwrite: true);
     }
 
     private void DeleteReadyMarker()
     {
-        var path = WindowsNativeRuntime.ReadyPath(_paths);
-        if (File.Exists(path))
-        {
-            try { File.Delete(path); } catch { }
-        }
+        WindowsNativeRuntime.ClearReadyMarker(_paths);
     }
 
     private void LogInfo(string format, params object[] args) => Log("INFO", format, args);
