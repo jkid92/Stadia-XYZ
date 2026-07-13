@@ -73,8 +73,8 @@ internal sealed class IntegratedReceiver
             }
 
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var inputTask = Task.Run(() => RunInputLoopAsync(linked.Token), linked.Token);
-            var macroTask = Task.Run(() => RunMacroLoopAsync(linked.Token), linked.Token);
+            var inputTask = Task.Run(() => RunInputLoopAsync(bridgeAddress, linked.Token), linked.Token);
+            var macroTask = Task.Run(() => RunMacroLoopAsync(bridgeAddress, linked.Token), linked.Token);
 
             LogInfo("Integrated receiver running.");
             _status.Write("RECEIVER_READY", "Integrated Windows receiver is running inside StadiaX.exe");
@@ -289,7 +289,7 @@ internal sealed class IntegratedReceiver
         _rumbleClient.Connect(_rumbleEndpoint);
     }
 
-    private async Task RunInputLoopAsync(CancellationToken cancellationToken)
+    private async Task RunInputLoopAsync(IPAddress bridgeAddress, CancellationToken cancellationToken)
     {
         using var udp = CreateBoundUdpClient(PortInput);
         LogInfo("Listening for controller packets on UDP {0}", PortInput);
@@ -297,6 +297,11 @@ internal sealed class IntegratedReceiver
         while (!cancellationToken.IsCancellationRequested)
         {
             var result = await udp.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+            if (!result.RemoteEndPoint.Address.Equals(bridgeAddress))
+            {
+                continue;
+            }
+
             if (!TryParseInputPacket(result.Buffer, out var controllerIndex, out var state))
             {
                 continue;
@@ -318,7 +323,7 @@ internal sealed class IntegratedReceiver
         }
     }
 
-    private async Task RunMacroLoopAsync(CancellationToken cancellationToken)
+    private async Task RunMacroLoopAsync(IPAddress bridgeAddress, CancellationToken cancellationToken)
     {
         var mappings = MacroMappingLoader.Load(_paths.MacroConfig, LogInfo, LogError);
         if (mappings.Count == 0)
@@ -333,6 +338,11 @@ internal sealed class IntegratedReceiver
         while (!cancellationToken.IsCancellationRequested)
         {
             var result = await udp.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+            if (!result.RemoteEndPoint.Address.Equals(bridgeAddress))
+            {
+                continue;
+            }
+
             var code = Encoding.ASCII.GetString(result.Buffer).TrimEnd('\0', '\r', '\n', ' ');
             var mapping = mappings.FirstOrDefault(item => item.Code.Equals(code, StringComparison.OrdinalIgnoreCase));
             if (mapping is null)
