@@ -10,7 +10,6 @@ internal static class WindowsNativeRuntime
 {
     public const int RumblePort = 45504;
     public const int MaxControllers = 4;
-    public static readonly TimeSpan ReadyMarkerMaxAge = TimeSpan.FromMinutes(10);
 
     public static string ReadyPath(AppPaths paths) => Path.Combine(paths.LogDirectory, "windows-native.ready");
 
@@ -58,11 +57,6 @@ internal static class WindowsNativeRuntime
         {
             var marker = File.ReadAllText(readyPath).Trim();
             var timestamp = ReadMarkerTimestamp(marker, readyPath);
-            if (DateTimeOffset.UtcNow - timestamp.ToUniversalTime() > ReadyMarkerMaxAge)
-            {
-                throw new InvalidOperationException("Windows Native ready marker is stale.");
-            }
-
             foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
