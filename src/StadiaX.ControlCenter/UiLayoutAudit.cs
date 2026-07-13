@@ -30,8 +30,20 @@ internal static class UiLayoutAudit
         }
         else
         {
-            var snapshotPath = SaveSnapshot(form, tabs, paths, density);
-            observations.Add($"snapshot={snapshotPath}");
+            try
+            {
+                var snapshotPath = SaveSnapshot(form, tabs, paths, density);
+                observations.Add($"snapshot={snapshotPath}");
+            }
+            catch (Exception ex)
+            {
+                observations.Add($"snapshot=unavailable ({ex.GetType().Name}: {Shorten(ex.Message)})");
+                AppDiagnosticsLogger.Record(
+                    "UI_LAYOUT_SNAPSHOT_WARN",
+                    ("density", density),
+                    ("exceptionType", ex.GetType().FullName),
+                    ("error", ex.ToString()));
+            }
             foreach (var requestedSize in AuditSizes(density))
             {
                 form.Size = requestedSize;
