@@ -201,6 +201,18 @@ internal sealed class WindowsNativeOrchestrator
     public async Task<int> StopAsync()
     {
         var status = new StatusWriter(_paths, "windows-native.log");
+        using var stopLock = TryAcquireNamedMutex(
+            @"Local\StadiaX.WindowsNativeStop",
+            TimeSpan.Zero,
+            status,
+            "WINDOWS_NATIVE_STOP_LOCK");
+        if (stopLock is null)
+        {
+            status.Write("WINDOWS_NATIVE_STOP_BUSY", "Another Windows Native stop request is already in progress");
+            status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "WAIT", "Another stop request is already in progress");
+            return 2;
+        }
+
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Shutdown", "START", "Stop requested");
         status.Write("WINDOWS_NATIVE_STOP_REQUESTED", "Windows Native stop requested");
         var stopSignaled = SignalStop(status);
@@ -415,6 +427,44 @@ internal sealed class WindowsNativeOrchestrator
         }
     }
 
+    private static IDisposable? TryAcquireNamedMutex(
+        string name,
+        TimeSpan timeout,
+        StatusWriter status,
+        string eventPrefix)
+    {
+        Mutex? mutex = null;
+        try
+        {
+            mutex = new Mutex(false, name);
+            var acquired = false;
+            try
+            {
+                acquired = mutex.WaitOne(timeout);
+            }
+            catch (AbandonedMutexException)
+            {
+                acquired = true;
+            }
+
+            if (!acquired)
+            {
+                mutex.Dispose();
+                status.Write(eventPrefix + "_BUSY", $"Timed out waiting for {name}");
+                return null;
+            }
+
+            status.Write(eventPrefix + "_ACQUIRED", $"pid={Environment.ProcessId}");
+            return new MutexLock(mutex);
+        }
+        catch (Exception ex)
+        {
+            mutex?.Dispose();
+            status.Write(eventPrefix + "_FAILED", ex.Message);
+            AppDiagnosticsLogger.Record(eventPrefix + "_FAILED", ("error", ex.Message));
+            return null;
+        }
+    }
     private bool SignalStop(StatusWriter? status = null)
     {
         try
@@ -544,6 +594,17 @@ internal sealed class WindowsNativeOrchestrator
 
     private async Task<bool> RestorePhysicalInputSafelyAsync(HidHideManager hidHide, StatusWriter status)
     {
+        using var restoreLock = TryAcquireNamedMutex(
+            @"Local\StadiaX.HidHideRestore",
+            TimeSpan.FromSeconds(15),
+            status,
+            "WINDOWS_NATIVE_HIDHIDE_RESTORE_LOCK");
+        if (restoreLock is null)
+        {
+            status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_WARN", "Another physical-input restore did not finish within 15 seconds");
+            return false;
+        }
+
         try
         {
             return await RestorePhysicalInputAsync(hidHide, status).ConfigureAwait(false);
@@ -750,6 +811,27 @@ internal sealed class WindowsNativeOrchestrator
         return value.Length <= maxLength ? value : value[..maxLength] + "...";
     }
 
+    private sealed class MutexLock : IDisposable
+    {
+        private Mutex? _mutex;
+
+        public MutexLock(Mutex mutex)
+        {
+            _mutex = mutex;
+        }
+
+        public void Dispose()
+        {
+            var mutex = Interlocked.Exchange(ref _mutex, null);
+            if (mutex is null)
+            {
+                return;
+            }
+
+            try { mutex.ReleaseMutex(); } catch (ApplicationException) { }
+            mutex.Dispose();
+        }
+    }
     private sealed class FileLock : IDisposable
     {
         private readonly FileStream _stream;
