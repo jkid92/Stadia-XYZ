@@ -74,8 +74,22 @@ internal sealed class ProcessRunner
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         var output = new StringBuilder();
         var error = new StringBuilder();
-        process.OutputDataReceived += (_, e) => { if (e.Data is not null) output.AppendLine(e.Data); };
-        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) error.AppendLine(e.Data); };
+        var outputLock = new object();
+        var errorLock = new object();
+        process.OutputDataReceived += (_, e) =>
+        {
+            if (e.Data is not null)
+            {
+                lock (outputLock) output.AppendLine(e.Data);
+            }
+        };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is not null)
+            {
+                lock (errorLock) error.AppendLine(e.Data);
+            }
+        };
 
         if (!TryStart(process, out var startError))
         {
@@ -100,26 +114,33 @@ internal sealed class ProcessRunner
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { }
+            var cleanupObservedExit = false;
             try
             {
-                await process.WaitForExitAsync().ConfigureAwait(false);
+                using var cleanupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await process.WaitForExitAsync(cleanupTimeout.Token).ConfigureAwait(false);
                 process.WaitForExit();
+                cleanupObservedExit = true;
             }
             catch
             {
-                // Preserve the original timeout result even if cleanup cannot observe process exit.
+                try { process.CancelOutputRead(); } catch { }
+                try { process.CancelErrorRead(); } catch { }
             }
+            var outputText = Snapshot(output, outputLock);
+            var errorText = Snapshot(error, errorLock);
             AppDiagnosticsLogger.Record(
                 "PROCESS_TIMEOUT",
                 ("id", commandId),
                 ("file", startInfo.FileName),
                 ("elapsedMs", startedAt.ElapsedMilliseconds.ToString()),
-                ("outputBytes", output.Length.ToString()),
-                ("errorBytes", error.Length.ToString()));
-            return new CommandResult(-1, output.ToString(), $"Timed out after {timeoutMilliseconds} ms.");
+                ("cleanupObservedExit", cleanupObservedExit.ToString()),
+                ("outputBytes", outputText.Length.ToString()),
+                ("errorBytes", errorText.Length.ToString()));
+            return new CommandResult(-1, outputText, $"Timed out after {timeoutMilliseconds} ms.");
         }
 
-        var result = new CommandResult(process.ExitCode, output.ToString(), error.ToString());
+        var result = new CommandResult(process.ExitCode, Snapshot(output, outputLock), Snapshot(error, errorLock));
         AppDiagnosticsLogger.Record(
             "PROCESS_EXIT",
             ("id", commandId),
@@ -130,6 +151,14 @@ internal sealed class ProcessRunner
             ("errorBytes", error.Length.ToString()),
             ("errorTail", Tail(result.Error, 180)));
         return result;
+    }
+
+    private static string Snapshot(StringBuilder builder, object sync)
+    {
+        lock (sync)
+        {
+            return builder.ToString();
+        }
     }
 
     public async Task<bool> CommandExistsAsync(string commandName, string workingDirectory)
