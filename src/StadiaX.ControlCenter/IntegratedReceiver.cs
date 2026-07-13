@@ -27,6 +27,7 @@ internal sealed class IntegratedReceiver
     private readonly StatusWriter _status;
     private readonly object _logLock = new();
     private readonly object _telemetryLock = new();
+    private readonly object _telemetryErrorLock = new();
     private readonly object _rumbleLock = new();
     private readonly ControllerTelemetryState[] _telemetry = Enumerable.Range(0, MaxControllers).Select(_ => new ControllerTelemetryState()).ToArray();
     private readonly byte[] _lastRumbleLarge = new byte[MaxControllers];
@@ -39,6 +40,7 @@ internal sealed class IntegratedReceiver
     private UdpClient? _rumbleClient;
     private IPEndPoint? _rumbleEndpoint;
     private DateTimeOffset _lastTelemetryWrite = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextTelemetryErrorLog = DateTimeOffset.MinValue;
 
     public IntegratedReceiver(AppPaths paths, string bridgeIp, StatusWriter status)
     {
@@ -292,7 +294,7 @@ internal sealed class IntegratedReceiver
                 LogError("ViGEm update failed for pad {0}: 0x{1:X8}", controllerIndex + 1, update);
             }
 
-            WriteControllerTelemetry(controllerIndex, state);
+            WriteControllerTelemetrySafely(controllerIndex, state);
         }
     }
 
@@ -519,6 +521,39 @@ internal sealed class IntegratedReceiver
         }
 
         File.Move(tempPath, _paths.ControllerState, overwrite: true);
+    }
+
+    private void WriteControllerTelemetrySafely(int controllerIndex, ControllerState state)
+    {
+        try
+        {
+            WriteControllerTelemetry(controllerIndex, state);
+        }
+        catch (Exception ex)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var shouldLog = false;
+            lock (_telemetryErrorLock)
+            {
+                if (now >= _nextTelemetryErrorLog)
+                {
+                    _nextTelemetryErrorLog = now.AddSeconds(5);
+                    shouldLog = true;
+                }
+            }
+
+            if (shouldLog)
+            {
+                try
+                {
+                    LogError("Controller telemetry write failed: {0}", ex.Message);
+                }
+                catch
+                {
+                    AppDiagnosticsLogger.Record("CONTROLLER_TELEMETRY_WRITE_WARN", ("error", ex.Message));
+                }
+            }
+        }
     }
 
     private static void WriteButtonsJson(Utf8JsonWriter writer, ControllerState state)
