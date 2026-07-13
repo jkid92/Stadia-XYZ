@@ -584,18 +584,26 @@ internal sealed class WindowsNativeOrchestrator
             }
         }
 
+        FileStream? stream = null;
         try
         {
-            var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            stream = new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 4096,
+                FileOptions.DeleteOnClose);
             using var writer = new StreamWriter(stream, Encoding.UTF8, 1024, leaveOpen: true);
             writer.WriteLine($"{DateTimeOffset.Now:O}|pid={Environment.ProcessId}");
             writer.Flush();
             stream.Flush();
             status.Write("WINDOWS_NATIVE_START_LOCK_ACQUIRED", $"pid={Environment.ProcessId}");
-            return new FileLock(stream, path);
+            return new FileLock(stream);
         }
         catch (Exception ex)
         {
+            stream?.Dispose();
             status.Write("WINDOWS_NATIVE_START_LOCK_BUSY", "Could not acquire start lock: " + ex.Message);
             AppDiagnosticsLogger.Record("WINDOWS_NATIVE_START_LOCK_ACQUIRE_FAILED", ("path", path), ("error", ex.Message));
             return null;
@@ -658,18 +666,15 @@ internal sealed class WindowsNativeOrchestrator
     private sealed class FileLock : IDisposable
     {
         private readonly FileStream _stream;
-        private readonly string _path;
 
-        public FileLock(FileStream stream, string path)
+        public FileLock(FileStream stream)
         {
             _stream = stream;
-            _path = path;
         }
 
         public void Dispose()
         {
             _stream.Dispose();
-            try { File.Delete(_path); } catch { }
         }
     }
 }
