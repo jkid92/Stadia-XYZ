@@ -8,7 +8,6 @@ internal sealed class BridgeOrchestrator
     private const int StartPhaseCount = 6;
     private const int StopPhaseCount = 3;
     private static readonly TimeSpan ReceiverStopSignalMaxAge = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan ReceiverReadyMarkerMaxAge = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan StartLockMaxAge = TimeSpan.FromSeconds(60);
 
     private readonly AppPaths _paths;
@@ -972,15 +971,6 @@ internal sealed class BridgeOrchestrator
         try
         {
             timestamp = ReadReceiverReadyTimestamp();
-            var age = DateTimeOffset.UtcNow - timestamp.ToUniversalTime();
-            if (age > ReceiverReadyMarkerMaxAge)
-            {
-                File.Delete(path);
-                detail = $"stale marker ageSeconds={(int)age.TotalSeconds}";
-                AppDiagnosticsLogger.Record("RECEIVER_READY_MARKER_STALE", ("ageSeconds", ((int)age.TotalSeconds).ToString()));
-                return false;
-            }
-
             pid = ReadReceiverReadyPid();
             if (pid <= 0)
             {
