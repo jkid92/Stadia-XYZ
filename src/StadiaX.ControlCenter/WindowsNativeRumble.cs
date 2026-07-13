@@ -56,11 +56,13 @@ internal static class WindowsNativeRuntime
             return false;
         }
 
+        DateTimeOffset processStart;
+        bool hasExactProcessStart;
         try
         {
             var marker = File.ReadAllText(readyPath).Trim();
             var timestamp = ReadMarkerTimestamp(marker, readyPath);
-            var processStart = ReadProcessStartTimestamp(marker, timestamp, out var hasExactProcessStart);
+            processStart = ReadProcessStartTimestamp(marker, timestamp, out hasExactProcessStart);
             foreach (var part in marker.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
@@ -79,22 +81,53 @@ internal static class WindowsNativeRuntime
                 }
             }
 
-            if (pid > 0)
-            {
-                using var process = Process.GetProcessById(pid);
-                if (!process.HasExited && LooksLikeReceiverProcess(process) && ProcessMatchesMarker(process, processStart, hasExactProcessStart))
-                {
-                    controllers = Math.Clamp(controllers, 1, MaxControllers);
-                    return true;
-                }
-            }
         }
-        catch
+        catch (Exception ex)
         {
-            // A stale or unreadable marker should never block a fresh start.
+            controllers = 1;
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_READY_MARKER_READ_WARN", ("error", ex.Message));
+            return true;
         }
 
-        TryDeleteFile(readyPath);
+        if (pid <= 0)
+        {
+            TryDeleteFile(readyPath);
+            controllers = 0;
+            return false;
+        }
+
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (process.HasExited || !LooksLikeReceiverProcess(process) || !ProcessMatchesMarker(process, processStart, hasExactProcessStart))
+            {
+                TryDeleteFile(readyPath);
+                pid = 0;
+                controllers = 0;
+                return false;
+            }
+
+            controllers = Math.Clamp(controllers, 1, MaxControllers);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            TryDeleteFile(readyPath);
+        }
+        catch (InvalidOperationException)
+        {
+            TryDeleteFile(readyPath);
+        }
+        catch (Exception ex)
+        {
+            controllers = Math.Clamp(controllers, 1, MaxControllers);
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_READY_PROCESS_PROBE_WARN",
+                ("pid", pid.ToString()),
+                ("error", ex.Message));
+            return true;
+        }
+
         pid = 0;
         controllers = 0;
         return false;
@@ -111,27 +144,49 @@ internal static class WindowsNativeRuntime
             return false;
         }
 
+        if (pid <= 0)
+        {
+            AppDiagnosticsLogger.Record("WINDOWS_NATIVE_READY_PROCESS_OPEN_DEFERRED", ("reason", "marker temporarily unreadable"));
+            return false;
+        }
+
         var readyPath = ReadyPath(paths);
+        Process? candidate = null;
         try
         {
             var marker = File.ReadAllText(readyPath).Trim();
             var timestamp = ReadMarkerTimestamp(marker, readyPath);
             var processStart = ReadProcessStartTimestamp(marker, timestamp, out var hasExactProcessStart);
-            var candidate = Process.GetProcessById(pid);
+            candidate = Process.GetProcessById(pid);
             if (!candidate.HasExited && LooksLikeReceiverProcess(candidate) && ProcessMatchesMarker(candidate, processStart, hasExactProcessStart))
             {
                 process = candidate;
+                candidate = null;
                 return true;
             }
 
-            candidate.Dispose();
+            TryDeleteFile(readyPath);
         }
-        catch
+        catch (ArgumentException)
         {
-            // If the process changed after marker validation, refuse to terminate it.
+            TryDeleteFile(readyPath);
+        }
+        catch (InvalidOperationException)
+        {
+            TryDeleteFile(readyPath);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_READY_PROCESS_OPEN_WARN",
+                ("pid", pid.ToString()),
+                ("error", ex.Message));
+        }
+        finally
+        {
+            candidate?.Dispose();
         }
 
-        TryDeleteFile(readyPath);
         pid = 0;
         controllers = 0;
         return false;
@@ -168,31 +223,17 @@ internal static class WindowsNativeRuntime
 
     private static bool ProcessMatchesMarker(Process process, DateTimeOffset expectedStart, bool hasExactProcessStart)
     {
-        try
-        {
-            var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
-            var expectedStartUtc = expectedStart.ToUniversalTime();
-            return hasExactProcessStart
-                ? (startedAt - expectedStartUtc).Duration() <= TimeSpan.FromSeconds(2)
-                : startedAt <= expectedStartUtc.AddSeconds(15);
-        }
-        catch
-        {
-            return !hasExactProcessStart;
-        }
+        var startedAt = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        var expectedStartUtc = expectedStart.ToUniversalTime();
+        return hasExactProcessStart
+            ? (startedAt - expectedStartUtc).Duration() <= TimeSpan.FromSeconds(2)
+            : startedAt <= expectedStartUtc.AddSeconds(15);
     }
 
     private static bool LooksLikeReceiverProcess(Process process)
     {
-        try
-        {
-            return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
-                   process.MainWindowHandle == IntPtr.Zero;
-        }
-        catch
-        {
-            return false;
-        }
+        return process.ProcessName.Equals("StadiaX", StringComparison.OrdinalIgnoreCase) &&
+               process.MainWindowHandle == IntPtr.Zero;
     }
 
     private static void TryDeleteFile(string path)
