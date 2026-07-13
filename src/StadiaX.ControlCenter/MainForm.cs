@@ -187,9 +187,14 @@ internal sealed class MainForm : Form
 
     internal static bool IsConstrainedUi()
     {
-        if (string.Equals(Environment.GetEnvironmentVariable("STADIAX_UI_CONSTRAINED"), "1", StringComparison.OrdinalIgnoreCase))
+        var constrained = Environment.GetEnvironmentVariable("STADIAX_UI_CONSTRAINED");
+        if (string.Equals(constrained, "1", StringComparison.OrdinalIgnoreCase))
         {
             return true;
+        }
+        if (string.Equals(constrained, "0", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
         }
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
