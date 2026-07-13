@@ -63,13 +63,18 @@ internal sealed class IntegratedReceiver
             InitializeVigem();
             InitializeRumble(bridgeAddress);
 
+            if (!WriteReadyMarker())
+            {
+                _status.Write("RECEIVER_START_FAILED", "Could not publish the integrated receiver ready marker");
+                return 1;
+            }
+
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var inputTask = Task.Run(() => RunInputLoopAsync(linked.Token), linked.Token);
             var macroTask = Task.Run(() => RunMacroLoopAsync(linked.Token), linked.Token);
 
             LogInfo("Integrated receiver running.");
             _status.Write("RECEIVER_READY", "Integrated Windows receiver is running inside StadiaX.exe");
-            WriteReadyMarker();
 
             try
             {
@@ -158,7 +163,7 @@ internal sealed class IntegratedReceiver
         return Path.Combine(_paths.LogDirectory, "receiver.ready");
     }
 
-    private void WriteReadyMarker()
+    private bool WriteReadyMarker()
     {
         try
         {
@@ -169,11 +174,13 @@ internal sealed class IntegratedReceiver
                 $"pid={Environment.ProcessId}",
                 $"bridgeIp={_bridgeIp}"
             });
+            return true;
         }
         catch (Exception ex)
         {
             LogError("Receiver ready marker write failed: {0}", ex.Message);
-            _status.Write("RECEIVER_READY_MARKER_WARN", ex.Message);
+            _status.Write("RECEIVER_READY_MARKER_FAILED", ex.Message);
+            return false;
         }
     }
 
