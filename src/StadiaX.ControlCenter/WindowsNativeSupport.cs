@@ -79,7 +79,11 @@ internal sealed class HidHideManager
         return ParseDeviceList(result.Output);
     }
 
-    public async Task<CommandResult> ConfigureStadiaDevicesAsync(string appPath, IReadOnlyList<string> deviceInstancePaths, bool elevated)
+    public async Task<CommandResult> ConfigureStadiaDevicesAsync(
+        string appPath,
+        IReadOnlyList<string> deviceInstancePaths,
+        bool elevated,
+        CancellationToken cancellationToken = default)
     {
         var cli = CliPath;
         if (cli is null)
@@ -96,11 +100,13 @@ internal sealed class HidHideManager
         args.Add("--cloak-on");
 
         return elevated
-            ? await RunElevatedAsync(cli, args).ConfigureAwait(false)
-            : await _runner.RunAsync(cli, args, _paths.Root, 30000).ConfigureAwait(false);
+            ? await RunElevatedAsync(cli, args, cancellationToken).ConfigureAwait(false)
+            : await _runner.RunAsync(cli, args, _paths.Root, 30000, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<CommandResult> DisableCloakAsync(bool elevated)
+    public async Task<CommandResult> DisableCloakAsync(
+        bool elevated,
+        CancellationToken cancellationToken = default)
     {
         var cli = CliPath;
         if (cli is null)
@@ -110,20 +116,24 @@ internal sealed class HidHideManager
 
         var args = new[] { "--cloak-off" };
         return elevated
-            ? await RunElevatedAsync(cli, args).ConfigureAwait(false)
-            : await _runner.RunAsync(cli, args, _paths.Root, 30000).ConfigureAwait(false);
+            ? await RunElevatedAsync(cli, args, cancellationToken).ConfigureAwait(false)
+            : await _runner.RunAsync(cli, args, _paths.Root, 30000, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<CommandResult> RunElevatedAsync(string cli, IEnumerable<string> args)
+    private async Task<CommandResult> RunElevatedAsync(
+        string cli,
+        IEnumerable<string> args,
+        CancellationToken cancellationToken)
     {
         var commandLine = string.Join(" ", args.Select(WindowsCommandLineQuote));
-        var command = $"Start-Process -FilePath {PowerShellSingleQuote(cli)} -ArgumentList {PowerShellSingleQuote(commandLine)} -Verb RunAs -Wait";
+        var command = $"$ErrorActionPreference = 'Stop'; $process = Start-Process -FilePath {PowerShellSingleQuote(cli)} -ArgumentList {PowerShellSingleQuote(commandLine)} -Verb RunAs -PassThru -Wait; exit $process.ExitCode";
         return await _runner.RunAsync(
             "powershell.exe",
             new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command },
             _paths.Root,
             120000,
-            createNoWindow: false).ConfigureAwait(false);
+            createNoWindow: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private static IReadOnlyList<HidHideDeviceEntry> ParseDeviceList(string json)

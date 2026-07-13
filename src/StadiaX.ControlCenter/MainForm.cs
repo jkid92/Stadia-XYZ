@@ -3079,7 +3079,7 @@ internal sealed class MainForm : Form
     {
         LogUserAction("Stop Windows Native requested");
         BeginOperationProgress("Stopping Windows Native", "Sending receiver stop signal", 35);
-        LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: false, "Windows Native stop requested. Physical input will be restored.");
+        LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: true, "Windows Native stop requested. Physical input will be restored.");
         SetWindowsNativeStatus("Stop requested - restoring physical input", 100, warn: false);
         CompleteOperationProgress("Stopping Windows Native", "Stop requested; physical input restore requested");
         RefreshLogs();
@@ -3718,7 +3718,7 @@ internal sealed class MainForm : Form
 
         try
         {
-            var process = Process.Start(startInfo);
+            using var process = Process.Start(startInfo);
             var pid = process?.Id.ToString() ?? "unknown";
             LogUserAction(
                 "Launch self command started",

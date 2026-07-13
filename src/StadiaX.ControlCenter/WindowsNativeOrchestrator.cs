@@ -22,6 +22,7 @@ internal sealed class WindowsNativeOrchestrator
 
     public async Task<int> StartAsync()
     {
+        var startRequestedAt = DateTimeOffset.UtcNow;
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
@@ -44,25 +45,31 @@ internal sealed class WindowsNativeOrchestrator
             return 0;
         }
 
-        if (!ClearStopSignal(status))
+        if (!ClearStopSignal(status, startRequestedAt))
         {
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "Could not clear the previous receiver stop signal");
             return 1;
         }
+        using var cancellation = new CancellationTokenSource();
+        await using var stopWatcher = StartStopWatcher(cancellation);
         ClearControllerState(status, "START");
 
         var hidHide = new HidHideManager(_paths, _runner);
-        if (!await EnsureHidHideAsync(hidHide, status).ConfigureAwait(false))
+        if (!await EnsureHidHideAsync(hidHide, status, cancellation.Token).ConfigureAwait(false))
         {
+            if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "HidHide is not ready");
             return 2;
         }
+        if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
 
-        if (!await EnsureVigemBusAsync(status).ConfigureAwait(false))
+        if (!await EnsureVigemBusAsync(status, cancellation.Token).ConfigureAwait(false))
         {
+            if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "ViGEmBus is not ready");
             return 2;
         }
+        if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "OK", "Required Windows drivers are ready");
 
         var scanner = new WindowsNativeHidScanner(hidHide);
@@ -80,6 +87,8 @@ internal sealed class WindowsNativeOrchestrator
             AppDiagnosticsLogger.Record("WINDOWS_NATIVE_SCAN_FAILED", ("error", ex.ToString()));
             return 1;
         }
+
+        if (ReportStartCancelled(cancellation.Token, status, 2, "Device discovery")) return 0;
 
         var devices = scan.Devices.Take(MaxControllers).ToArray();
         status.Write(
@@ -125,7 +134,8 @@ internal sealed class WindowsNativeOrchestrator
             hide = await hidHide.ConfigureStadiaDevicesAsync(
                 appPath,
                 devices.Select(device => device.DeviceInstancePath).ToArray(),
-                elevated: !IsAdministrator()).ConfigureAwait(false);
+                elevated: !IsAdministrator(),
+                cancellationToken: cancellation.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -136,6 +146,13 @@ internal sealed class WindowsNativeOrchestrator
             return 1;
         }
         status.Write("WINDOWS_NATIVE_HIDHIDE_RESULT", $"exit={hide.ExitCode} output={Shorten(FirstNonEmpty(hide.Output, hide.Error, "none"), 260)}");
+
+        if (cancellation.IsCancellationRequested)
+        {
+            await RollbackPartialHidHideConfigurationAsync(hidHide, status).ConfigureAwait(false);
+            ReportStartCancelled(cancellation.Token, status, 3, "Input isolation");
+            return 0;
+        }
 
         if (hide.ExitCode != 0)
         {
@@ -151,8 +168,6 @@ internal sealed class WindowsNativeOrchestrator
         var inputRestored = false;
         try
         {
-            using var cancellation = new CancellationTokenSource();
-            using var stopWatcher = StartStopWatcher(cancellation);
             var receiver = new WindowsNativeReceiver(_paths, status, scanner, devices);
             status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "START", $"Creating {devices.Length} virtual Xbox 360 controller slot(s)");
             status.Write("WINDOWS_NATIVE_RECEIVER_START", $"Starting receiver for {devices.Length} controller slot(s)");
@@ -199,6 +214,7 @@ internal sealed class WindowsNativeOrchestrator
             stopped = await TerminateReceiverIfActiveAsync(status).ConfigureAwait(false);
         }
 
+        ClearControllerState(status, "STOP_FINAL");
         status.Write(
             stopped ? "WINDOWS_NATIVE_STOP_CONFIRMED" : "WINDOWS_NATIVE_STOP_WAIT_TIMEOUT",
             stopped ? "No active Windows Native receiver remains after stop signal" : "Receiver still appears active after termination attempt");
@@ -214,6 +230,21 @@ internal sealed class WindowsNativeOrchestrator
         return stopCompleted ? 0 : 1;
     }
 
+    private static bool ReportStartCancelled(
+        CancellationToken cancellationToken,
+        StatusWriter status,
+        int phase,
+        string phaseName)
+    {
+        if (!cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        status.Write("WINDOWS_NATIVE_START_CANCELLED", $"Stop requested during {phaseName}");
+        status.WritePhase("Windows Native", phase, StartPhaseCount, phaseName, "WAIT", "Start cancelled by Stop request");
+        return true;
+    }
     private static void ReportAlreadyRunning(StatusWriter status, int pid, int controllers)
     {
         status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={pid} controllers={controllers}");
@@ -221,7 +252,10 @@ internal sealed class WindowsNativeOrchestrator
         status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={pid}");
     }
 
-    private async Task<bool> EnsureHidHideAsync(HidHideManager hidHide, StatusWriter status)
+    private async Task<bool> EnsureHidHideAsync(
+        HidHideManager hidHide,
+        StatusWriter status,
+        CancellationToken cancellationToken)
     {
         status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "START", "Checking HidHide CLI");
         if (hidHide.IsInstalled)
@@ -233,7 +267,7 @@ internal sealed class WindowsNativeOrchestrator
 
         status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL", "HidHide missing; trying winget install");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "INSTALL", "HidHide missing; installing with winget");
-        if (!await EnsureWingetAsync(status).ConfigureAwait(false))
+        if (!await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
         {
             status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "FAIL", "winget is missing, so HidHide cannot be installed automatically");
             return false;
@@ -244,7 +278,8 @@ internal sealed class WindowsNativeOrchestrator
             new[] { "install", "-e", "--id", "Nefarius.HidHide", "--accept-package-agreements", "--accept-source-agreements" },
             _paths.Root,
             180000,
-            createNoWindow: false).ConfigureAwait(false);
+            createNoWindow: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
 
         if (hidHide.IsInstalled)
@@ -259,10 +294,12 @@ internal sealed class WindowsNativeOrchestrator
         return false;
     }
 
-    private async Task<bool> EnsureVigemBusAsync(StatusWriter status)
+    private async Task<bool> EnsureVigemBusAsync(
+        StatusWriter status,
+        CancellationToken cancellationToken)
     {
         status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "START", "Checking virtual controller driver");
-        if (await IsVigemBusInstalledAsync().ConfigureAwait(false))
+        if (await IsVigemBusInstalledAsync(cancellationToken).ConfigureAwait(false))
         {
             status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
             status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
@@ -271,7 +308,7 @@ internal sealed class WindowsNativeOrchestrator
 
         status.Write("WINDOWS_NATIVE_VIGEM_INSTALL", "ViGEmBus missing; trying winget install");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "INSTALL", "ViGEmBus missing; installing with winget");
-        if (!await EnsureWingetAsync(status).ConfigureAwait(false))
+        if (!await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
         {
             status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "FAIL", "winget is missing, so ViGEmBus cannot be installed automatically");
             return false;
@@ -282,10 +319,11 @@ internal sealed class WindowsNativeOrchestrator
             new[] { "install", "-e", "--id", "Nefarius.ViGEmBus", "--accept-package-agreements", "--accept-source-agreements" },
             _paths.Root,
             180000,
-            createNoWindow: false).ConfigureAwait(false);
+            createNoWindow: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         status.Write("WINDOWS_NATIVE_VIGEM_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
 
-        if (await IsVigemBusInstalledAsync().ConfigureAwait(false))
+        if (await IsVigemBusInstalledAsync(cancellationToken).ConfigureAwait(false))
         {
             status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
             status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
@@ -297,19 +335,22 @@ internal sealed class WindowsNativeOrchestrator
         return false;
     }
 
-    private async Task<bool> IsVigemBusInstalledAsync()
+    private async Task<bool> IsVigemBusInstalledAsync(CancellationToken cancellationToken)
     {
         var result = await _runner.RunAsync(
             "powershell.exe",
             new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue) { 'OK' }" },
             _paths.Root,
-            15000).ConfigureAwait(false);
+            15000,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
         return result.Output.Contains("OK", StringComparison.OrdinalIgnoreCase);
     }
 
-    private async Task<bool> EnsureWingetAsync(StatusWriter status)
+    private async Task<bool> EnsureWingetAsync(
+        StatusWriter status,
+        CancellationToken cancellationToken)
     {
-        if (await _runner.CommandExistsAsync("winget", _paths.Root).ConfigureAwait(false))
+        if (await _runner.CommandExistsAsync("winget", _paths.Root, cancellationToken).ConfigureAwait(false))
         {
             return true;
         }
@@ -352,14 +393,26 @@ internal sealed class WindowsNativeOrchestrator
             {
                 if (StopSignalIsActive())
                 {
-                    cancellation.Cancel();
+                    TryCancel(cancellation);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                cancellation.Cancel();
+                AppDiagnosticsLogger.Record("WINDOWS_NATIVE_STOP_WATCHER_WARN", ("error", ex.Message));
+                TryCancel(cancellation);
             }
         }, null, TimeSpan.FromMilliseconds(250), TimeSpan.FromMilliseconds(500));
+    }
+
+    private static void TryCancel(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private bool SignalStop(StatusWriter? status = null)
@@ -428,21 +481,27 @@ internal sealed class WindowsNativeOrchestrator
         var loggedWait = false;
         for (var attempt = 0; attempt < 40; attempt++)
         {
-            if (!WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var pid, out var controllers))
+            var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var pid, out var controllers);
+            var startInProgress = File.Exists(StartLockPath());
+            if (!receiverActive && !startInProgress)
             {
                 return true;
             }
 
             if (!loggedWait)
             {
-                status.Write("WINDOWS_NATIVE_STOP_WAITING", $"Waiting for receiver pid={pid} controllers={controllers}");
+                var detail = receiverActive
+                    ? $"receiver pid={pid} controllers={controllers}"
+                    : "startup process";
+                status.Write("WINDOWS_NATIVE_STOP_WAITING", $"Waiting for {detail}");
                 loggedWait = true;
             }
 
             await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
         }
 
-        return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+        return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _) &&
+               !File.Exists(StartLockPath());
     }
 
     private async Task<bool> TerminateReceiverIfActiveAsync(StatusWriter status)
@@ -450,7 +509,8 @@ internal sealed class WindowsNativeOrchestrator
         if (!WindowsNativeRuntime.TryOpenActiveReceiverProcess(_paths, out var process, out var pid, out var controllers) || process is null)
         {
             status.Write("WINDOWS_NATIVE_STOP_TERMINATE_SKIPPED", "No validated active Windows Native receiver process found");
-            return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+            return !WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _) &&
+                   !File.Exists(StartLockPath());
         }
 
         using (process)
@@ -501,7 +561,7 @@ internal sealed class WindowsNativeOrchestrator
         status.Write("WINDOWS_NATIVE_HIDHIDE_ROLLBACK_START", "Disabling the HidHide cloak after a partial input-isolation failure");
         try
         {
-            var rollback = await hidHide.DisableCloakAsync(elevated: false).ConfigureAwait(false);
+            var rollback = await hidHide.DisableCloakAsync(elevated: !IsAdministrator()).ConfigureAwait(false);
             status.Write(
                 rollback.ExitCode == 0 ? "WINDOWS_NATIVE_HIDHIDE_ROLLBACK_OK" : "WINDOWS_NATIVE_HIDHIDE_ROLLBACK_WARN",
                 $"exit={rollback.ExitCode} output={Shorten(FirstNonEmpty(rollback.Output, rollback.Error, "none"), 260)}");
@@ -522,7 +582,7 @@ internal sealed class WindowsNativeOrchestrator
         }
 
         status.WritePhase("Windows Native", 5, StartPhaseCount, "Input restore", "START", "Disabling HidHide cloak without prompting for elevation");
-        var restore = await hidHide.DisableCloakAsync(elevated: false).ConfigureAwait(false);
+        var restore = await hidHide.DisableCloakAsync(elevated: !IsAdministrator()).ConfigureAwait(false);
         status.Write("WINDOWS_NATIVE_HIDHIDE_RESTORE_RESULT", $"exit={restore.ExitCode} output={Shorten(FirstNonEmpty(restore.Output, restore.Error, "none"), 260)}");
         status.WritePhase(
             "Windows Native",
@@ -534,13 +594,23 @@ internal sealed class WindowsNativeOrchestrator
         return restore.ExitCode == 0;
     }
 
-    private bool ClearStopSignal(StatusWriter status)
+    private bool ClearStopSignal(StatusWriter status, DateTimeOffset startRequestedAt)
     {
         var path = StopSignalPath();
         try
         {
             if (File.Exists(path))
             {
+                var text = File.ReadLines(path).FirstOrDefault()?.Trim();
+                var timestamp = DateTimeOffset.TryParse(text, out var parsed)
+                    ? parsed.ToUniversalTime()
+                    : new DateTimeOffset(File.GetLastWriteTimeUtc(path), TimeSpan.Zero);
+                if (timestamp >= startRequestedAt)
+                {
+                    status.Write("WINDOWS_NATIVE_STOP_SIGNAL_PENDING", "Retained Stop request received during startup");
+                    return true;
+                }
+
                 File.Delete(path);
                 status.Write("WINDOWS_NATIVE_STOP_SIGNAL_CLEARED", "Removed windows-native.stop from a previous session");
             }
