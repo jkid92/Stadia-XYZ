@@ -21,6 +21,7 @@ internal sealed class IntegratedReceiver
     private const int RumblePacketSize = 6;
     private const int OneShotDebounceMs = 200;
     private const int RumbleDuplicateWindowMs = 4;
+    private const int RumbleErrorLogIntervalMs = 5000;
 
     private readonly AppPaths _paths;
     private readonly string _bridgeIp;
@@ -41,6 +42,7 @@ internal sealed class IntegratedReceiver
     private IPEndPoint? _rumbleEndpoint;
     private DateTimeOffset _lastTelemetryWrite = DateTimeOffset.MinValue;
     private DateTimeOffset _nextTelemetryErrorLog = DateTimeOffset.MinValue;
+    private long _nextRumbleErrorLogTick;
 
     public IntegratedReceiver(AppPaths paths, string bridgeIp, StatusWriter status)
     {
@@ -455,6 +457,7 @@ internal sealed class IntegratedReceiver
         packet[4] = largeMotor;
         packet[5] = smallMotor;
 
+        string? errorToLog = null;
         lock (_rumbleLock)
         {
             if (_rumbleClient is null || _rumbleEndpoint is null)
@@ -482,8 +485,17 @@ internal sealed class IntegratedReceiver
             }
             catch (Exception ex)
             {
-                LogError("Rumble send failed: {0}", ex.Message);
+                if (now >= _nextRumbleErrorLogTick)
+                {
+                    _nextRumbleErrorLogTick = now + RumbleErrorLogIntervalMs;
+                    errorToLog = ex.Message;
+                }
             }
+        }
+
+        if (errorToLog is not null)
+        {
+            LogError("Rumble send failed: {0}", errorToLog);
         }
     }
 
