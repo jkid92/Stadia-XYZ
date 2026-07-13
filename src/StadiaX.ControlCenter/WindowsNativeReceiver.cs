@@ -315,13 +315,27 @@ internal sealed class WindowsNativeReceiver
             return;
         }
 
-        var update = VigemNative.vigem_target_x360_update(_client, target, default);
-        if (!VigemNative.Success(update))
+        try
         {
-            LogError("P{0} ViGEm neutral reset failed: 0x{1:X8}", controllerIndex + 1, update);
+            var update = VigemNative.vigem_target_x360_update(_client, target, default);
+            if (!VigemNative.Success(update))
+            {
+                LogError("P{0} ViGEm neutral reset failed: 0x{1:X8}", controllerIndex + 1, update);
+            }
+        }
+        catch (Exception ex)
+        {
+            TryLogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
         }
 
-        _telemetryWriter.Write(controllerIndex, default);
+        try
+        {
+            _telemetryWriter.Write(controllerIndex, default);
+        }
+        catch (Exception ex)
+        {
+            TryLogError("P{0} telemetry neutral reset failed: {1}", controllerIndex + 1, ex.Message);
+        }
     }
 
     private void InitializeVigem(int targetCount)
@@ -424,6 +438,11 @@ internal sealed class WindowsNativeReceiver
     private void LogInfo(string format, params object[] args) => Log("INFO", format, args);
 
     private void LogError(string format, params object[] args) => Log("ERROR", format, args);
+
+    private void TryLogError(string format, params object[] args)
+    {
+        try { LogError(format, args); } catch { }
+    }
 
     private void Log(string level, string format, params object[] args)
     {
