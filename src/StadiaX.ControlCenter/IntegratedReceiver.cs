@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -168,10 +169,12 @@ internal sealed class IntegratedReceiver
         try
         {
             Directory.CreateDirectory(_paths.LogDirectory);
+            using var process = Process.GetCurrentProcess();
             File.WriteAllLines(ReadyMarkerPath(), new[]
             {
                 $"timestamp={DateTimeOffset.UtcNow:O}",
                 $"pid={Environment.ProcessId}",
+                $"processStartUtc={process.StartTime.ToUniversalTime():O}",
                 $"bridgeIp={_bridgeIp}"
             });
             return true;

@@ -922,7 +922,8 @@ internal sealed class BridgeOrchestrator
         try
         {
             using var process = Process.GetProcessById(pid);
-            if (!LooksLikeIntegratedReceiverProcess(process) || !ProcessMatchesReadyMarker(process, ReadReceiverReadyTimestamp()))
+            var processStart = ReadReceiverReadyProcessStart(out var hasExactProcessStart);
+            if (!LooksLikeIntegratedReceiverProcess(process) || !ProcessMatchesReadyMarker(process, processStart, hasExactProcessStart))
             {
                 status.Write("RECEIVER_STOP_TERMINATE_REFUSED", $"Receiver marker pid={pid} no longer matches a hidden StadiaX receiver");
                 return false;
@@ -967,10 +968,11 @@ internal sealed class BridgeOrchestrator
             return false;
         }
 
-        DateTimeOffset timestamp;
+        DateTimeOffset processStart;
+        bool hasExactProcessStart;
         try
         {
-            timestamp = ReadReceiverReadyTimestamp();
+            processStart = ReadReceiverReadyProcessStart(out hasExactProcessStart);
             pid = ReadReceiverReadyPid();
             if (pid <= 0)
             {
@@ -1006,7 +1008,7 @@ internal sealed class BridgeOrchestrator
                 return false;
             }
 
-            if (!ProcessMatchesReadyMarker(process, timestamp))
+            if (!ProcessMatchesReadyMarker(process, processStart, hasExactProcessStart))
             {
                 TryDeleteFile(path);
                 detail = $"pid {pid} start time does not match marker";
@@ -1048,6 +1050,19 @@ internal sealed class BridgeOrchestrator
         return int.TryParse(ReadMarkerValue(ReceiverReadyMarkerPath(), "pid"), out var pid) ? pid : 0;
     }
 
+    private DateTimeOffset ReadReceiverReadyProcessStart(out bool hasExactProcessStart)
+    {
+        var value = ReadMarkerValue(ReceiverReadyMarkerPath(), "processStartUtc");
+        if (DateTimeOffset.TryParse(value, out var parsed))
+        {
+            hasExactProcessStart = true;
+            return parsed;
+        }
+
+        hasExactProcessStart = false;
+        return ReadReceiverReadyTimestamp();
+    }
+
     private static string ReadMarkerValue(string path, string key)
     {
         var prefix = key + "=";
@@ -1075,15 +1090,19 @@ internal sealed class BridgeOrchestrator
         }
     }
 
-    private static bool ProcessMatchesReadyMarker(Process process, DateTimeOffset markerTimestamp)
+    private static bool ProcessMatchesReadyMarker(Process process, DateTimeOffset expectedStart, bool hasExactProcessStart)
     {
         try
         {
-            return new DateTimeOffset(process.StartTime) <= markerTimestamp.ToLocalTime().AddSeconds(15);
+            var actualStart = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            var expectedStartUtc = expectedStart.ToUniversalTime();
+            return hasExactProcessStart
+                ? (actualStart - expectedStartUtc).Duration() <= TimeSpan.FromSeconds(2)
+                : actualStart <= expectedStartUtc.AddSeconds(15);
         }
         catch
         {
-            return true;
+            return !hasExactProcessStart;
         }
     }
 
