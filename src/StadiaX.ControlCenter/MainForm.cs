@@ -89,6 +89,7 @@ internal sealed class MainForm : Form
     private bool _linuxRefreshInProgress;
     private bool _suppressSelectionLogging;
     private IReadOnlyList<LinuxBluetoothDevice> _lastLinuxBluetoothDevices = Array.Empty<LinuxBluetoothDevice>();
+    private DateTimeOffset _operationStartedAt = DateTimeOffset.MinValue;
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
@@ -2419,6 +2420,46 @@ internal sealed class MainForm : Form
         _linuxLogBox.Text = linuxText;
         _userActionLogBox.Text = actionText;
         _appDiagnosticsLogBox.Text = appDiagnosticsText;
+        ApplyLatestLinuxConnectionPhase(statusText);
+    }
+
+    private void ApplyLatestLinuxConnectionPhase(string statusText)
+    {
+        var title = _operationTitleLabel.Text;
+        if (!title.StartsWith("Starting bridge", StringComparison.OrdinalIgnoreCase) &&
+            !title.StartsWith("Stopping bridge", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!ConnectionPhaseParser.TryParseLatest(statusText, "Linux bridge", out var phase) ||
+            phase is null ||
+            phase.Timestamp < _operationStartedAt)
+        {
+            return;
+        }
+
+        var detail = phase.IsTimeout
+            ? $"Timeout - {phase.Phase}: {phase.Detail}"
+            : $"{phase.Phase}: {phase.Detail}";
+        switch (phase.State)
+        {
+            case "FAIL":
+            case "TIMEOUT":
+                FailOperationProgress(title, detail);
+                break;
+            case "WARN":
+            case "WAIT":
+            case "INSTALL":
+                WarnOperationProgress(title, detail, phase.IsTerminal ? 100 : phase.ProgressPercent);
+                break;
+            case "OK" when phase.IsTerminal:
+                CompleteOperationProgress(title, detail);
+                break;
+            default:
+                SetOperationProgress(title, detail, phase.ProgressPercent);
+                break;
+        }
     }
 
     private void RefreshSelectionLabels()
@@ -2562,6 +2603,7 @@ internal sealed class MainForm : Form
 
     private void BeginOperationProgress(string title, string detail, int percent = 0)
     {
+        _operationStartedAt = DateTimeOffset.Now;
         SetOperationProgress(title, detail, percent);
     }
 
@@ -2593,12 +2635,19 @@ internal sealed class MainForm : Form
     private void CompleteOperationProgress(string title, string detail)
     {
         SetOperationProgress(title, detail, 100);
+        _operationDetailLabel.ForeColor = Color.FromArgb(34, 120, 72);
     }
 
     private void FailOperationProgress(string title, string detail)
     {
         SetOperationProgress(title, detail, 100);
         _operationDetailLabel.ForeColor = Color.FromArgb(180, 45, 45);
+    }
+
+    private void WarnOperationProgress(string title, string detail, int percent)
+    {
+        SetOperationProgress(title, detail, percent);
+        _operationDetailLabel.ForeColor = Color.FromArgb(170, 104, 0);
     }
 
     private void ResetOperationDetailColor()
