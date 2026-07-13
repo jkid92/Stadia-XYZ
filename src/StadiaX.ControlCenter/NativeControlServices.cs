@@ -987,9 +987,17 @@ bluetoothctl devices 2>&1 || true
     public async Task<string> CreateSupportBundleAsync()
     {
         Directory.CreateDirectory(_paths.SupportBundleDirectory);
-        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+        var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + AppDiagnosticsLogger.CurrentSessionId;
         var workDir = Path.Combine(_paths.SupportBundleDirectory, "StadiaX-support-" + stamp);
         Directory.CreateDirectory(workDir);
+        var manifest = new List<string>
+        {
+            "Stadia X support bundle manifest",
+            $"created={DateTimeOffset.Now:O}",
+            $"version={_paths.Version}",
+            $"session={AppDiagnosticsLogger.CurrentSessionId}",
+            ""
+        };
 
         foreach (var path in new[]
         {
@@ -1009,14 +1017,11 @@ bluetoothctl devices 2>&1 || true
             _paths.VersionFile
         })
         {
-            if (File.Exists(path))
-            {
-                File.Copy(path, Path.Combine(workDir, Path.GetFileName(path)), overwrite: true);
-            }
+            CopySupportFile(path, workDir, manifest);
         }
 
         var report = await CreateSessionReportAsync().ConfigureAwait(false);
-        File.Copy(report, Path.Combine(workDir, "session-report.md"), overwrite: true);
+        CopySupportFile(report, workDir, manifest, "session-report.md");
         var commandReport = new StringBuilder();
         foreach (var command in new[]
         {
@@ -1030,7 +1035,11 @@ bluetoothctl devices 2>&1 || true
             commandReport.AppendLine(result.Error.Trim());
             commandReport.AppendLine();
         }
-        await File.WriteAllTextAsync(Path.Combine(workDir, "commands.txt"), commandReport.ToString()).ConfigureAwait(false);
+        var commandsPath = Path.Combine(workDir, "commands.txt");
+        await File.WriteAllTextAsync(commandsPath, commandReport.ToString()).ConfigureAwait(false);
+        manifest.Add($"GENERATED | {Path.GetFileName(commandsPath)} | bytes={new FileInfo(commandsPath).Length}");
+        var manifestPath = Path.Combine(workDir, "bundle-manifest.txt");
+        await File.WriteAllLinesAsync(manifestPath, manifest).ConfigureAwait(false);
 
         var zipPath = workDir + ".zip";
         if (File.Exists(zipPath))
@@ -1038,7 +1047,60 @@ bluetoothctl devices 2>&1 || true
             File.Delete(zipPath);
         }
         ZipFile.CreateFromDirectory(workDir, zipPath, CompressionLevel.Optimal, includeBaseDirectory: false);
+        try
+        {
+            Directory.Delete(workDir, recursive: true);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "SUPPORT_BUNDLE_STAGING_CLEANUP_WARN",
+                ("directory", workDir),
+                ("error", ex.Message));
+        }
+
+        AppDiagnosticsLogger.Record(
+            "SUPPORT_BUNDLE_CREATED",
+            ("path", zipPath),
+            ("bytes", new FileInfo(zipPath).Length.ToString()),
+            ("copied", manifest.Count(line => line.StartsWith("COPIED", StringComparison.Ordinal)).ToString()),
+            ("skipped", manifest.Count(line => line.StartsWith("SKIPPED", StringComparison.Ordinal)).ToString()));
         return zipPath;
+    }
+
+    private static void CopySupportFile(string sourcePath, string destinationDirectory, ICollection<string> manifest, string? destinationName = null)
+    {
+        destinationName ??= Path.GetFileName(sourcePath);
+        if (!File.Exists(sourcePath))
+        {
+            manifest.Add($"MISSING | {destinationName}");
+            return;
+        }
+
+        try
+        {
+            var destinationPath = Path.Combine(destinationDirectory, Path.GetFileName(destinationName));
+            using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var destination = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+            source.CopyTo(destination);
+            manifest.Add($"COPIED | {Path.GetFileName(destinationPath)} | bytes={destination.Length} | modified={File.GetLastWriteTimeUtc(sourcePath):O}");
+        }
+        catch (Exception ex)
+        {
+            manifest.Add($"SKIPPED | {destinationName} | reason={SanitizeManifestValue(ex.Message)}");
+            AppDiagnosticsLogger.Record(
+                "SUPPORT_BUNDLE_FILE_SKIPPED",
+                ("file", destinationName),
+                ("error", ex.Message));
+        }
+    }
+
+    private static string SanitizeManifestValue(string value)
+    {
+        return value.Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Replace("|", "/", StringComparison.Ordinal)
+            .Trim();
     }
 
     public static string EstimateCapacity(UsbipdDevice? device, IReadOnlyList<WindowsBluetoothDevice> windowsDevices)
