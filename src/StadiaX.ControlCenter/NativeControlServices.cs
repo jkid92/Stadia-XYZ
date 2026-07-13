@@ -50,6 +50,7 @@ internal sealed class NativeControlServices
     private const byte PacketMagic = 0x53;
     private const byte PacketVersion = 1;
     public static readonly TimeSpan ControllerTelemetryMaxAge = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ControllerActiveMaxAge = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan LiveFallbackMaxAge = TimeSpan.FromSeconds(90);
     private static readonly Regex BusIdPattern = new(@"^\d+-\d+$", RegexOptions.Compiled);
     private static readonly Regex MacPattern = new(@"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$", RegexOptions.Compiled);
@@ -904,6 +905,8 @@ bluetoothctl devices 2>&1 || true
     private static ControllerTelemetrySnapshot ReadControllerRows(JsonElement controllers, DateTimeOffset dataTimestamp)
     {
         var rows = new List<ControllerTelemetryRow>();
+        var fileAge = DateTimeOffset.UtcNow - dataTimestamp.ToUniversalTime();
+        var fileAgeMs = Math.Max(0d, fileAge.TotalMilliseconds);
         foreach (var item in controllers.EnumerateArray())
         {
             var buttons = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -916,10 +919,12 @@ bluetoothctl devices 2>&1 || true
             }
 
             var axes = item.TryGetProperty("axes", out var axisNode) ? axisNode : default;
+            var effectiveLastSeenAgeMs = Math.Max(0L, ReadLong(item, "last_seen_age_ms")) + fileAgeMs;
+            var active = ReadBool(item, "active") && effectiveLastSeenAgeMs < ControllerActiveMaxAge.TotalMilliseconds;
             rows.Add(new ControllerTelemetryRow(
                 ReadInt(item, "index") + 1,
-                ReadBool(item, "active"),
-                ReadDouble(item, "pps"),
+                active,
+                active ? ReadDouble(item, "pps") : 0d,
                 (ulong)Math.Max(0, ReadLong(item, "packets")),
                 ReadInt(axes, "trigger_left"),
                 ReadInt(axes, "trigger_right"),
