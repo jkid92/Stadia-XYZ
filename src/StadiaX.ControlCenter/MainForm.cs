@@ -3883,8 +3883,64 @@ internal sealed class MainForm : Form
 
     private async Task RunLoggedActionWithDialogAsync(string actionName, Func<Task> action)
     {
-        LogUserAction($"Async action started: {actionName}");
-        await RunActionWithDialogAsync(action).ConfigureAwait(true);
+        var operationId = Guid.NewGuid().ToString("N")[..8];
+        var stopwatch = Stopwatch.StartNew();
+        LogUserAction("Async action started", ("action", actionName), ("operationId", operationId));
+        AppDiagnosticsLogger.Record(
+            "UI_ASYNC_ACTION_STARTED",
+            ("action", actionName),
+            ("operationId", operationId));
+
+        try
+        {
+            await action().ConfigureAwait(true);
+            stopwatch.Stop();
+            LogUserAction(
+                "Async action completed",
+                ("action", actionName),
+                ("operationId", operationId),
+                ("durationMs", stopwatch.ElapsedMilliseconds.ToString()));
+            AppDiagnosticsLogger.Record(
+                "UI_ASYNC_ACTION_COMPLETED",
+                ("action", actionName),
+                ("operationId", operationId),
+                ("durationMs", stopwatch.ElapsedMilliseconds.ToString()));
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            var reason = FormatOperationErrorForUser(ex);
+            LogUserAction(
+                "Async action failed",
+                ("action", actionName),
+                ("operationId", operationId),
+                ("durationMs", stopwatch.ElapsedMilliseconds.ToString()),
+                ("reason", reason));
+            AppDiagnosticsLogger.Record(
+                "UI_ASYNC_ACTION_FAILED",
+                ("action", actionName),
+                ("operationId", operationId),
+                ("durationMs", stopwatch.ElapsedMilliseconds.ToString()),
+                ("exceptionType", ex.GetType().FullName),
+                ("error", ex.ToString()));
+            FailOperationProgress(actionName, $"Failed - {reason}");
+            MessageBox.Show(
+                $"{reason}{Environment.NewLine}{Environment.NewLine}Operation ID: {operationId}{Environment.NewLine}Full details were recorded in Logs.",
+                "Stadia X",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private static string FormatOperationErrorForUser(Exception exception)
+    {
+        var message = string.IsNullOrWhiteSpace(exception.Message)
+            ? exception.GetType().Name
+            : exception.Message
+                .Replace("\r", " ", StringComparison.Ordinal)
+                .Replace("\n", " ", StringComparison.Ordinal)
+                .Trim();
+        return message.Length <= 240 ? message : message[..237] + "...";
     }
 
     private static void AddEditorRow(TableLayoutPanel panel, int row, string labelText, Control editor)
