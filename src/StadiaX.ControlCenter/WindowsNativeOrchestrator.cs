@@ -26,23 +26,61 @@ internal sealed class WindowsNativeOrchestrator
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
         status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
-        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeControllers))
+        var hidHide = new HidHideManager(_paths, _runner);
+        var activePid = 0;
+        var activeControllers = 0;
+        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out activePid, out activeControllers))
         {
-            ReportAlreadyRunning(status, activePid, activeControllers);
-            return 0;
+            IReadOnlyList<WindowsNativeHidDevice> inventory;
+            try
+            {
+                inventory = await new WindowsNativeHidScanner(hidHide)
+                    .FindStadiaControllerInventoryAsync()
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                status.Write("WINDOWS_NATIVE_ACTIVE_INVENTORY_WARN", "Could not inspect controllers while receiver is active: " + ex.Message);
+                ReportAlreadyRunning(status, activePid, activeControllers);
+                return 0;
+            }
+
+            var visibleControllers = Math.Min(MaxControllers, inventory.Count);
+            status.Write(
+                "WINDOWS_NATIVE_ACTIVE_CAPACITY",
+                $"Receiver pid={activePid} slots={activeControllers}; present Stadia controllers={visibleControllers}");
+            if (visibleControllers <= activeControllers)
+            {
+                ReportAlreadyRunning(status, activePid, activeControllers);
+                return 0;
+            }
+
+            if (!await StopActiveReceiverForCapacityChangeAsync(
+                    status,
+                    activePid,
+                    activeControllers,
+                    visibleControllers).ConfigureAwait(false))
+            {
+                status.WritePhase("Windows Native", 1, StartPhaseCount, "Controller capacity", "FAIL", "Could not restart the receiver for the additional controller");
+                return 1;
+            }
+
+            startRequestedAt = DateTimeOffset.UtcNow;
+            status.WritePhase(
+                "Windows Native",
+                1,
+                StartPhaseCount,
+                "Controller capacity",
+                "OK",
+                $"Restarting receiver with {visibleControllers} controller slot(s)");
         }
+
         using var startLock = TryAcquireStartLock(status);
         if (startLock is null)
         {
             status.Write("WINDOWS_NATIVE_START_BUSY", "Another Windows Native start request is already in progress");
             status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "WAIT", "Another start request is already in progress");
             return 2;
-        }
-
-        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out activePid, out activeControllers))
-        {
-            ReportAlreadyRunning(status, activePid, activeControllers);
-            return 0;
         }
 
         if (!ClearStopSignal(status, startRequestedAt))
@@ -54,7 +92,6 @@ internal sealed class WindowsNativeOrchestrator
         await using var stopWatcher = StartStopWatcher(cancellation);
         ClearControllerState(status, "START");
 
-        var hidHide = new HidHideManager(_paths, _runner);
         if (!await EnsureHidHideAsync(hidHide, status, cancellation.Token).ConfigureAwait(false))
         {
             if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
@@ -261,7 +298,87 @@ internal sealed class WindowsNativeOrchestrator
     {
         status.Write("WINDOWS_NATIVE_ALREADY_RUNNING", $"Windows Native receiver is already running pid={pid} controllers={controllers}");
         status.Write("WINDOWS_NATIVE_READY", $"Windows Native input already running for {controllers} controller(s)");
-        status.WritePhase("Windows Native", 4, StartPhaseCount, "Virtual pads", "OK", $"Receiver already active pid={pid}");
+        status.WritePhase("Windows Native", 5, StartPhaseCount, "Input streaming", "OK", $"Receiver already active pid={pid}");
+        status.Write("WINDOWS_NATIVE_INPUT_READY", $"Input streaming already active for {controllers} controller(s)");
+    }
+
+    private async Task<bool> StopActiveReceiverForCapacityChangeAsync(
+        StatusWriter status,
+        int pid,
+        int activeControllers,
+        int requestedControllers)
+    {
+        status.Write(
+            "WINDOWS_NATIVE_CAPACITY_RESTART_REQUESTED",
+            $"Additional controller detected; restarting receiver pid={pid} slots={activeControllers}->{requestedControllers}");
+
+        Process? process = null;
+        try
+        {
+            process = Process.GetProcessById(pid);
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_CAPACITY_PROCESS_WARN", $"Could not open receiver pid={pid}: {ex.Message}");
+        }
+
+        if (!SignalStop(status))
+        {
+            process?.Dispose();
+            status.Write("WINDOWS_NATIVE_CAPACITY_RESTART_FAILED", "Could not signal the active receiver to stop");
+            return false;
+        }
+
+        try
+        {
+            if (process is not null)
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                for (var attempt = 0; attempt < 60; attempt++)
+                {
+                    if (!WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                        break;
+                    }
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(250)).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            status.Write("WINDOWS_NATIVE_CAPACITY_RESTART_TIMEOUT", $"Receiver pid={pid} did not stop within 15 seconds");
+            return false;
+        }
+        catch (Exception ex)
+        {
+            status.Write("WINDOWS_NATIVE_CAPACITY_RESTART_FAILED", $"Receiver pid={pid} stop failed: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            process?.Dispose();
+        }
+
+        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var remainingPid, out var remainingControllers))
+        {
+            status.Write(
+                "WINDOWS_NATIVE_CAPACITY_RESTART_FAILED",
+                $"Receiver still active pid={remainingPid} controllers={remainingControllers}");
+            return false;
+        }
+
+        WindowsNativeRuntime.ClearReadyMarker(_paths);
+        ClearControllerState(status, "CAPACITY_RESTART");
+        status.Write(
+            "WINDOWS_NATIVE_CAPACITY_RESTART_READY",
+            $"Previous receiver stopped; preparing {requestedControllers} controller slot(s)");
+        return true;
     }
 
     private async Task<bool> EnsureHidHideAsync(

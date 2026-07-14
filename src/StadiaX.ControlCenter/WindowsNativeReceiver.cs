@@ -8,6 +8,7 @@ namespace StadiaX.ControlCenter;
 internal sealed class WindowsNativeReceiver
 {
     private const int MaxControllers = 4;
+    private const int StartPhaseCount = 5;
     private const int HidPresenceProbeIntervalMs = 2000;
 
     private readonly AppPaths _paths;
@@ -17,11 +18,14 @@ internal sealed class WindowsNativeReceiver
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
+    private readonly object _controllerInputStateLock = new();
+    private readonly bool[] _controllerInputsOpen = new bool[MaxControllers];
     private readonly WindowsNativeRumbleWriter?[] _rumbleWriters = new WindowsNativeRumbleWriter?[MaxControllers];
     private readonly VigemNative.X360Notification _rumbleCallback;
     private readonly IntPtr[] _targets = new IntPtr[MaxControllers];
 
     private IntPtr _client;
+    private int _expectedControllerCount;
     private DateTimeOffset _nextTelemetryErrorLog = DateTimeOffset.MinValue;
 
     public WindowsNativeReceiver(
@@ -57,7 +61,28 @@ internal sealed class WindowsNativeReceiver
                 return 2;
             }
 
+            _expectedControllerCount = devices.Length;
+            for (var i = 0; i < devices.Length; i++)
+            {
+                _status.Write(
+                    "WINDOWS_NATIVE_CONTROLLER_CAPABILITIES",
+                    $"P{i + 1} battery=unavailable batteryOverlay=unavailable rumble=experimental device={devices[i].FriendlyName}");
+            }
             InitializeVigem(devices.Length);
+            _status.WritePhase(
+                "Windows Native",
+                4,
+                StartPhaseCount,
+                "Virtual pads",
+                "OK",
+                $"{devices.Length} virtual Xbox 360 controller slot(s) running");
+            _status.WritePhase(
+                "Windows Native",
+                5,
+                StartPhaseCount,
+                "Input streaming",
+                "START",
+                $"Opening input from {devices.Length} Stadia controller(s)");
             _status.Write("WINDOWS_NATIVE_READY", $"Starting Windows Native input for {devices.Length} controller(s)");
             WriteReadyMarker(devices.Length);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -183,7 +208,13 @@ internal sealed class WindowsNativeReceiver
                 stream.ReadTimeout = 500;
                 stream.WriteTimeout = 80;
                 var mapper = new WindowsNativeHidMapper(hidDevice);
-                var rumbleWriter = new WindowsNativeRumbleWriter(hidDevice, stream, LogInfo, LogError);
+                var rumbleWriter = new WindowsNativeRumbleWriter(
+                    controllerIndex + 1,
+                    hidDevice,
+                    stream,
+                    _status,
+                    LogInfo,
+                    LogError);
                 var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
                 var nextPresenceProbe = Environment.TickCount64 + HidPresenceProbeIntervalMs;
                 _rumbleWriters[controllerIndex] = rumbleWriter;
@@ -196,6 +227,7 @@ internal sealed class WindowsNativeReceiver
                     connectedOnce ? "P{0} Windows Native HID reconnected: {1}" : "P{0} Windows Native HID open: {1}",
                     controllerIndex + 1,
                     currentDevice.FriendlyName);
+                ReportControllerInputState(controllerIndex, open: true);
                 connectedOnce = true;
 
                 try
@@ -247,6 +279,10 @@ internal sealed class WindowsNativeReceiver
                 {
                     try { rumbleWriter.Send(0, 0); } catch { }
                     _rumbleWriters[controllerIndex] = null;
+                    if (!cancellationToken.IsCancellationRequested)
+                    {
+                        ReportControllerInputState(controllerIndex, open: false);
+                    }
                 }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -278,6 +314,51 @@ internal sealed class WindowsNativeReceiver
                 await Task.Delay(retryDelay, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private void ReportControllerInputState(int controllerIndex, bool open)
+    {
+        int opened;
+        int expected;
+        lock (_controllerInputStateLock)
+        {
+            if (_controllerInputsOpen[controllerIndex] == open)
+            {
+                return;
+            }
+
+            _controllerInputsOpen[controllerIndex] = open;
+            opened = _controllerInputsOpen.Count(value => value);
+            expected = Math.Max(1, _expectedControllerCount);
+        }
+
+        if (!open)
+        {
+            _status.Write(
+                "WINDOWS_NATIVE_CONTROLLER_INPUT_LOST",
+                $"P{controllerIndex + 1} input=disconnected active={opened}/{expected}");
+        }
+
+        if (opened < expected)
+        {
+            _status.WritePhase(
+                "Windows Native",
+                5,
+                StartPhaseCount,
+                "Input streaming",
+                open ? "START" : "WAIT",
+                $"{opened}/{expected} Stadia controller input stream(s) active");
+            return;
+        }
+
+        _status.WritePhase(
+            "Windows Native",
+            5,
+            StartPhaseCount,
+            "Input streaming",
+            "OK",
+            $"{expected} Stadia controller input stream(s) active");
+        _status.Write("WINDOWS_NATIVE_INPUT_READY", $"Input streaming active for {expected} controller(s)");
     }
 
     private async Task<(WindowsNativeHidDevice Descriptor, HidDevice Device)?> ResolveCurrentHidDeviceAsync(WindowsNativeHidDevice expected)

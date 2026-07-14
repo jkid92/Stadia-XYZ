@@ -295,8 +295,10 @@ internal sealed class WindowsNativeRumbleWriter
     private const int SuccessLogIntervalMs = 1000;
     private const int ErrorLogIntervalMs = 5000;
 
+    private readonly int _controllerNumber;
     private readonly HidDevice _device;
     private readonly HidStream _stream;
+    private readonly StatusWriter _status;
     private readonly Action<string, object[]> _logInfo;
     private readonly Action<string, object[]> _logError;
     private readonly object _lock = new();
@@ -308,13 +310,17 @@ internal sealed class WindowsNativeRumbleWriter
     private long _nextErrorLogTick;
 
     public WindowsNativeRumbleWriter(
+        int controllerNumber,
         HidDevice device,
         HidStream stream,
+        StatusWriter status,
         Action<string, object[]> logInfo,
         Action<string, object[]> logError)
     {
+        _controllerNumber = controllerNumber;
         _device = device;
         _stream = stream;
+        _status = status;
         _logInfo = logInfo;
         _logError = logError;
     }
@@ -363,13 +369,19 @@ internal sealed class WindowsNativeRumbleWriter
 
         if (errorToLog is not null)
         {
-            _logError("Windows Native rumble write failed: {0}", new object[] { errorToLog });
+            _logError("P{0} Windows Native rumble write failed: {1}", new object[] { _controllerNumber, errorToLog });
+            _status.Write(
+                "WINDOWS_NATIVE_RUMBLE_UNAVAILABLE",
+                $"P{_controllerNumber} rumble=unavailable error={errorToLog}");
         }
         else if (logSuccess)
         {
             _logInfo(
-                "Windows Native rumble sent large={0} small={1}",
-                new object[] { largeMotor, smallMotor });
+                "P{0} Windows Native rumble sent large={1} small={2}",
+                new object[] { _controllerNumber, largeMotor, smallMotor });
+            _status.Write(
+                "WINDOWS_NATIVE_RUMBLE_OK",
+                $"P{_controllerNumber} rumble=working large={largeMotor} small={smallMotor}");
         }
     }
 

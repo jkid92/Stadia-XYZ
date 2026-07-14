@@ -20,7 +20,8 @@ internal sealed record WindowsNativeHidDevice(
 internal sealed record WindowsNativeHidScanResult(
     IReadOnlyList<WindowsNativeHidDevice> Devices,
     int RawCandidateCount,
-    int DuplicateCandidateCount);
+    int DuplicateCandidateCount,
+    IReadOnlyList<WindowsNativeHidDevice> InventoryDevices);
 
 internal sealed record HidHideDeviceEntry(
     string FriendlyName,
@@ -249,6 +250,17 @@ internal sealed class WindowsNativeHidScanner
         return (await ScanStadiaControllersAsync().ConfigureAwait(false)).Devices;
     }
 
+    public async Task<IReadOnlyList<WindowsNativeHidDevice>> FindStadiaControllerInventoryAsync()
+    {
+        var hidHideInventory = BuildHidHideInventory(await _hidHide.GetDevicesAsync().ConfigureAwait(false));
+        if (hidHideInventory.Count > 0)
+        {
+            return hidHideInventory;
+        }
+
+        return (await ScanStadiaControllersAsync().ConfigureAwait(false)).InventoryDevices;
+    }
+
     public async Task<WindowsNativeHidScanResult> ScanStadiaControllersAsync()
     {
         var hiddenDevices = await _hidHide.GetDevicesAsync().ConfigureAwait(false);
@@ -268,16 +280,39 @@ internal sealed class WindowsNativeHidScanner
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
             .ToArray();
+        var inventoryDevices = rawCandidates
+            .Concat(BuildHidHideInventory(hiddenDevices))
+            .GroupBy(DeviceIdentityKey, StringComparer.OrdinalIgnoreCase)
+            .Select(ChooseBestCandidate)
+            .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
         return new WindowsNativeHidScanResult(
             devices,
             rawCandidates.Length,
-            Math.Max(0, rawCandidates.Length - devices.Length));
+            Math.Max(0, rawCandidates.Length - devices.Length),
+            inventoryDevices);
+    }
+
+    private static IReadOnlyList<WindowsNativeHidDevice> BuildHidHideInventory(
+        IReadOnlyList<HidHideDeviceEntry> hiddenDevices)
+    {
+        return hiddenDevices
+            .Where(IsPresentStadiaInventoryDevice)
+            .Select(ToInventoryDevice)
+            .GroupBy(DeviceIdentityKey, StringComparer.OrdinalIgnoreCase)
+            .Select(ChooseBestCandidate)
+            .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
     }
 
     public async Task<string> CreateProbeReportAsync(TimeSpan captureTime)
     {
         var scan = await ScanStadiaControllersAsync().ConfigureAwait(false);
-        var devices = scan.Devices;
+        var devices = scan.InventoryDevices;
         var lines = new List<string>
         {
             "Stadia X Windows Native probe",
@@ -285,6 +320,8 @@ internal sealed class WindowsNativeHidScanner
             $"HidHide installed: {_hidHide.IsInstalled}",
             $"HidHide version: {await _hidHide.GetVersionAsync().ConfigureAwait(false)}",
             $"Detected Stadia HID devices: {devices.Count}",
+            $"Directly readable HID devices: {scan.Devices.Count}",
+            $"Present through HidHide inventory: {Math.Max(0, devices.Count - scan.Devices.Count)}",
             $"Raw HID candidates: {scan.RawCandidateCount}",
             $"Duplicate HID candidates ignored: {scan.DuplicateCandidateCount}",
             ""
@@ -308,8 +345,15 @@ internal sealed class WindowsNativeHidScanner
             lines.Add($"HidHide instance: {EmptyAsNone(device.DeviceInstancePath)}");
             lines.Add($"Input report length: {device.MaxInputReportLength}");
             lines.Add($"Output report length: {device.MaxOutputReportLength}");
-            lines.AddRange(DescribeReports(device.FileSystemName));
-            lines.AddRange(CaptureReports(device.FileSystemName, captureTime));
+            if (scan.Devices.Any(candidate => SameDevice(candidate, device)))
+            {
+                lines.AddRange(DescribeReports(device.FileSystemName));
+                lines.AddRange(CaptureReports(device.FileSystemName, captureTime));
+            }
+            else
+            {
+                lines.Add("Capture: physical HID is currently cloaked by HidHide; receiver telemetry remains available.");
+            }
             lines.Add("");
         }
 
@@ -328,21 +372,70 @@ internal sealed class WindowsNativeHidScanner
                text.Contains("18d1", StringComparison.OrdinalIgnoreCase) && text.Contains("9400", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool IsPresentStadiaInventoryDevice(HidHideDeviceEntry device)
+    {
+        if (!device.Present)
+        {
+            return false;
+        }
+
+        var text = string.Join(
+            " ",
+            device.FriendlyName,
+            device.DeviceInstancePath,
+            device.SymbolicLink,
+            device.Vendor,
+            device.Product,
+            device.Usage,
+            device.Description);
+        return text.Contains("stadia", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("18d1", StringComparison.OrdinalIgnoreCase) &&
+               text.Contains("9400", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static WindowsNativeHidDevice ToNativeDevice(HidDevice device, IReadOnlyDictionary<string, HidHideDeviceEntry> hidHideBySymbolicLink)
     {
         var fileSystemName = device.GetFileSystemName();
         hidHideBySymbolicLink.TryGetValue(NormalizeDevicePath(fileSystemName), out var hidHideEntry);
+        var productName = FirstNonEmpty(Safe(() => device.GetProductName()), "Stadia Controller");
+        var friendlyName = FirstNonEmpty(Safe(() => device.GetFriendlyName()), productName, "Stadia Controller");
         return new WindowsNativeHidDevice(
             device.VendorID,
             device.ProductID,
-            Safe(() => device.GetProductName()),
-            Safe(() => device.GetManufacturer()),
-            Safe(() => device.GetFriendlyName()),
+            productName,
+            FirstNonEmpty(Safe(() => device.GetManufacturer()), "Google"),
+            friendlyName,
             fileSystemName,
             SafeInt(device.GetMaxInputReportLength),
             SafeInt(device.GetMaxOutputReportLength),
             hidHideEntry?.DeviceInstancePath ?? "",
             hidHideEntry?.SymbolicLink ?? "");
+    }
+
+    private static WindowsNativeHidDevice ToInventoryDevice(HidHideDeviceEntry device)
+    {
+        var friendlyName = FirstNonEmpty(device.Product, device.FriendlyName, device.Description, "Stadia Controller");
+        return new WindowsNativeHidDevice(
+            StadiaVendorId,
+            StadiaProductId,
+            "Stadia Controller",
+            "Google",
+            friendlyName,
+            device.SymbolicLink,
+            0,
+            0,
+            device.DeviceInstancePath,
+            device.SymbolicLink);
+    }
+
+    private static bool SameDevice(WindowsNativeHidDevice left, WindowsNativeHidDevice right)
+    {
+        return DeviceIdentityKey(left).Equals(DeviceIdentityKey(right), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "";
     }
 
     private static string DeviceIdentityKey(WindowsNativeHidDevice device)

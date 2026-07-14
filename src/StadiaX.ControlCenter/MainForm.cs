@@ -97,6 +97,7 @@ internal sealed class MainForm : Form
     private IReadOnlyList<LinuxBluetoothDevice> _lastLinuxBluetoothDevices = Array.Empty<LinuxBluetoothDevice>();
     private DateTimeOffset _operationStartedAt = DateTimeOffset.MinValue;
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
+    private DateTime _nextWindowsNativeBatteryUnavailableLogUtc = DateTime.MinValue;
     private IReadOnlyList<WindowsNativeHidDevice> _lastWindowsNativeDevices = Array.Empty<WindowsNativeHidDevice>();
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
@@ -1583,7 +1584,7 @@ internal sealed class MainForm : Form
         }
 
         scanner ??= new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
-        var devices = await scanner.FindStadiaControllersAsync().ConfigureAwait(true);
+        var devices = await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true);
         _lastWindowsNativeDevices = devices;
         PopulateWindowsNativeDevices(devices);
         ResizeWindowsNativeColumns();
@@ -1599,10 +1600,35 @@ internal sealed class MainForm : Form
         else
         {
             var hidden = devices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath));
-            SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s), {hidden} HidHide match(es)", 100, warn: hidden < devices.Count);
+            var capacityMismatch = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var receiverPid, out var activeSlots) &&
+                                   devices.Count > activeSlots;
+            if (capacityMismatch)
+            {
+                SetWindowsNativeStatus(
+                    $"{devices.Count} controller(s) visible, but receiver has {activeSlots} slot(s) - press Start native",
+                    100,
+                    warn: true);
+                AppDiagnosticsLogger.Record(
+                    "WINDOWS_NATIVE_CAPACITY_MISMATCH",
+                    ("receiverPid", receiverPid.ToString()),
+                    ("activeSlots", activeSlots.ToString()),
+                    ("visibleControllers", devices.Count.ToString()),
+                    ("missingSlots", string.Join(",", Enumerable.Range(activeSlots + 1, devices.Count - activeSlots).Select(slot => "P" + slot))));
+            }
+            else
+            {
+                SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s), {hidden} HidHide match(es)", 100, warn: hidden < devices.Count);
+            }
             if (updateOperationProgress)
             {
-                CompleteOperationProgress("Windows Native HID", $"{devices.Count} Stadia HID device(s) visible");
+                if (capacityMismatch)
+                {
+                    FailOperationProgress("Windows Native HID", $"Restart required to activate {devices.Count - activeSlots} additional controller(s)");
+                }
+                else
+                {
+                    CompleteOperationProgress("Windows Native HID", $"{devices.Count} Stadia HID device(s) visible");
+                }
             }
         }
 
@@ -1624,7 +1650,7 @@ internal sealed class MainForm : Form
             };
             item.SubItems.Add(string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName);
             item.SubItems.Add($"{device.VendorId:X4}:{device.ProductId:X4}");
-            item.SubItems.Add(device.MaxInputReportLength.ToString());
+            item.SubItems.Add(device.MaxInputReportLength > 0 ? device.MaxInputReportLength.ToString() : "hidden");
             item.SubItems.Add(hidHideState);
             item.SubItems.Add(device.FileSystemName);
             _windowsNativeDeviceList.Items.Add(item);
@@ -2124,6 +2150,27 @@ internal sealed class MainForm : Form
             ("devices", string.Join(";", stadia.Take(4).Select(DeviceDebugText))));
         if (stadia.Length == 0)
         {
+            if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var receiverPid, out var activeControllers))
+            {
+                _batteryLabel.Text = $"Battery: unavailable in Windows Native for {activeControllers} controller(s). Overlay not available.";
+                HideBatteryOverlay();
+                if (DateTime.UtcNow >= _nextWindowsNativeBatteryUnavailableLogUtc)
+                {
+                    _nextWindowsNativeBatteryUnavailableLogUtc = DateTime.UtcNow.AddMinutes(1);
+                    AppDiagnosticsLogger.Record(
+                        _batteryOverlayCheck.Checked
+                            ? "WINDOWS_NATIVE_BATTERY_OVERLAY_UNAVAILABLE"
+                            : "WINDOWS_NATIVE_BATTERY_UNAVAILABLE",
+                        ("receiverPid", receiverPid.ToString()),
+                        ("controllers", activeControllers.ToString()),
+                        ("battery", "unavailable"),
+                        ("overlay", "unavailable"),
+                        ("reason", "Windows Native receiver does not expose battery telemetry"));
+                }
+                RefreshDashboardUi();
+                return;
+            }
+
             _batteryLabel.Text = "Battery: not available yet. Start the bridge and connect a controller.";
             HideBatteryOverlay();
             AppDiagnosticsLogger.Record("BATTERY_REFRESH_EMPTY", ("visibleCount", knownDevices.Count.ToString()));
@@ -3053,12 +3100,19 @@ internal sealed class MainForm : Form
 
             RefreshLogs();
             var latest = LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native.log"), 30);
-            if (latest.Contains("WINDOWS_NATIVE_READY", StringComparison.OrdinalIgnoreCase))
+            if (latest.Contains("WINDOWS_NATIVE_INPUT_READY", StringComparison.OrdinalIgnoreCase))
             {
+                await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false);
                 CompleteOperationProgress("Starting Windows Native", "Windows Native receiver is running");
                 SetWindowsNativeStatus("Running - physical input hidden", 100, warn: false);
                 RefreshControllerTelemetry();
                 return;
+            }
+
+            if (latest.Contains("WINDOWS_NATIVE_READY", StringComparison.OrdinalIgnoreCase))
+            {
+                SetOperationProgress("Starting Windows Native", "Virtual pads ready; opening Stadia controller input", 90);
+                SetWindowsNativeStatus("Virtual pads ready - opening controller input", 90, warn: false);
             }
 
             if (latest.Contains("WINDOWS_NATIVE_NOT_READY", StringComparison.OrdinalIgnoreCase))

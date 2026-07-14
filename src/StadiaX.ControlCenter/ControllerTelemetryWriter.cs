@@ -8,6 +8,7 @@ internal sealed class ControllerTelemetryWriter
 
     private readonly AppPaths _paths;
     private readonly object _lock = new();
+    private readonly object _fileWriteLock = new();
     private readonly ControllerTelemetryState[] _telemetry = Enumerable.Range(0, MaxControllers)
         .Select(_ => new ControllerTelemetryState())
         .ToArray();
@@ -65,43 +66,46 @@ internal sealed class ControllerTelemetryWriter
             snapshot = _telemetry.Select(item => item.Clone()).ToArray();
         }
 
-        Directory.CreateDirectory(_paths.LogDirectory);
-        var tempPath = _paths.ControllerState + ".tmp";
-        using (var stream = File.Create(tempPath))
-        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+        lock (_fileWriteLock)
         {
-            writer.WriteStartObject();
-            writer.WriteNumber("timestamp", tickMs);
-            writer.WriteNumber("active_controller", controllerIndex);
-            WriteButtonsJson(writer, state);
-            WriteAxesJson(writer, state);
-            writer.WriteStartArray("controllers");
-            for (var i = 0; i < snapshot.Length; i++)
+            Directory.CreateDirectory(_paths.LogDirectory);
+            var tempPath = _paths.ControllerState + ".tmp";
+            using (var stream = File.Create(tempPath))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
             {
-                var telemetry = snapshot[i];
-                var active = telemetry.Connected && telemetry.LastSeenMs > 0 && tickMs - telemetry.LastSeenMs < 5000;
-                var elapsed = telemetry.FirstSeenMs > 0 && telemetry.LastSeenMs >= telemetry.FirstSeenMs
-                    ? (telemetry.LastSeenMs - telemetry.FirstSeenMs) / 1000d
-                    : 0d;
-                var pps = active && elapsed > 0 ? telemetry.Packets / elapsed : 0d;
-
                 writer.WriteStartObject();
-                writer.WriteNumber("index", i);
-                writer.WriteBoolean("active", active);
-                writer.WriteNumber("last_seen_ms", telemetry.LastSeenMs);
-                writer.WriteNumber("last_seen_age_ms", telemetry.LastSeenMs > 0 ? tickMs - telemetry.LastSeenMs : 0);
-                writer.WriteNumber("packets", telemetry.Packets);
-                writer.WriteNumber("pps", Math.Round(pps, 2));
-                WriteButtonsJson(writer, telemetry.State);
-                WriteAxesJson(writer, telemetry.State);
+                writer.WriteNumber("timestamp", tickMs);
+                writer.WriteNumber("active_controller", controllerIndex);
+                WriteButtonsJson(writer, state);
+                WriteAxesJson(writer, state);
+                writer.WriteStartArray("controllers");
+                for (var i = 0; i < snapshot.Length; i++)
+                {
+                    var telemetry = snapshot[i];
+                    var active = telemetry.Connected && telemetry.LastSeenMs > 0 && tickMs - telemetry.LastSeenMs < 5000;
+                    var elapsed = telemetry.FirstSeenMs > 0 && telemetry.LastSeenMs >= telemetry.FirstSeenMs
+                        ? (telemetry.LastSeenMs - telemetry.FirstSeenMs) / 1000d
+                        : 0d;
+                    var pps = active && elapsed > 0 ? telemetry.Packets / elapsed : 0d;
+
+                    writer.WriteStartObject();
+                    writer.WriteNumber("index", i);
+                    writer.WriteBoolean("active", active);
+                    writer.WriteNumber("last_seen_ms", telemetry.LastSeenMs);
+                    writer.WriteNumber("last_seen_age_ms", telemetry.LastSeenMs > 0 ? tickMs - telemetry.LastSeenMs : 0);
+                    writer.WriteNumber("packets", telemetry.Packets);
+                    writer.WriteNumber("pps", Math.Round(pps, 2));
+                    WriteButtonsJson(writer, telemetry.State);
+                    WriteAxesJson(writer, telemetry.State);
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
                 writer.WriteEndObject();
             }
 
-            writer.WriteEndArray();
-            writer.WriteEndObject();
+            File.Move(tempPath, _paths.ControllerState, overwrite: true);
         }
-
-        File.Move(tempPath, _paths.ControllerState, overwrite: true);
     }
 
     private static void WriteButtonsJson(Utf8JsonWriter writer, ControllerState state)
