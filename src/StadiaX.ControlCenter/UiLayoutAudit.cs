@@ -34,6 +34,10 @@ internal static class UiLayoutAudit
             {
                 var snapshotPath = SaveSnapshot(form, tabs, paths, density);
                 observations.Add($"snapshot={snapshotPath}");
+                if (density == "comfortable")
+                {
+                    observations.AddRange(SaveFeatureSnapshots(form, tabs, paths).Select(path => $"feature-snapshot={path}"));
+                }
             }
             catch (Exception ex)
             {
@@ -88,33 +92,61 @@ internal static class UiLayoutAudit
     {
         form.Size = SnapshotSize(density);
         tabs.SelectedIndex = 0;
+        return CaptureSnapshot(form, paths, $"ui-layout-audit-{density}.png");
+    }
+
+    private static IReadOnlyList<string> SaveFeatureSnapshots(Form form, TabControl tabs, AppPaths paths)
+    {
+        var targets = new[]
+        {
+            (Name: "Doctor", File: "ui-layout-audit-comfortable-doctor.png"),
+            (Name: "Bluetooth", File: "ui-layout-audit-comfortable-devices.png"),
+            (Name: "Windows Native", File: "ui-layout-audit-comfortable-controllers.png"),
+            (Name: "Controller Test", File: "ui-layout-audit-comfortable-test.png")
+        };
+        var pathsWritten = new List<string>();
+        foreach (var target in targets)
+        {
+            var page = tabs.TabPages.Cast<TabPage>().FirstOrDefault(candidate => candidate.Name == target.Name);
+            if (page is null)
+            {
+                continue;
+            }
+
+            tabs.SelectedTab = page;
+            pathsWritten.Add(CaptureSnapshot(form, paths, target.File));
+        }
+
+        tabs.SelectedIndex = 0;
+        return pathsWritten;
+    }
+
+    private static string CaptureSnapshot(Form form, AppPaths paths, string fileName)
+    {
         LayoutTree(form);
         Application.DoEvents();
 
-        var snapshotPath = Path.Combine(paths.LogDirectory, $"ui-layout-audit-{density}.png");
+        var snapshotPath = Path.Combine(paths.LogDirectory, fileName);
         Directory.CreateDirectory(paths.LogDirectory);
         form.Refresh();
         Application.DoEvents();
         using var bitmap = new Bitmap(Math.Max(1, form.Width), Math.Max(1, form.Height));
-        try
+        var captured = false;
+        using (var graphics = Graphics.FromImage(bitmap))
         {
-            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
-        }
-        catch (ArgumentException)
-        {
-            using var graphics = Graphics.FromImage(bitmap);
             var hdc = graphics.GetHdc();
             try
             {
-                if (!PrintWindow(form.Handle, hdc, PrintWindowRenderFullContent))
-                {
-                    throw new InvalidOperationException("Neither DrawToBitmap nor PrintWindow could capture the UI.");
-                }
+                captured = PrintWindow(form.Handle, hdc, PrintWindowRenderFullContent);
             }
             finally
             {
                 graphics.ReleaseHdc(hdc);
             }
+        }
+        if (!captured)
+        {
+            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
         }
         bitmap.Save(snapshotPath, System.Drawing.Imaging.ImageFormat.Png);
         return snapshotPath;
