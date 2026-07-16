@@ -125,7 +125,7 @@ internal sealed class MainForm : Form
         MinimumSize = sizing.Minimum;
         Size = sizing.Initial;
         StartPosition = FormStartPosition.CenterScreen;
-        BackColor = Color.FromArgb(248, 250, 252);
+        BackColor = UiTheme.Canvas;
 
         BuildUi();
         ApplyHighDpiLayoutGuards();
@@ -292,13 +292,15 @@ internal sealed class MainForm : Form
     {
         var header = new Panel
         {
+            Name = "AppHeader",
             Dock = DockStyle.Top,
             Height = IsCompactUi() ? 70 : 78,
-            BackColor = Color.FromArgb(28, 38, 54)
+            BackColor = UiTheme.HeaderTop
         };
 
         var title = new Label
         {
+            Name = "AppTitleLabel",
             Text = "Stadia X",
             Font = new Font("Segoe UI", 21, FontStyle.Bold),
             ForeColor = Color.White,
@@ -309,7 +311,8 @@ internal sealed class MainForm : Form
 
         var subtitle = new Label
         {
-            Text = "Windows Native control center",
+            Name = "AppSubtitleLabel",
+            Text = "Automatic virtual controller",
             Font = new Font("Segoe UI", 9),
             ForeColor = Color.FromArgb(202, 213, 225),
             AutoSize = true,
@@ -317,6 +320,7 @@ internal sealed class MainForm : Form
         };
         header.Controls.Add(subtitle);
 
+        _statusLabel.Name = "AppStatusLabel";
         _statusLabel.Text = $"Version {_paths.Version}";
         _statusLabel.Font = new Font("Segoe UI", 11, FontStyle.Bold);
         _statusLabel.ForeColor = Color.White;
@@ -326,6 +330,7 @@ internal sealed class MainForm : Form
         _statusLabel.Location = new Point(Width - 560, 17);
         header.Controls.Add(_statusLabel);
 
+        _batteryStatusLabel.Name = "AppBatteryLabel";
         _batteryStatusLabel.Text = "";
         _batteryStatusLabel.Font = new Font("Segoe UI", 9, FontStyle.Bold);
         _batteryStatusLabel.ForeColor = Color.FromArgb(202, 213, 225);
@@ -343,6 +348,7 @@ internal sealed class MainForm : Form
         var constrained = IsConstrainedUi();
         var left = new Panel
         {
+            Name = "AppSidebar",
             Dock = DockStyle.Left,
             Width = constrained ? 248 : 318,
             Padding = IsCompactUi() ? new Padding(10) : new Padding(14)
@@ -359,7 +365,7 @@ internal sealed class MainForm : Form
         sidebarLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.Controls.Add(sidebarLayout);
 
-        var actions = new GroupBox
+        var actions = new SurfaceGroupBox
         {
             Text = "Control",
             Dock = DockStyle.Fill,
@@ -391,11 +397,12 @@ internal sealed class MainForm : Form
 
         var summary = new TextBox
         {
+            Name = "SidebarSummary",
             Multiline = true,
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(248, 250, 252),
+            BackColor = UiTheme.Canvas,
             Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
             Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Windows flow:{Environment.NewLine}Probe -> Start native -> Test input"
         };
@@ -408,10 +415,11 @@ internal sealed class MainForm : Form
     {
         var shell = new TableLayoutPanel
         {
+            Name = "ContentShell",
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 2,
-            BackColor = Color.FromArgb(248, 250, 252)
+            BackColor = UiTheme.Canvas
         };
         shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         shell.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 38 : 42));
@@ -419,8 +427,9 @@ internal sealed class MainForm : Form
 
         var navHost = new Panel
         {
+            Name = "TabNavigationHost",
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(248, 250, 252),
+            BackColor = UiTheme.Canvas,
             Padding = IsCompactUi() ? new Padding(7, 5, 7, 3) : new Padding(9, 6, 9, 4),
             AutoScroll = true
         };
@@ -519,7 +528,7 @@ internal sealed class MainForm : Form
             Padding = new Padding(14)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 168 : 184));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 370 : IsCompactUi() ? 212 : 240));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 340 : IsCompactUi() ? 182 : 198));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
@@ -611,16 +620,15 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 7,
-            Padding = IsCompactUi() ? new Padding(10, 12, 10, 8) : new Padding(12, 16, 12, 10)
+            RowCount = 6,
+            Padding = IsCompactUi() ? new Padding(10, 9, 10, 7) : new Padding(12, 11, 12, 8)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 26 : 30));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 22 : 26));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 22 : 26));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 16));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 15));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 18));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 16));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 15));
         group.Controls.Add(layout);
 
         var nameLabel = CreateDashboardValueLabel("No profile", IsCompactUi() ? 9.5F : 11, FontStyle.Bold);
@@ -726,7 +734,7 @@ internal sealed class MainForm : Form
             ReadOnly = true,
             BorderStyle = BorderStyle.None,
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(248, 250, 252),
+            BackColor = UiTheme.Canvas,
             Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
             Text = "Doctor checks the path a controller follows: Windows adapter, USB/IP bridge, BlueZ visibility, pairing state, saved profile, and input telemetry."
         };
@@ -3993,7 +4001,7 @@ internal sealed class MainForm : Form
         {
             Text = text,
             Name = name,
-            BackColor = Color.FromArgb(248, 250, 252),
+            BackColor = UiTheme.Canvas,
             Padding = new Padding(0),
             AutoScroll = true
         };
@@ -4001,7 +4009,7 @@ internal sealed class MainForm : Form
 
     private static GroupBox CreateGroup(string text)
     {
-        return new GroupBox
+        return new SurfaceGroupBox
         {
             Text = text,
             Dock = DockStyle.Fill,
@@ -4216,15 +4224,15 @@ internal sealed class MainForm : Form
         box.ScrollBars = ScrollBars.Both;
         box.WordWrap = false;
         box.Font = new Font("Consolas", IsCompactUi() ? 8.25F : 9);
-        box.BackColor = Color.FromArgb(20, 24, 32);
-        box.ForeColor = Color.FromArgb(220, 230, 240);
+        box.BackColor = UiTheme.LogSurface;
+        box.ForeColor = UiTheme.LogText;
         box.Dock = DockStyle.Fill;
         box.Text = text;
     }
 
     private void AddActionGridButton(TableLayoutPanel parent, string text, int column, int row, int columnSpan, Action action, Color? backColor = null, Color? foreColor = null)
     {
-        var button = new Button
+        var button = new ModernButton
         {
             Text = text,
             Dock = DockStyle.Fill,
@@ -4253,7 +4261,7 @@ internal sealed class MainForm : Form
 
     private void AddButton(Control parent, string text, int x, int y, int width, Action action, Color? backColor = null, Color? foreColor = null)
     {
-        var button = new Button
+        var button = new ModernButton
         {
             Text = text,
             Size = new Size(width, IsCompactUi() ? 30 : 34),
@@ -4276,7 +4284,7 @@ internal sealed class MainForm : Form
 
     private Button AddButton(TableLayoutPanel parent, string text, int column, int row, Action action, int columnSpan = 1)
     {
-        var button = new Button { Text = text, Dock = DockStyle.Fill, MinimumSize = new Size(IsCompactUi() ? 116 : 140, IsCompactUi() ? 30 : 34), Margin = new Padding(4) };
+        var button = new ModernButton { Text = text, Dock = DockStyle.Fill, MinimumSize = new Size(IsCompactUi() ? 116 : 140, IsCompactUi() ? 30 : 34), Margin = new Padding(4) };
         button.Click += (_, _) =>
         {
             LogUserAction($"Button clicked: {text}");
@@ -4292,7 +4300,7 @@ internal sealed class MainForm : Form
 
     private void AddFlowButton(FlowLayoutPanel parent, string text, Action action, Color? backColor = null, Color? foreColor = null)
     {
-        var button = new Button
+        var button = new ModernButton
         {
             Text = text,
             AutoSize = true,
@@ -4573,18 +4581,18 @@ internal sealed class ModernTabButton : Control
         }
 
         var fillColor = _isSelected
-            ? Color.FromArgb(16, 38, 59)
+            ? UiTheme.Surface
             : _hover
-                ? Color.FromArgb(244, 248, 252)
-                : Color.FromArgb(233, 239, 246);
+                ? UiTheme.AccentSoft
+                : UiTheme.Canvas;
         var borderColor = _isSelected
-            ? Color.FromArgb(16, 38, 59)
+            ? UiTheme.BorderStrong
             : _hover
-                ? Color.FromArgb(198, 210, 224)
-                : Color.FromArgb(226, 234, 243);
-        using (var path = CreateRoundedPath(bounds, 9))
+                ? Color.FromArgb(174, 214, 214)
+                : UiTheme.Canvas;
+        using (var path = UiTheme.RoundedPath(bounds, 6))
         using (var fill = new SolidBrush(fillColor))
-        using (var border = new Pen(borderColor, _isSelected ? 1.4F : 1F))
+        using (var border = new Pen(borderColor, 1F))
         {
             e.Graphics.FillPath(fill, path);
             e.Graphics.DrawPath(border, path);
@@ -4592,14 +4600,14 @@ internal sealed class ModernTabButton : Control
 
         if (_isSelected)
         {
-            var accent = new Rectangle(bounds.Left + 10, bounds.Bottom - 4, Math.Max(10, bounds.Width - 20), 3);
-            using var accentPath = CreateRoundedPath(accent, 2);
-            using var accentBrush = new SolidBrush(Color.FromArgb(88, 218, 210));
+            var accent = new Rectangle(bounds.Left + 9, bounds.Bottom - 3, Math.Max(10, bounds.Width - 18), 3);
+            using var accentPath = UiTheme.RoundedPath(accent, 2);
+            using var accentBrush = new SolidBrush(UiTheme.Accent);
             e.Graphics.FillPath(accentBrush, accentPath);
         }
 
         using var selectedFont = _isSelected ? new Font(Font, FontStyle.Bold) : null;
-        var textColor = _isSelected ? Color.White : Color.FromArgb(56, 67, 82);
+        var textColor = _isSelected ? UiTheme.TextPrimary : UiTheme.TextMuted;
         var textBounds = Rectangle.Inflate(bounds, -5, 0);
         TextRenderer.DrawText(
             e.Graphics,
@@ -4610,15 +4618,4 @@ internal sealed class ModernTabButton : Control
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
     }
 
-    private static GraphicsPath CreateRoundedPath(Rectangle bounds, int radius)
-    {
-        var path = new GraphicsPath();
-        var diameter = Math.Max(1, radius * 2);
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }

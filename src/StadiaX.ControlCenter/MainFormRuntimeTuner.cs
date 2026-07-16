@@ -10,18 +10,18 @@ internal static class MainFormRuntimeTuner
     private static readonly Dictionary<Form, List<System.Windows.Forms.Timer>> Timers = new();
     private static readonly Dictionary<Control, Bitmap> OwnedBitmaps = new();
 
-    private static readonly Color AppBackground = Color.FromArgb(241, 245, 249);
-    private static readonly Color HeaderTop = Color.FromArgb(16, 29, 45);
-    private static readonly Color HeaderBottom = Color.FromArgb(24, 43, 64);
-    private static readonly Color Surface = Color.White;
-    private static readonly Color TextPrimary = Color.FromArgb(24, 33, 48);
-    private static readonly Color TextMuted = Color.FromArgb(92, 106, 126);
-    private static readonly Color Border = Color.FromArgb(203, 213, 225);
-    private static readonly Color NeutralButton = Color.FromArgb(248, 250, 252);
-    private static readonly Color NeutralButtonHover = Color.FromArgb(226, 232, 240);
-    private static readonly Color Accent = Color.FromArgb(23, 184, 178);
-    private static readonly Color Success = Color.FromArgb(36, 132, 85);
-    private static readonly Color Danger = Color.FromArgb(184, 64, 64);
+    private static readonly Color AppBackground = UiTheme.Canvas;
+    private static readonly Color HeaderTop = UiTheme.HeaderTop;
+    private static readonly Color HeaderBottom = UiTheme.HeaderBottom;
+    private static readonly Color Surface = UiTheme.Surface;
+    private static readonly Color TextPrimary = UiTheme.TextPrimary;
+    private static readonly Color TextMuted = UiTheme.TextMuted;
+    private static readonly Color Border = UiTheme.Border;
+    private static readonly Color NeutralButton = UiTheme.Surface;
+    private static readonly Color NeutralButtonHover = UiTheme.AccentSoft;
+    private static readonly Color Accent = UiTheme.Accent;
+    private static readonly Color Success = UiTheme.Success;
+    private static readonly Color Danger = UiTheme.Danger;
 
     private static bool CompactUi => MainForm.IsCompactUi();
     private static bool ConstrainedUi => MainForm.IsConstrainedUi();
@@ -58,11 +58,48 @@ internal static class MainFormRuntimeTuner
         form.BackColor = AppBackground;
         form.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9F);
 
+        PatchShellLayout(form);
         PatchHeader(form);
         foreach (Control control in form.Controls)
         {
             StyleTree(control);
         }
+    }
+
+    private static void PatchShellLayout(Form form)
+    {
+        var sidebar = form.Controls.Find("AppSidebar", true).OfType<Panel>().FirstOrDefault() ??
+                      form.Controls.Cast<Control>().OfType<Panel>().FirstOrDefault(panel => panel.Dock == DockStyle.Left);
+        if (sidebar is not null)
+        {
+            sidebar.Width = ConstrainedUi ? 236 : CompactUi ? 286 : 300;
+            sidebar.Padding = ConstrainedUi ? new Padding(8) : CompactUi ? new Padding(10) : new Padding(12);
+            sidebar.BackColor = AppBackground;
+        }
+
+        var shell = form.Controls.Find("ContentShell", true).OfType<TableLayoutPanel>().FirstOrDefault();
+        if (shell is not null)
+        {
+            shell.BackColor = AppBackground;
+            if (shell.RowStyles.Count > 0)
+            {
+                shell.RowStyles[0] = new RowStyle(SizeType.Absolute, ConstrainedUi ? 38 : CompactUi ? 42 : 46);
+            }
+        }
+
+        var navigation = form.Controls.Find("TabNavigationHost", true).OfType<Panel>().FirstOrDefault();
+        if (navigation is null)
+        {
+            return;
+        }
+
+        navigation.BackColor = AppBackground;
+        navigation.Padding = ConstrainedUi ? new Padding(6, 4, 6, 3) : CompactUi ? new Padding(8, 5, 8, 4) : new Padding(10, 7, 10, 5);
+        navigation.Paint += (_, e) =>
+        {
+            using var pen = new Pen(Border);
+            e.Graphics.DrawLine(pen, 0, navigation.Height - 1, navigation.Width, navigation.Height - 1);
+        };
     }
 
     private static void PatchHeader(Form form)
@@ -76,7 +113,7 @@ internal static class MainFormRuntimeTuner
 
         var compact = CompactUi;
         var constrained = ConstrainedUi;
-        header.Height = constrained ? 72 : compact ? 80 : 96;
+        header.Height = constrained ? 72 : compact ? 78 : 88;
         header.BackColor = HeaderTop;
         header.Paint += (_, e) =>
         {
@@ -93,7 +130,7 @@ internal static class MainFormRuntimeTuner
 
         if (!header.Controls.ContainsKey("StadiaXBrandLogo"))
         {
-            var logoSize = constrained ? 38 : compact ? 44 : 54;
+            var logoSize = constrained ? 38 : compact ? 44 : 50;
             var logoBitmap = LoadHeaderLogoBitmap(form, logoSize);
             var logo = new PictureBox
             {
@@ -101,7 +138,7 @@ internal static class MainFormRuntimeTuner
                 Image = logoBitmap,
                 SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.Transparent,
-                Location = constrained ? new Point(18, 10) : compact ? new Point(22, 12) : new Point(20, 14),
+                Location = constrained ? new Point(18, 16) : compact ? new Point(20, 17) : new Point(22, 19),
                 Size = new Size(logoSize, logoSize)
             };
             OwnedBitmaps[logo] = logoBitmap;
@@ -121,27 +158,27 @@ internal static class MainFormRuntimeTuner
             foreach (var label in header.Controls.OfType<Label>())
             {
                 label.BackColor = Color.Transparent;
-                if (label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
+                if (label.Name == "AppTitleLabel" || label.Text.Equals("Stadia X", StringComparison.OrdinalIgnoreCase))
                 {
                     label.AutoSize = true;
-                    label.Location = constrained ? new Point(66, 7) : compact ? new Point(86, 8) : new Point(100, 8);
-                    label.Font = new Font("Segoe UI", constrained ? 16 : compact ? 18 : 21, FontStyle.Bold);
+                    label.Location = constrained ? new Point(68, 9) : compact ? new Point(80, 9) : new Point(88, 11);
+                    label.Font = new Font("Segoe UI", constrained ? 16 : compact ? 18 : 20, FontStyle.Bold);
                     label.ForeColor = Color.White;
                 }
-                else if (label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase) ||
+                else if (label.Name == "AppSubtitleLabel" ||
+                         label.Text.Contains("WinForms", StringComparison.OrdinalIgnoreCase) ||
                          label.Text.Contains("Bluetooth controller bridge", StringComparison.OrdinalIgnoreCase))
                 {
-                    label.Text = "Bluetooth controller bridge";
                     label.AutoSize = true;
-                    label.Location = constrained ? new Point(68, 46) : compact ? new Point(88, 50) : new Point(102, 60);
+                    label.Location = constrained ? new Point(70, 43) : compact ? new Point(82, 47) : new Point(90, 53);
                     label.Font = new Font("Segoe UI", constrained ? 8F : compact ? 8.25F : 9F);
                     label.ForeColor = Color.FromArgb(202, 213, 225);
                 }
-                else if (label.Text.StartsWith("Battery:", StringComparison.OrdinalIgnoreCase))
+                else if (label.Name == "AppBatteryLabel" || label.Text.StartsWith("Battery:", StringComparison.OrdinalIgnoreCase))
                 {
                     label.AutoSize = false;
                     label.Size = new Size(Math.Min(constrained ? 320 : compact ? 440 : 520, Math.Max(constrained ? 160 : compact ? 220 : 260, header.Width - (constrained ? 260 : compact ? 360 : 430))), constrained ? 18 : compact ? 20 : 22);
-                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 28), constrained ? 48 : compact ? 50 : 56);
+                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 24), constrained ? 46 : compact ? 47 : 52);
                     label.Font = new Font("Segoe UI", constrained ? 8F : compact ? 8.25F : 9F, FontStyle.Bold);
                     label.ForeColor = Color.FromArgb(202, 213, 225);
                     label.TextAlign = ContentAlignment.MiddleRight;
@@ -150,7 +187,7 @@ internal static class MainFormRuntimeTuner
                 {
                     label.AutoSize = false;
                     label.Size = new Size(Math.Min(constrained ? 320 : compact ? 440 : 520, Math.Max(constrained ? 160 : compact ? 220 : 260, header.Width - (constrained ? 260 : compact ? 360 : 430))), constrained ? 22 : compact ? 24 : 28);
-                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 28), constrained ? 14 : compact ? 16 : 18);
+                    label.Location = new Point(header.Width - label.Width - (constrained ? 14 : 24), constrained ? 13 : compact ? 15 : 18);
                     label.Font = new Font("Segoe UI", constrained ? 8.75F : compact ? 9.5F : 11F, FontStyle.Bold);
                     label.ForeColor = Color.White;
                     label.TextAlign = ContentAlignment.MiddleRight;
@@ -316,6 +353,9 @@ internal static class MainFormRuntimeTuner
             case Button button:
                 StyleButton(button);
                 break;
+            case TabPage page:
+                page.BackColor = AppBackground;
+                break;
             case GroupBox group:
                 group.BackColor = Surface;
                 group.ForeColor = TextPrimary;
@@ -325,7 +365,7 @@ internal static class MainFormRuntimeTuner
                 list.GridLines = false;
                 list.BackColor = Surface;
                 list.ForeColor = TextPrimary;
-                list.BorderStyle = BorderStyle.FixedSingle;
+                list.BorderStyle = BorderStyle.None;
                 list.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9);
                 break;
             case TabControl tabs:
@@ -333,7 +373,12 @@ internal static class MainFormRuntimeTuner
                 tabs.Padding = CompactUi ? new Point(10, 5) : new Point(14, 8);
                 tabs.Multiline = false;
                 break;
-            case TextBox textBox when textBox.Multiline && textBox.BackColor.ToArgb() == Color.FromArgb(20, 24, 32).ToArgb():
+            case TextBox textBox when textBox.Name == "SidebarSummary":
+                textBox.BorderStyle = BorderStyle.None;
+                textBox.BackColor = AppBackground;
+                textBox.ForeColor = TextMuted;
+                break;
+            case TextBox textBox when textBox.Multiline && textBox.BackColor.ToArgb() == UiTheme.LogSurface.ToArgb():
                 textBox.BorderStyle = BorderStyle.FixedSingle;
                 break;
             case TextBox textBox:
@@ -345,6 +390,14 @@ internal static class MainFormRuntimeTuner
                 comboBox.FlatStyle = FlatStyle.Flat;
                 comboBox.BackColor = Surface;
                 comboBox.ForeColor = TextPrimary;
+                break;
+            case CheckBox checkBox:
+                checkBox.FlatStyle = FlatStyle.Flat;
+                checkBox.ForeColor = TextPrimary;
+                break;
+            case ProgressBar progressBar:
+                progressBar.BackColor = Color.FromArgb(231, 237, 243);
+                progressBar.ForeColor = Accent;
                 break;
             case Panel panel when panel.Dock == DockStyle.Left:
                 panel.BackColor = AppBackground;
@@ -369,22 +422,24 @@ internal static class MainFormRuntimeTuner
         button.FlatStyle = FlatStyle.Flat;
         button.BackColor = back;
         button.ForeColor = fore;
-        button.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9, FontStyle.Bold);
+        button.Font = new Font("Segoe UI", CompactUi ? 8.25F : 9, back == NeutralButton ? FontStyle.Regular : FontStyle.Bold);
         button.Cursor = Cursors.Hand;
         button.FlatAppearance.BorderSize = back == NeutralButton ? 1 : 0;
         button.FlatAppearance.BorderColor = Border;
         button.FlatAppearance.MouseOverBackColor = back == NeutralButton ? NeutralButtonHover : ControlPaint.Light(back);
         button.FlatAppearance.MouseDownBackColor = back == NeutralButton ? Border : ControlPaint.Dark(back);
+        var minimumHeight = ConstrainedUi ? 30 : CompactUi ? 32 : 34;
         if (CompactUi)
         {
             var width = button.MinimumSize.Width == 0 ? 0 : Math.Min(button.MinimumSize.Width, ConstrainedUi ? 86 : 96);
-            button.MinimumSize = new Size(width, Math.Max(button.MinimumSize.Height, 34));
+            button.MinimumSize = new Size(width, Math.Max(button.MinimumSize.Height, minimumHeight));
             button.Padding = new Padding(7, 0, 7, 0);
         }
-        if (button.Height < 34)
+        if (button.Height < minimumHeight)
         {
-            button.Height = 34;
+            button.Height = minimumHeight;
         }
+
     }
 
     private static T? ReadPrivate<T>(object instance, string fieldName) where T : class

@@ -96,24 +96,24 @@ internal static class UiLayoutAudit
         form.Refresh();
         Application.DoEvents();
         using var bitmap = new Bitmap(Math.Max(1, form.Width), Math.Max(1, form.Height));
-        using (var graphics = Graphics.FromImage(bitmap))
+        try
         {
+            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
+        }
+        catch (ArgumentException)
+        {
+            using var graphics = Graphics.FromImage(bitmap);
             var hdc = graphics.GetHdc();
             try
             {
                 if (!PrintWindow(form.Handle, hdc, PrintWindowRenderFullContent))
                 {
-                    graphics.ReleaseHdc(hdc);
-                    hdc = IntPtr.Zero;
-                    form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                    throw new InvalidOperationException("Neither DrawToBitmap nor PrintWindow could capture the UI.");
                 }
             }
             finally
             {
-                if (hdc != IntPtr.Zero)
-                {
-                    graphics.ReleaseHdc(hdc);
-                }
+                graphics.ReleaseHdc(hdc);
             }
         }
         bitmap.Save(snapshotPath, System.Drawing.Imaging.ImageFormat.Png);
