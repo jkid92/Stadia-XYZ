@@ -16,7 +16,7 @@ internal static class UiLayoutAudit
         {
             ShowInTaskbar = false,
             StartPosition = FormStartPosition.Manual,
-            Location = new Point(-32000, -32000),
+            Location = Screen.PrimaryScreen?.WorkingArea.Location ?? Point.Empty,
             Opacity = 1
         };
         MainFormRuntimeTuner.ApplyForAudit(form);
