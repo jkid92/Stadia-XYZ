@@ -399,6 +399,12 @@ internal static class MainFormRuntimeTuner
                 progressBar.BackColor = Color.FromArgb(231, 237, 243);
                 progressBar.ForeColor = Accent;
                 break;
+            case TableLayoutPanel table:
+                table.BackColor = HasSurfaceAncestor(table) ? Surface : AppBackground;
+                break;
+            case FlowLayoutPanel flow:
+                flow.BackColor = HasSurfaceAncestor(flow) ? Surface : AppBackground;
+                break;
             case Panel panel when panel.Dock == DockStyle.Left:
                 panel.BackColor = AppBackground;
                 break;
@@ -408,6 +414,23 @@ internal static class MainFormRuntimeTuner
         {
             StyleTree(child);
         }
+    }
+
+    private static bool HasSurfaceAncestor(Control control)
+    {
+        for (var parent = control.Parent; parent is not null; parent = parent.Parent)
+        {
+            if (parent is SurfaceGroupBox)
+            {
+                return true;
+            }
+            if (parent is TabPage)
+            {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private static void StyleButton(Button button)
