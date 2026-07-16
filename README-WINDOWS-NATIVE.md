@@ -1,32 +1,39 @@
 # Stadia X Windows Native
 
-This package is the experimental Windows Native variant of Stadia X.
+This package contains the experimental Windows Native edition of Stadia X. It does not use WSL, usbipd, BlueZ, or the Linux bridge.
 
-It does not use WSL, usbipd, BlueZ, or the Linux bridge. The app reads Stadia Controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus.
+Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus. Games therefore receive one clean input stream instead of duplicated presses.
 
-## Included files
+## First Run
 
-- `StadiaX.exe`: the Windows Native control center and receiver.
-- `ViGEmClient.dll`: native ViGEm client library used by the receiver.
+1. Install and launch **Stadia X Windows Native**.
+2. Pair the Stadia controller in Windows Bluetooth settings.
+3. Press **Start**.
+4. Approve the Windows administrator request if a driver needs to be installed or configured.
+5. Open **Test input** and press controller buttons to verify the virtual pad.
+
+Start checks HidHide and ViGEmBus, installs missing components through `winget` when possible, protects the physical device, creates up to four virtual Xbox 360 slots, and starts forwarding input. No separate configuration utility is required.
+
+If the controller is not visible, Stadia X opens Windows Bluetooth settings automatically. Pair or reconnect it, return to the app, and press **Check** or **Start** again.
+
+## Main Controls
+
+- **Start**: prepares dependencies and starts the complete virtual controller route.
+- **Stop and restore**: stops the receiver and restores physical controller input.
+- **Check**: refreshes the detected Stadia controller inventory without starting.
+- **Test input**: shows live buttons, sticks, triggers, packet rate, and rumble tests.
+- **Logs**: displays connection phases, user actions, and application diagnostics.
+- **Support**: creates a troubleshooting bundle.
+
+## Included Files
+
+- `StadiaX.exe`: self-contained Windows Native control center and receiver.
+- `ViGEmClient.dll`: native ViGEm client library.
 - `VERSION.txt`: package version.
-- `assets/`: Windows Native app icon and bundled visual assets.
+- `assets/`: Windows Native icons and controller test image.
 
-## First run
+## Recovery
 
-1. Install and launch `Stadia X Windows Native`.
-2. Pair the Stadia Controller in Windows Bluetooth settings.
-3. Open the app and press `Probe`.
-4. Press `Start native`.
-5. Use `Test input` to confirm that only the virtual Xbox 360 controller is sending input.
+Use **Stop and restore** before troubleshooting the physical controller or uninstalling drivers. The startup path also rolls back HidHide automatically when a later phase fails.
 
-When HidHide or ViGEmBus is missing, `Start native` tries to install the required component with `winget`. Windows can ask for elevation because both components install drivers.
-
-If no Stadia Controller is visible, `Start native` opens Windows Bluetooth settings automatically so the user can pair the controller without hunting through system menus. Runtime logs include explicit connection phases such as prerequisites, device discovery, input isolation, virtual pads, and input restore.
-
-When `Stop native` is pressed or the receiver exits, Stadia X asks HidHide to disable cloak mode so the physical controller is restored automatically.
-
-## Current limitations
-
-- Battery and rumble are still experimental in this variant.
-- A real Stadia Controller is required to validate the full input path.
-- HidHide is required to prevent duplicated input from the physical controller and the virtual Xbox 360 controller.
+Battery reporting and rumble behavior can vary by controller firmware and Bluetooth stack. A real Stadia controller is required to validate those hardware-dependent paths.
