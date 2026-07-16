@@ -367,7 +367,7 @@ internal sealed class MainForm : Form
 
         var actions = new SurfaceGroupBox
         {
-            Text = "Control",
+            Text = "Controller service",
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 9, FontStyle.Bold)
         };
@@ -388,11 +388,11 @@ internal sealed class MainForm : Form
         actionGrid.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 38 : 44));
         actions.Controls.Add(actionGrid);
 
-        AddActionGridButton(actionGrid, "Start native", 0, 0, 2, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-        AddActionGridButton(actionGrid, "Stop native", 0, 1, 2, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-        AddActionGridButton(actionGrid, "Probe", 0, 2, 1, async () => await ProbeWindowsNativeAsync());
+        AddActionGridButton(actionGrid, "Start", 0, 0, 2, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+        AddActionGridButton(actionGrid, "Stop and restore", 0, 1, 2, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+        AddActionGridButton(actionGrid, "Check", 0, 2, 1, async () => await ProbeWindowsNativeAsync());
         AddActionGridButton(actionGrid, "Refresh", 1, 2, 1, async () => await RefreshEverythingAsync());
-        AddActionGridButton(actionGrid, "Test", 0, 3, 1, () => SelectTabIfExists("Controller Test"));
+        AddActionGridButton(actionGrid, "Test input", 0, 3, 1, () => SelectTabIfExists("Controller Test"));
         AddActionGridButton(actionGrid, "Logs", 1, 3, 1, () => SelectTabIfExists("Logs"));
 
         var summary = new TextBox
@@ -404,7 +404,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = UiTheme.Canvas,
             Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
-            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Windows flow:{Environment.NewLine}Probe -> Start native -> Test input"
+            Text = $"Install folder:{Environment.NewLine}{_paths.Root}{Environment.NewLine}{Environment.NewLine}Quick flow:{Environment.NewLine}Connect controller -> Start -> Test input"
         };
         sidebarLayout.Controls.Add(BuildOperationProgressPanel(), 0, 1);
         sidebarLayout.Controls.Add(summary, 0, 2);
@@ -527,7 +527,7 @@ internal sealed class MainForm : Form
             RowCount = 3,
             Padding = new Padding(14)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 168 : 184));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 194 : IsCompactUi() ? 168 : 184));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 340 : IsCompactUi() ? 182 : 198));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
@@ -558,7 +558,7 @@ internal sealed class MainForm : Form
         _dashboardStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _dashboardStatusLabel.Font = new Font("Segoe UI", IsCompactUi() ? 12.5F : 15, FontStyle.Bold);
         _dashboardStatusLabel.ForeColor = Color.FromArgb(24, 33, 48);
-        _dashboardDetailLabel.Text = "Probe Windows HID, start the native receiver, then test input.";
+        _dashboardDetailLabel.Text = "Connect a Stadia controller, then press Start. Virtual controller setup is automatic.";
         _dashboardDetailLabel.Dock = DockStyle.Fill;
         _dashboardDetailLabel.AutoEllipsis = true;
         _dashboardDetailLabel.TextAlign = ContentAlignment.TopLeft;
@@ -571,9 +571,9 @@ internal sealed class MainForm : Form
         var actionFlow = CreateFullWidthToolbarFlow();
         actionFlow.Dock = DockStyle.Fill;
         actionFlow.Padding = new Padding(0, 0, 0, 0);
-        AddFlowButton(actionFlow, "Start native", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-        AddFlowButton(actionFlow, "Stop native", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-        AddFlowButton(actionFlow, "Probe", async () => await ProbeWindowsNativeAsync());
+        AddFlowButton(actionFlow, "Start", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actionFlow, "Stop and restore", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+        AddFlowButton(actionFlow, "Check controllers", async () => await ProbeWindowsNativeAsync());
         AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Test"));
         AddFlowButton(actionFlow, "Logs", () => SelectTabIfExists("Logs"));
         overviewLayout.Controls.Add(actionFlow, 1, 0);
@@ -633,7 +633,7 @@ internal sealed class MainForm : Form
 
         var nameLabel = CreateDashboardValueLabel("No profile", IsCompactUi() ? 9.5F : 11, FontStyle.Bold);
         var statusLabel = CreateDashboardValueLabel("Waiting", IsCompactUi() ? 8.25F : 9, FontStyle.Bold, Color.FromArgb(92, 106, 126));
-        var batteryLabel = CreateDashboardValueLabel("Route waiting", IsCompactUi() ? 8.25F : 9);
+        var batteryLabel = CreateDashboardValueLabel("Virtual pad waiting", IsCompactUi() ? 8.25F : 9);
         var batteryBar = new ProgressBar
         {
             Dock = DockStyle.Fill,
@@ -644,7 +644,7 @@ internal sealed class MainForm : Form
             Margin = new Padding(0, 4, 0, 4)
         };
         var packetsLabel = CreateDashboardValueLabel("Input 0.0/s", IsCompactUi() ? 8.25F : 9);
-        var macLabel = CreateDashboardValueLabel("Automatic", 8, FontStyle.Regular, Color.FromArgb(92, 106, 126));
+        var macLabel = CreateDashboardValueLabel("Automatic mapping", 8, FontStyle.Regular, Color.FromArgb(92, 106, 126));
 
         _dashboardPadNameLabels[slot - 1] = nameLabel;
         _dashboardPadStatusLabels[slot - 1] = statusLabel;
@@ -955,7 +955,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildWindowsNativePage()
     {
-        var page = CreatePage("Win Native", "Windows Native");
+        var page = CreatePage("Controllers", "Windows Native");
         var constrained = IsConstrainedUi();
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 48));
@@ -964,7 +964,7 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
 
-        var statusGroup = CreateGroup("Windows Native input");
+        var statusGroup = CreateGroup("Controller connection");
         var statusLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(12) };
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 34 : 40));
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 34));
@@ -972,7 +972,7 @@ internal sealed class MainForm : Form
         statusLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         statusGroup.Controls.Add(statusLayout);
 
-        _windowsNativeStatusLabel.Text = "Not ready";
+        _windowsNativeStatusLabel.Text = "Waiting for controller";
         _windowsNativeStatusLabel.Dock = DockStyle.Fill;
         _windowsNativeStatusLabel.AutoEllipsis = true;
         _windowsNativeStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -986,7 +986,7 @@ internal sealed class MainForm : Form
         _windowsNativeProgress.Style = ProgressBarStyle.Continuous;
         statusLayout.Controls.Add(_windowsNativeProgress, 0, 1);
 
-        _windowsNativePhaseLabel.Text = "Phase: waiting for Windows Native";
+        _windowsNativePhaseLabel.Text = "Connect a Stadia controller to continue";
         _windowsNativePhaseLabel.Dock = DockStyle.Fill;
         _windowsNativePhaseLabel.AutoEllipsis = true;
         _windowsNativePhaseLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -1013,25 +1013,25 @@ internal sealed class MainForm : Form
         }
         if (constrained)
         {
-            AddActionGridButton(actions, "Probe", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
-            AddActionGridButton(actions, "Start native", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-            AddActionGridButton(actions, "Stop native", 0, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+            AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
+            AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+            AddActionGridButton(actions, "Stop", 0, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
             AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Test"));
-            AddActionGridButton(actions, "Open probe", 0, 2, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Connection details", 0, 2, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         else
         {
-            AddActionGridButton(actions, "Probe", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
-            AddActionGridButton(actions, "Start native", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-            AddActionGridButton(actions, "Stop native", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+            AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
+            AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+            AddActionGridButton(actions, "Stop", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
             AddActionGridButton(actions, "Test input", 0, 1, 1, () => SelectTabIfExists("Controller Test"));
-            AddActionGridButton(actions, "Open probe", 1, 1, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Connection details", 1, 1, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         statusLayout.Controls.Add(actions, 0, 3);
         layout.Controls.Add(statusGroup, 0, 0);
 
-        var deviceGroup = CreateGroup("Stadia HID devices");
-        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Name", 220), ("VID:PID", 88), ("Input", 62), ("HidHide", 92), ("Path", 420));
+        var deviceGroup = CreateGroup("Detected Stadia controllers");
+        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 220), ("Hardware", 88), ("Input", 62), ("Protected", 92), ("Device path", 420));
         _windowsNativeDeviceList.ShowItemToolTips = true;
         _windowsNativeDeviceList.Resize += (_, _) => ResizeWindowsNativeColumns();
         _windowsNativeDeviceList.SelectedIndexChanged += (_, _) =>
@@ -1044,8 +1044,8 @@ internal sealed class MainForm : Form
         deviceGroup.Controls.Add(_windowsNativeDeviceList);
         layout.Controls.Add(deviceGroup, 1, 0);
 
-        var logGroup = CreateGroup("Windows Native log");
-        ConfigureLogBox(_windowsNativeLogBox, "Windows Native log not loaded yet.");
+        var logGroup = CreateGroup("Connection activity");
+        ConfigureLogBox(_windowsNativeLogBox, "Connection activity not loaded yet.");
         logGroup.Controls.Add(_windowsNativeLogBox);
         layout.Controls.Add(logGroup, 0, 1);
         layout.SetColumnSpan(logGroup, 2);
@@ -1547,7 +1547,7 @@ internal sealed class MainForm : Form
     {
         LogUserAction("Windows Native probe requested");
         BeginOperationProgress("Windows Native probe", "Checking HidHide", 6);
-        SetWindowsNativeStatus("Scanning Windows HID", 12, warn: false);
+        SetWindowsNativeStatus("Checking connected controllers", 12, warn: false);
 
         var runner = new ProcessRunner();
         var hidHide = new HidHideManager(_paths, runner);
@@ -1555,7 +1555,7 @@ internal sealed class MainForm : Form
         var devices = await RefreshWindowsNativeDevicesAsync(scanner, updateOperationProgress: false).ConfigureAwait(true);
 
         SetOperationProgress("Windows Native probe", "Capturing HID reports", 34);
-        SetWindowsNativeStatus(devices.Count == 0 ? "Not ready - no Stadia HID visible" : $"Capturing {devices.Count} device(s)", 48, devices.Count == 0);
+        SetWindowsNativeStatus(devices.Count == 0 ? "No Stadia controller detected" : $"Checking {devices.Count} controller(s)", 48, devices.Count == 0);
         var report = await AwaitWithTimedProgressAsync(
             scanner.CreateProbeReportAsync(TimeSpan.FromSeconds(8)),
             42,
@@ -1574,12 +1574,12 @@ internal sealed class MainForm : Form
         if (devices.Count == 0)
         {
             FailOperationProgress("Windows Native probe", "Not ready - no Stadia HID controller visible");
-            SetWindowsNativeStatus("Not ready - pair the controller in Windows first", 100, warn: true);
+            SetWindowsNativeStatus("No controller found - pair it in Windows, then check again", 100, warn: true);
             return;
         }
 
         CompleteOperationProgress("Windows Native probe", $"{devices.Count} Stadia HID device(s) visible");
-        SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s) visible", 100, warn: false);
+        SetWindowsNativeStatus($"{devices.Count} Stadia controller(s) detected", 100, warn: false);
     }
 
     private async Task<IReadOnlyList<WindowsNativeHidDevice>> RefreshWindowsNativeDevicesAsync(
@@ -1599,7 +1599,7 @@ internal sealed class MainForm : Form
 
         if (devices.Count == 0)
         {
-            SetWindowsNativeStatus("Not ready - no Stadia HID controller visible", 100, warn: true);
+            SetWindowsNativeStatus("No Stadia controller detected", 100, warn: true);
             if (updateOperationProgress)
             {
                 FailOperationProgress("Windows Native HID", "No Stadia HID controller visible");
@@ -1613,7 +1613,7 @@ internal sealed class MainForm : Form
             if (capacityMismatch)
             {
                 SetWindowsNativeStatus(
-                    $"{devices.Count} controller(s) visible, but receiver has {activeSlots} slot(s) - press Start native",
+                    $"{devices.Count} controller(s) detected - press Start to activate every slot",
                     100,
                     warn: true);
                 AppDiagnosticsLogger.Record(
@@ -1625,7 +1625,12 @@ internal sealed class MainForm : Form
             }
             else
             {
-                SetWindowsNativeStatus($"{devices.Count} Stadia HID device(s), {hidden} HidHide match(es)", 100, warn: hidden < devices.Count);
+                SetWindowsNativeStatus(
+                    hidden < devices.Count
+                        ? $"{devices.Count} controller(s) detected - input protection incomplete"
+                        : $"{devices.Count} controller(s) ready",
+                    100,
+                    warn: hidden < devices.Count);
             }
             if (updateOperationProgress)
             {
@@ -2345,10 +2350,10 @@ internal sealed class MainForm : Form
         _dashboardStatusLabel.Text = activeCount > 0
             ? $"{activeCount} controller(s) sending input"
             : stadiaDevices.Length > 0
-                ? $"{stadiaDevices.Length} Stadia HID device(s) visible"
-                : "No Stadia controller visible";
+                ? $"{stadiaDevices.Length} Stadia controller(s) detected"
+                : "No Stadia controller detected";
         _dashboardDetailLabel.Text =
-            $"Windows HID {stadiaDevices.Length} - HidHide matches {hiddenCount} - input data {(_lastTelemetrySnapshot is null ? "not read" : _lastTelemetrySnapshot.ReadAt.ToLocalTime().ToString("HH:mm:ss"))}";
+            $"Detected {stadiaDevices.Length} - protected {hiddenCount} - last input {(_lastTelemetrySnapshot is null ? "not received" : _lastTelemetrySnapshot.ReadAt.ToLocalTime().ToString("HH:mm:ss"))}";
 
         for (var slot = 1; slot <= 4; slot++)
         {
@@ -2358,9 +2363,9 @@ internal sealed class MainForm : Form
             var state = hasInput
                 ? "Active"
                 : device is not null && !string.IsNullOrWhiteSpace(device.DeviceInstancePath)
-                    ? "Hidden"
+                    ? "Ready"
                     : device is not null
-                        ? "Visible"
+                        ? "Detected"
                         : "Waiting";
 
             _dashboardPadNameLabels[slot - 1].Text = ShortPadName(WindowsNativeDisplayName(device) ?? "Pad P" + slot);
@@ -2368,18 +2373,18 @@ internal sealed class MainForm : Form
             _dashboardPadStatusLabels[slot - 1].ForeColor = DashboardStateColor(state);
             _dashboardPadBatteryLabels[slot - 1].Text = state switch
             {
-                "Active" => "Route virtual pad",
-                "Hidden" => "Route protected",
-                "Visible" => "Route visible",
-                _ => "Route waiting"
+                "Active" => "Virtual pad active",
+                "Ready" => "Input protected",
+                "Detected" => "Ready to start",
+                _ => "Virtual pad waiting"
             };
             _dashboardPadBatteryBars[slot - 1].Value = hasInput
                 ? Math.Clamp((int)Math.Round((controller?.PacketsPerSecond ?? 0) * 8), 8, 100)
-                : state == "Hidden"
+                : state == "Ready"
                     ? 20
                     : 0;
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
-            _dashboardPadMacLabels[slot - 1].Text = device is null ? "Waiting" : $"{device.VendorId:X4}:{device.ProductId:X4}";
+            _dashboardPadMacLabels[slot - 1].Text = "Automatic mapping";
         }
     }
 
@@ -2663,8 +2668,8 @@ internal sealed class MainForm : Form
     {
         return state switch
         {
-            "Active" or "Hidden" => Color.FromArgb(34, 120, 72),
-            "Visible" => Color.FromArgb(45, 91, 150),
+            "Active" or "Ready" => Color.FromArgb(34, 120, 72),
+            "Detected" => Color.FromArgb(45, 91, 150),
             _ => Color.FromArgb(92, 106, 126)
         };
     }
@@ -2689,7 +2694,7 @@ internal sealed class MainForm : Form
     {
         if (!ConnectionPhaseParser.TryParseLatest(text, "Windows Native", out var phase) || phase is null)
         {
-            _windowsNativePhaseLabel.Text = "Phase: waiting for Windows Native";
+            _windowsNativePhaseLabel.Text = "Connect a Stadia controller to continue";
             _windowsNativePhaseLabel.ForeColor = Color.FromArgb(92, 106, 126);
             return;
         }
