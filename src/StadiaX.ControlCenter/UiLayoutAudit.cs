@@ -34,7 +34,6 @@ internal static class UiLayoutAudit
         {
             form.SuspendLayout();
             form.Scale(new SizeF(simulationScale, simulationScale));
-            ScaleFonts(form, simulationScale);
             form.ResumeLayout(performLayout: true);
             Application.DoEvents();
         }
@@ -319,19 +318,6 @@ internal static class UiLayoutAudit
         foreach (Control child in control.Controls)
         {
             LayoutTree(child);
-        }
-    }
-
-    private static void ScaleFonts(Control root, float factor)
-    {
-        foreach (var control in Descendants(root).Prepend(root))
-        {
-            var font = control.Font;
-            control.Font = new Font(
-                font.FontFamily,
-                Math.Max(4F, font.SizeInPoints * factor),
-                font.Style,
-                GraphicsUnit.Point);
         }
     }
 
