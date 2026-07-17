@@ -5,14 +5,14 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
-        if (args.Contains("--compact-ui", StringComparer.OrdinalIgnoreCase) ||
-            args.Contains("--dpi-preview=100", StringComparer.OrdinalIgnoreCase))
+        ConfigureDpiPreview(args);
+        ConfigureLanguagePreview(args);
+        if (args.Contains("--compact-ui", StringComparer.OrdinalIgnoreCase))
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
             Environment.SetEnvironmentVariable("STADIAX_UI_CONSTRAINED", "0");
         }
-        if (args.Contains("--constrained-ui", StringComparer.OrdinalIgnoreCase) ||
-            args.Contains("--dpi-preview=200", StringComparer.OrdinalIgnoreCase))
+        if (args.Contains("--constrained-ui", StringComparer.OrdinalIgnoreCase))
         {
             Environment.SetEnvironmentVariable("STADIAX_UI_DENSITY", "compact");
             Environment.SetEnvironmentVariable("STADIAX_UI_CONSTRAINED", "1");
@@ -50,6 +50,12 @@ internal static class Program
             Environment.Exit(0);
             return;
         }
+        if (args.Contains("--internal-self-test", StringComparer.OrdinalIgnoreCase))
+        {
+            UpdateService.RunSelfTest();
+            Environment.Exit(0);
+            return;
+        }
         if (args.Contains("--ui-layout-test", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
@@ -59,6 +65,30 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
         Application.Run(new MainForm(paths));
+    }
+
+    private static void ConfigureDpiPreview(IEnumerable<string> args)
+    {
+        const string prefix = "--dpi-preview=";
+        var value = args.FirstOrDefault(argument => argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        if (value is null || !int.TryParse(value[prefix.Length..], out var percent))
+        {
+            return;
+        }
+        Environment.SetEnvironmentVariable("STADIAX_UI_SCALE_PERCENT", Math.Clamp(percent, 100, 200).ToString());
+    }
+
+    private static void ConfigureLanguagePreview(IEnumerable<string> args)
+    {
+        const string prefix = "--language=";
+        var value = args.FirstOrDefault(argument => argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        if (value is null)
+        {
+            return;
+        }
+
+        var language = value[prefix.Length..].Equals("it", StringComparison.OrdinalIgnoreCase) ? "it" : "en";
+        Environment.SetEnvironmentVariable("STADIAX_UI_LANGUAGE", language);
     }
 
     private static int RunBridgeCommand(bool start)

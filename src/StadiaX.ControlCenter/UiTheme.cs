@@ -178,3 +178,97 @@ internal sealed class ModernButton : Button
         }
     }
 }
+
+internal sealed class ModernProgressBar : Control
+{
+    private int _minimum;
+    private int _maximum = 100;
+    private int _value;
+
+    internal ModernProgressBar()
+    {
+        SetStyle(
+            ControlStyles.UserPaint |
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.OptimizedDoubleBuffer |
+            ControlStyles.ResizeRedraw,
+            true);
+        BackColor = Color.FromArgb(226, 233, 240);
+        ForeColor = UiTheme.Accent;
+        TabStop = false;
+    }
+
+    public int Minimum
+    {
+        get => _minimum;
+        set
+        {
+            _minimum = value;
+            if (_maximum < _minimum)
+            {
+                _maximum = _minimum;
+            }
+            Value = _value;
+            Invalidate();
+        }
+    }
+
+    public int Maximum
+    {
+        get => _maximum;
+        set
+        {
+            _maximum = Math.Max(value, _minimum);
+            Value = _value;
+            Invalidate();
+        }
+    }
+
+    public int Value
+    {
+        get => _value;
+        set
+        {
+            var clamped = Math.Clamp(value, _minimum, _maximum);
+            if (_value == clamped)
+            {
+                return;
+            }
+
+            _value = clamped;
+            Invalidate();
+        }
+    }
+
+    public ProgressBarStyle Style { get; set; } = ProgressBarStyle.Continuous;
+
+    public int MarqueeAnimationSpeed { get; set; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.Clear(UiTheme.OpaqueParentColor(this));
+
+        var trackHeight = Math.Min(8, Math.Max(2, Height));
+        var track = new Rectangle(0, Math.Max(0, Height / 2 - trackHeight / 2), Math.Max(1, Width - 1), trackHeight);
+        var radius = Math.Max(2, 4 * DeviceDpi / 96);
+        using (var trackPath = UiTheme.RoundedPath(track, radius))
+        using (var trackBrush = new SolidBrush(BackColor))
+        {
+            e.Graphics.FillPath(trackBrush, trackPath);
+        }
+
+        var range = Math.Max(1, _maximum - _minimum);
+        var ratio = Math.Clamp((_value - _minimum) / (double)range, 0d, 1d);
+        var fillWidth = ratio <= 0 ? 0 : Math.Max(track.Height, (int)Math.Round(track.Width * ratio));
+        if (fillWidth <= 0)
+        {
+            return;
+        }
+
+        var fillBounds = new Rectangle(track.Left, track.Top, Math.Min(track.Width, fillWidth), track.Height);
+        using var fillPath = UiTheme.RoundedPath(fillBounds, radius);
+        using var fillBrush = new SolidBrush(ForeColor);
+        e.Graphics.FillPath(fillBrush, fillPath);
+    }
+}

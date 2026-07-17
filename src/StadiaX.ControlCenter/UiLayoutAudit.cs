@@ -9,8 +9,12 @@ internal static class UiLayoutAudit
         var density = MainForm.IsConstrainedUi()
             ? "constrained"
             : MainForm.IsCompactUi() ? "compact" : "comfortable";
+        var scalePercent = DisplayLayout.AuditScalePercent;
+        var language = UiLocalization.Current.LanguageCode;
+        var reportKey = $"{density}-{language}-dpi{scalePercent}";
         var issues = new HashSet<string>(StringComparer.Ordinal);
-        var observations = new List<string>();
+        var observations = new List<string> { $"dpi-scale={scalePercent}%" };
+        ValidateDisplayFitScenarios(issues, observations);
 
         using var form = new MainForm(paths, auditMode: true)
         {
@@ -22,6 +26,18 @@ internal static class UiLayoutAudit
         MainFormRuntimeTuner.ApplyForAudit(form);
         form.Show();
         Application.DoEvents();
+        observations.Add($"host-dpi={form.DeviceDpi}");
+        Environment.SetEnvironmentVariable("STADIAX_UI_RUNTIME_SCALE_PERCENT", scalePercent.ToString());
+        var targetDpi = DisplayLayout.BaseDpi * scalePercent / 100F;
+        var simulationScale = targetDpi / Math.Max(DisplayLayout.BaseDpi, form.DeviceDpi);
+        if (Math.Abs(simulationScale - 1F) > 0.01F)
+        {
+            form.SuspendLayout();
+            form.Scale(new SizeF(simulationScale, simulationScale));
+            ScaleFonts(form, simulationScale);
+            form.ResumeLayout(performLayout: true);
+            Application.DoEvents();
+        }
 
         var tabs = Descendants(form).OfType<TabControl>().FirstOrDefault(control => control.TabPages.Count > 0);
         if (tabs is null)
@@ -32,9 +48,9 @@ internal static class UiLayoutAudit
         {
             try
             {
-                var snapshotPath = SaveSnapshot(form, tabs, paths, density);
+                var snapshotPath = SaveSnapshot(form, tabs, paths, density, reportKey);
                 observations.Add($"snapshot={snapshotPath}");
-                if (density == "comfortable")
+                if (density == "comfortable" && scalePercent == 100)
                 {
                     observations.AddRange(SaveFeatureSnapshots(form, tabs, paths).Select(path => $"feature-snapshot={path}"));
                 }
@@ -48,27 +64,28 @@ internal static class UiLayoutAudit
                     ("exceptionType", ex.GetType().FullName),
                     ("error", ex.ToString()));
             }
-            foreach (var requestedSize in AuditSizes(density))
+            foreach (var logicalSize in AuditSizes(density))
             {
+                var requestedSize = AtScale(logicalSize, scalePercent);
                 form.Size = requestedSize;
                 LayoutTree(form);
-                observations.Add($"requested={requestedSize.Width}x{requestedSize.Height} actual={form.Width}x{form.Height} client={form.ClientSize.Width}x{form.ClientSize.Height}");
+                observations.Add($"requested-logical={logicalSize.Width}x{logicalSize.Height} target={requestedSize.Width}x{requestedSize.Height} actual={form.Width}x{form.Height} client={form.ClientSize.Width}x{form.ClientSize.Height}");
 
                 foreach (TabPage page in tabs.TabPages)
                 {
                     tabs.SelectedTab = page;
                     LayoutTree(form);
                     Application.DoEvents();
-                    ValidateTree(form, $"{requestedSize.Width}x{requestedSize.Height}/{page.Text}", issues);
+                    ValidateTree(form, $"{logicalSize.Width}x{logicalSize.Height}@{scalePercent}%/{page.Text}", issues);
                 }
             }
         }
 
         Directory.CreateDirectory(paths.LogDirectory);
-        var reportPath = Path.Combine(paths.LogDirectory, $"ui-layout-audit-{density}.txt");
+        var reportPath = Path.Combine(paths.LogDirectory, $"ui-layout-audit-{reportKey}.txt");
         var lines = new List<string>
         {
-            $"Stadia X UI layout audit: {density}",
+            $"Stadia X UI layout audit: {density} at {scalePercent}%",
             $"Result: {(issues.Count == 0 ? "PASS" : "FAIL")}",
             $"Issues: {issues.Count}",
             "",
@@ -83,16 +100,43 @@ internal static class UiLayoutAudit
         AppDiagnosticsLogger.Record(
             issues.Count == 0 ? "UI_LAYOUT_AUDIT_PASS" : "UI_LAYOUT_AUDIT_FAIL",
             ("density", density),
+            ("language", language),
+            ("dpiScale", scalePercent.ToString()),
             ("issues", issues.Count.ToString()),
             ("report", reportPath));
         return issues.Count == 0 ? 0 : 1;
     }
 
-    private static string SaveSnapshot(Form form, TabControl tabs, AppPaths paths, string density)
+    private static string SaveSnapshot(Form form, TabControl tabs, AppPaths paths, string density, string reportKey)
     {
-        form.Size = SnapshotSize(density);
+        form.Size = AtScale(SnapshotSize(density), DisplayLayout.AuditScalePercent);
         tabs.SelectedIndex = 0;
-        return CaptureSnapshot(form, paths, $"ui-layout-audit-{density}.png");
+        return CaptureSnapshot(form, paths, $"ui-layout-audit-{reportKey}.png");
+    }
+
+    private static void ValidateDisplayFitScenarios(ISet<string> issues, ICollection<string> observations)
+    {
+        var scenarios = new[]
+        {
+            (Name: "primary-100", Area: new Rectangle(0, 0, 1920, 1040), Window: new Rectangle(120, 80, 1280, 820)),
+            (Name: "left-125", Area: new Rectangle(-1920, 0, 1920, 1040), Window: new Rectangle(-2350, 120, 1800, 1200)),
+            (Name: "upper-150", Area: new Rectangle(0, -1440, 2560, 1400), Window: new Rectangle(2200, -1700, 1700, 1100)),
+            (Name: "right-200", Area: new Rectangle(3200, 0, 2560, 1960), Window: new Rectangle(5600, 1700, 2600, 1800))
+        };
+
+        foreach (var scenario in scenarios)
+        {
+            var fitted = DisplayLayout.FitWindow(scenario.Window, new Size(900, 560), scenario.Area);
+            var inside = fitted.Bounds.Left >= scenario.Area.Left &&
+                         fitted.Bounds.Top >= scenario.Area.Top &&
+                         fitted.Bounds.Right <= scenario.Area.Right &&
+                         fitted.Bounds.Bottom <= scenario.Area.Bottom;
+            observations.Add($"display={scenario.Name} fitted={fitted.Bounds}");
+            if (!inside)
+            {
+                issues.Add($"Display scenario {scenario.Name}: fitted bounds {fitted.Bounds} exceed {scenario.Area}.");
+            }
+        }
     }
 
     private static IReadOnlyList<string> SaveFeatureSnapshots(Form form, TabControl tabs, AppPaths paths)
@@ -172,6 +216,13 @@ internal static class UiLayoutAudit
         };
     }
 
+    private static Size AtScale(Size logical, int percent)
+    {
+        return new Size(
+            Math.Max(1, (int)Math.Round(logical.Width * percent / 100d)),
+            Math.Max(1, (int)Math.Round(logical.Height * percent / 100d)));
+    }
+
     private static void ValidateTree(Control root, string scenario, ISet<string> issues)
     {
         foreach (var control in Descendants(root).Where(control => control.Visible && control.Width > 0 && control.Height > 0))
@@ -202,7 +253,7 @@ internal static class UiLayoutAudit
     {
         var parent = control.Parent;
         if (parent is null ||
-            parent is ScrollableControl { AutoScroll: true } ||
+            HasAutoScrollAncestor(control) ||
             parent.ClientSize.Width <= 0 ||
             parent.ClientSize.Height <= 0)
         {
@@ -269,6 +320,32 @@ internal static class UiLayoutAudit
         {
             LayoutTree(child);
         }
+    }
+
+    private static void ScaleFonts(Control root, float factor)
+    {
+        foreach (var control in Descendants(root).Prepend(root))
+        {
+            var font = control.Font;
+            control.Font = new Font(
+                font.FontFamily,
+                Math.Max(4F, font.SizeInPoints * factor),
+                font.Style,
+                GraphicsUnit.Point);
+        }
+    }
+
+    private static bool HasAutoScrollAncestor(Control control)
+    {
+        for (var ancestor = control.Parent; ancestor is not null; ancestor = ancestor.Parent)
+        {
+            if (ancestor is ScrollableControl { AutoScroll: true })
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static IEnumerable<Control> Descendants(Control root)

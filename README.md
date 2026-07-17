@@ -36,6 +36,8 @@ The app includes a modern control center for setup, bridge start/stop, Bluetooth
 * **Universal game compatibility:** Games see standard Xbox 360 pads through ViGEmBus.
 * **Bluetooth device visibility:** Compare what Windows sees with what Linux/BlueZ sees after adapter handoff.
 * **Battery overlay:** Tiny top-right overlay with white text, red warning below 10%, and compact P1/P2/P3/P4 labels.
+* **Adaptive bilingual UI:** Italian and English interface tested at 100%, 125%, 150%, and 200% DPI across compact and multi-monitor layouts.
+* **Verified in-app updates:** Download the release installer, verify its SHA-256 checksum, keep a local rollback copy, and restore it automatically if the updated app does not stay healthy.
 * **36-key macro system:** Assistant and Capture act as modifier keys for media controls, keyboard shortcuts, and custom actions.
 * **Support bundle:** Export logs, diagnostics, selected profiles, controller telemetry, and session reports for troubleshooting.
 * **Auto-restore:** Return the Bluetooth adapter to Windows when you stop the bridge or close the app.
@@ -75,7 +77,7 @@ The native launcher is a C# WinForms executable. It is the main interface for se
 
 The GUI lets you:
 * Follow a first-run checklist that walks through release files, ViGEmBus, usbipd, WSL, Bluetooth selection, startup, and controller testing.
-* Check the installed version against the latest GitHub Release and open the download page.
+* Check the installed version against the latest GitHub Release, install verified updates in-app, and roll back to the previous local copy when needed.
 * Check required tools and runtime files before starting.
 * Run a pre-start setup audit and a post-start health audit.
 * Let Stadia X auto-select the best WSL distro, or manually pin the distro used for Bluetooth handoff and Linux commands.
