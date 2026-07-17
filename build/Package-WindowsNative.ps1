@@ -36,9 +36,6 @@ if (Test-Path $shaPath) {
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
 & (Join-Path $PSScriptRoot "Download-WindowsNativeDependencies.ps1") -OutputDirectory (Join-Path $repoRoot "dependencies")
-if ($LASTEXITCODE -ne 0) {
-    throw "Windows Native dependency download failed with exit code $LASTEXITCODE"
-}
 
 $requiredFiles = @(
     "VERSION.txt",
