@@ -333,6 +333,7 @@ internal sealed class MainForm : Form
         var sidebarLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
+            AutoScroll = true,
             ColumnCount = 1,
             RowCount = 3
         };
