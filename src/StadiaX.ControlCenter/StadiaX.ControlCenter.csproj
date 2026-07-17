@@ -8,7 +8,7 @@
     <AssemblyName>StadiaX</AssemblyName>
     <RootNamespace>StadiaX.ControlCenter</RootNamespace>
     <ApplicationIcon>..\..\assets\StadiaX-WindowsNative.ico</ApplicationIcon>
-    <ApplicationHighDpiMode>DpiUnawareGdiScaled</ApplicationHighDpiMode>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationVisualStyles>true</ApplicationVisualStyles>
   </PropertyGroup>
   <ItemGroup>

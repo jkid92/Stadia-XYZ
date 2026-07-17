@@ -34,10 +34,17 @@ internal sealed class RequirementChecker
                 File.Exists(path) ? path : "Missing in this folder; the Windows Native installer should include it."));
         }
 
+        var bundledDependencies = new[]
+        {
+            Path.Combine(_paths.Root, "dependencies", "HidHide_1.5.230_x64.exe"),
+            Path.Combine(_paths.Root, "dependencies", "ViGEmBus_1.22.0_x64_x86_arm64.exe")
+        };
         checks.Add(new CheckResult(
-            "Command: winget",
-            await _runner.CommandExistsAsync("winget", _paths.Root) ? CheckState.Ok : CheckState.Warn,
-            "Used to install HidHide and ViGEmBus automatically when they are missing."));
+            "Bundled driver setup",
+            bundledDependencies.All(File.Exists) ? CheckState.Ok : CheckState.Warn,
+            bundledDependencies.All(File.Exists)
+                ? "Signed HidHide and ViGEmBus setup files are available locally."
+                : "The installed setup should include signed HidHide and ViGEmBus installers; winget is only a development fallback."));
 
         var vigem = await _runner.RunAsync(
             "powershell.exe",
@@ -47,7 +54,7 @@ internal sealed class RequirementChecker
         checks.Add(new CheckResult(
             "ViGEmBus driver",
             vigem.Output.Contains("OK", StringComparison.OrdinalIgnoreCase) ? CheckState.Ok : CheckState.Warn,
-            "Required for virtual Xbox 360 controllers; Start native can install it when winget is available."));
+            "Required for virtual Xbox 360 controllers; Start installs the bundled signed setup automatically."));
 
         var hidHidePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
@@ -58,7 +65,7 @@ internal sealed class RequirementChecker
         checks.Add(new CheckResult(
             "HidHide driver",
             File.Exists(hidHidePath) ? CheckState.Ok : CheckState.Warn,
-            File.Exists(hidHidePath) ? hidHidePath : "Required to hide physical controller input and prevent duplicated buttons; Start native can install it when winget is available."));
+            File.Exists(hidHidePath) ? hidHidePath : "Required to prevent duplicated buttons; Start installs the bundled signed setup automatically."));
 
         return checks;
     }

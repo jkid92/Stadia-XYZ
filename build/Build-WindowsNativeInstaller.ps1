@@ -72,7 +72,10 @@ $requiredFiles = @(
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",
     "assets\StadiaControllerPhoto.png",
-    "assets\ATTRIBUTION.md"
+    "assets\ATTRIBUTION.md",
+    "dependencies\HidHide_1.5.230_x64.exe",
+    "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",
+    "dependencies\THIRD-PARTY-NOTICES.txt"
 )
 
 foreach ($relativePath in $requiredFiles) {

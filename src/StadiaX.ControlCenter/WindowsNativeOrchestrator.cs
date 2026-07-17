@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 
@@ -394,22 +395,26 @@ internal sealed class WindowsNativeOrchestrator
             return true;
         }
 
-        status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL", "HidHide missing; trying winget install");
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "INSTALL", "HidHide missing; installing with winget");
-        if (!await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
+        status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL", "HidHide missing; trying bundled signed setup");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "INSTALL", "Installing bundled HidHide dependency");
+        var bundledInstall = await TryInstallBundledDependencyAsync(
+            "HidHide_1.5.230_x64.exe",
+            "F4BBBCB82E6258641B887C74BC81C4C5F66E4AA811808DFC304347687B7605F6",
+            status,
+            cancellationToken).ConfigureAwait(false);
+        if (bundledInstall is null && await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
         {
-            status.WritePhase("Windows Native", 1, StartPhaseCount, "HidHide", "FAIL", "winget is missing, so HidHide cannot be installed automatically");
-            return false;
+            bundledInstall = await _runner.RunAsync(
+                "winget",
+                new[] { "install", "-e", "--id", "Nefarius.HidHide", "--accept-package-agreements", "--accept-source-agreements" },
+                _paths.Root,
+                180000,
+                createNoWindow: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-
-        var install = await _runner.RunAsync(
-            "winget",
-            new[] { "install", "-e", "--id", "Nefarius.HidHide", "--accept-package-agreements", "--accept-source-agreements" },
-            _paths.Root,
-            180000,
-            createNoWindow: false,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
+        status.Write("WINDOWS_NATIVE_HIDHIDE_INSTALL_RESULT", bundledInstall is null
+            ? "No bundled setup or winget fallback was available"
+            : $"exit={bundledInstall.ExitCode} output={Shorten(FirstNonEmpty(bundledInstall.Output, bundledInstall.Error, "none"), 260)}");
 
         if (hidHide.IsInstalled)
         {
@@ -435,22 +440,26 @@ internal sealed class WindowsNativeOrchestrator
             return true;
         }
 
-        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL", "ViGEmBus missing; trying winget install");
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "INSTALL", "ViGEmBus missing; installing with winget");
-        if (!await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
+        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL", "ViGEmBus missing; trying bundled signed setup");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "INSTALL", "Installing bundled ViGEmBus dependency");
+        var bundledInstall = await TryInstallBundledDependencyAsync(
+            "ViGEmBus_1.22.0_x64_x86_arm64.exe",
+            "89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A",
+            status,
+            cancellationToken).ConfigureAwait(false);
+        if (bundledInstall is null && await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
         {
-            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "FAIL", "winget is missing, so ViGEmBus cannot be installed automatically");
-            return false;
+            bundledInstall = await _runner.RunAsync(
+                "winget",
+                new[] { "install", "-e", "--id", "Nefarius.ViGEmBus", "--accept-package-agreements", "--accept-source-agreements" },
+                _paths.Root,
+                180000,
+                createNoWindow: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-
-        var install = await _runner.RunAsync(
-            "winget",
-            new[] { "install", "-e", "--id", "Nefarius.ViGEmBus", "--accept-package-agreements", "--accept-source-agreements" },
-            _paths.Root,
-            180000,
-            createNoWindow: false,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL_RESULT", $"exit={install.ExitCode} output={Shorten(FirstNonEmpty(install.Output, install.Error, "none"), 260)}");
+        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL_RESULT", bundledInstall is null
+            ? "No bundled setup or winget fallback was available"
+            : $"exit={bundledInstall.ExitCode} output={Shorten(FirstNonEmpty(bundledInstall.Output, bundledInstall.Error, "none"), 260)}");
 
         if (await IsVigemBusInstalledAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -486,6 +495,43 @@ internal sealed class WindowsNativeOrchestrator
 
         status.Write("WINDOWS_NATIVE_WINGET_MISSING", "winget was not found; automatic driver installation is unavailable");
         return false;
+    }
+
+    private async Task<CommandResult?> TryInstallBundledDependencyAsync(
+        string fileName,
+        string expectedSha256,
+        StatusWriter status,
+        CancellationToken cancellationToken)
+    {
+        var setupPath = new[]
+            {
+                Path.Combine(_paths.Root, "dependencies", fileName),
+                Path.Combine(AppContext.BaseDirectory, "dependencies", fileName)
+            }
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(File.Exists);
+        if (setupPath is null)
+        {
+            status.Write("WINDOWS_NATIVE_BUNDLED_DEPENDENCY_MISSING", fileName + " was not found; checking fallback installer sources");
+            return null;
+        }
+
+        await using var stream = File.OpenRead(setupPath);
+        var actualHash = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+        if (!actualHash.Equals(expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            status.Write("WINDOWS_NATIVE_BUNDLED_DEPENDENCY_INVALID", $"{fileName} failed SHA-256 verification");
+            return new CommandResult(-1, "", "Bundled dependency checksum verification failed.");
+        }
+
+        status.Write("WINDOWS_NATIVE_BUNDLED_DEPENDENCY_VERIFIED", $"{fileName} passed SHA-256 verification");
+        return await _runner.RunAsync(
+            setupPath,
+            new[] { "/quiet", "/norestart" },
+            _paths.Root,
+            300000,
+            createNoWindow: false,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     private async Task WriteProbeAsync(WindowsNativeHidScanner scanner)

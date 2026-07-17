@@ -8,7 +8,6 @@ namespace StadiaX.ControlCenter;
 internal sealed class MainForm : Form
 {
     private const double DefaultControllerFullBatteryHours = 8d;
-    private const int ScreenFitMargin = 48;
 
     private readonly AppPaths _paths;
     private readonly bool _auditMode;
@@ -18,6 +17,8 @@ internal sealed class MainForm : Form
     private readonly SelfTestService _selfTestService;
     private readonly NativeControlServices _native;
     private readonly UserActionLogger _actionLogger;
+    private readonly UiLocalization _localization = UiLocalization.Current;
+    private readonly UpdateService _updateService;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -26,6 +27,7 @@ internal sealed class MainForm : Form
     private readonly Label _capacityLabel = new();
     private readonly TextBox _selectedBusText = new();
     private readonly ComboBox _wslCombo = new();
+    private readonly ComboBox _languageCombo = new();
     private readonly ListView _firstRunList = new();
     private readonly ListView _setupChecksList = new();
     private readonly ListView _usbipdList = new();
@@ -55,7 +57,7 @@ internal sealed class MainForm : Form
     private readonly ListView _doctorList = new();
     private readonly TextBox _doctorDetailsBox = new();
     private readonly Label _doctorStatusLabel = new();
-    private readonly ProgressBar _doctorProgress = new();
+    private readonly ModernProgressBar _doctorProgress = new();
     private readonly TextBox _statusLogBox = new();
     private readonly TextBox _linuxLogBox = new();
     private readonly TextBox _userActionLogBox = new();
@@ -68,17 +70,17 @@ internal sealed class MainForm : Form
     private readonly Label[] _dashboardPadBatteryLabels = new Label[4];
     private readonly Label[] _dashboardPadPacketsLabels = new Label[4];
     private readonly Label[] _dashboardPadMacLabels = new Label[4];
-    private readonly ProgressBar[] _dashboardPadBatteryBars = new ProgressBar[4];
+    private readonly ModernProgressBar[] _dashboardPadBatteryBars = new ModernProgressBar[4];
     private readonly Label _wizardStatusLabel = new();
     private readonly Label _wizardSelectionLabel = new();
-    private readonly ProgressBar _wizardProgress = new();
+    private readonly ModernProgressBar _wizardProgress = new();
     private readonly Label[] _wizardStepLabels = new Label[7];
     private readonly Label _windowsNativeStatusLabel = new();
     private readonly Label _windowsNativePhaseLabel = new();
-    private readonly ProgressBar _windowsNativeProgress = new();
+    private readonly ModernProgressBar _windowsNativeProgress = new();
     private readonly Label _operationTitleLabel = new();
     private readonly Label _operationDetailLabel = new();
-    private readonly ProgressBar _operationProgress = new();
+    private readonly ModernProgressBar _operationProgress = new();
     private readonly Label _linuxBluetoothSummaryLabel = new();
     private readonly TabControl _tabs = new();
     private readonly FlowLayoutPanel _tabNavPanel = new();
@@ -115,6 +117,7 @@ internal sealed class MainForm : Form
         _selfTestService = new SelfTestService(paths, _requirementChecker);
         _native = new NativeControlServices(paths, _runner);
         _actionLogger = new UserActionLogger(paths);
+        _updateService = new UpdateService(paths, windowsNative: true);
         AppDiagnosticsLogger.Initialize(paths);
 
         Text = "Stadia X";
@@ -128,9 +131,12 @@ internal sealed class MainForm : Form
         BackColor = UiTheme.Canvas;
 
         BuildUi();
+        AutoScaleDimensions = new SizeF(DisplayLayout.BaseDpi, DisplayLayout.BaseDpi);
+        AutoScaleMode = AutoScaleMode.Dpi;
         ApplyHighDpiLayoutGuards();
         ConfigureTimers();
         ConfigureTray();
+        ApplyLocalization();
 
         Shown += async (_, _) =>
         {
@@ -145,6 +151,10 @@ internal sealed class MainForm : Form
                 Directory.CreateDirectory(_paths.LogDirectory);
                 await RefreshEverythingAsync();
                 _logTimer.Start();
+                if (_updateService.CanInstallAutomatically)
+                {
+                    _ = CheckForUpdatesAsync(interactive: false);
+                }
             }
             catch (Exception ex)
             {
@@ -205,32 +215,13 @@ internal sealed class MainForm : Form
         }
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
-        return area.Width < 1240 || area.Height < 760;
+        return DisplayLayout.IsConstrained(area, DisplayLayout.SystemDpi);
     }
 
     private static (Size Minimum, Size Initial) CalculateStartupSizing(bool compactUi)
     {
-        var constrained = IsConstrainedUi();
-        var desired = compactUi ? new Size(1120, 720) : new Size(1280, 820);
-        var desiredMinimum = compactUi
-            ? new Size(constrained ? 820 : 1080, constrained ? 520 : 560)
-            : new Size(constrained ? 900 : 1100, constrained ? 560 : 620);
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
-        var margin = area.Width < 900 || area.Height < 640 ? 20 : ScreenFitMargin;
-        var available = new Size(
-            Math.Max(560, area.Width - margin),
-            Math.Max(420, area.Height - margin));
-
-        var minimum = new Size(
-            Math.Min(desiredMinimum.Width, available.Width),
-            Math.Min(desiredMinimum.Height, available.Height));
-        var initial = new Size(
-            Math.Min(desired.Width, available.Width),
-            Math.Min(desired.Height, available.Height));
-
-        initial.Width = Math.Max(initial.Width, minimum.Width);
-        initial.Height = Math.Max(initial.Height, minimum.Height);
-        return (minimum, initial);
+        return DisplayLayout.CalculateStartupSizing(compactUi, area, DisplayLayout.SystemDpi);
     }
 
     private void ApplyHighDpiLayoutGuards()
@@ -260,26 +251,11 @@ internal sealed class MainForm : Form
             return;
         }
 
-        var area = Screen.FromControl(this).WorkingArea;
-        var margin = area.Width < 900 || area.Height < 640 ? 20 : ScreenFitMargin;
-        var maxWidth = Math.Max(560, area.Width - margin);
-        var maxHeight = Math.Max(420, area.Height - margin);
-
-        MinimumSize = new Size(
-            Math.Min(MinimumSize.Width, maxWidth),
-            Math.Min(MinimumSize.Height, maxHeight));
-
-        var targetSize = new Size(Math.Min(Width, maxWidth), Math.Min(Height, maxHeight));
-        if (targetSize != Size)
+        var fitted = DisplayLayout.FitWindow(Bounds, MinimumSize, Screen.FromControl(this).WorkingArea);
+        MinimumSize = fitted.Minimum;
+        if (Bounds != fitted.Bounds)
         {
-            Size = targetSize;
-        }
-
-        var x = Math.Min(Math.Max(Left, area.Left), Math.Max(area.Left, area.Right - Width));
-        var y = Math.Min(Math.Max(Top, area.Top), Math.Max(area.Top, area.Bottom - Height));
-        if (Location.X != x || Location.Y != y)
-        {
-            Location = new Point(x, y);
+            Bounds = fitted.Bounds;
         }
     }
 
@@ -485,8 +461,8 @@ internal sealed class MainForm : Form
                 AccessibleRole = AccessibleRole.PushButton,
                 Tag = page,
                 Width = ModernTabWidth(page.Text),
-                Height = IsCompactUi() ? 27 : 30,
-                Margin = new Padding(2, 0, 2, 0),
+                Height = IsCompactUi() ? 28 : 31,
+                Margin = new Padding(1, 0, 1, 0),
                 Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Regular)
             };
             button.Click += (_, _) =>
@@ -511,9 +487,12 @@ internal sealed class MainForm : Form
 
     private static int ModernTabWidth(string text)
     {
-        using var font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Regular);
+        using var font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 8.75F, FontStyle.Bold);
         var measured = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.SingleLine | TextFormatFlags.NoPadding).Width;
-        return Math.Clamp(measured + (IsCompactUi() ? 20 : 24), IsCompactUi() ? 52 : 60, IsCompactUi() ? 96 : 112);
+        var scale = Math.Max(1F, DisplayLayout.SystemDpi / (float)DisplayLayout.BaseDpi);
+        var padding = (int)Math.Round((IsCompactUi() ? 18 : 22) * scale);
+        var minimum = (int)Math.Round((IsCompactUi() ? 52 : 60) * scale);
+        return Math.Max(minimum, measured + padding);
     }
 
     private TabPage BuildDashboardPage()
@@ -525,7 +504,8 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = 3,
-            Padding = new Padding(14)
+            Padding = new Padding(14),
+            MinimumSize = new Size(0, constrained ? 682 : IsCompactUi() ? 498 : 550)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 194 : IsCompactUi() ? 168 : 184));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 340 : IsCompactUi() ? 182 : 198));
@@ -569,6 +549,7 @@ internal sealed class MainForm : Form
         overviewLayout.Controls.Add(statusLayout, 0, 0);
 
         var actionFlow = CreateFullWidthToolbarFlow();
+        actionFlow.AutoSize = false;
         actionFlow.Dock = DockStyle.Fill;
         actionFlow.Padding = new Padding(0, 0, 0, 0);
         AddFlowButton(actionFlow, "Start", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
@@ -576,6 +557,14 @@ internal sealed class MainForm : Form
         AddFlowButton(actionFlow, "Check controllers", async () => await ProbeWindowsNativeAsync());
         AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Test"));
         AddFlowButton(actionFlow, "Logs", () => SelectTabIfExists("Logs"));
+        if (IsCompactUi())
+        {
+            foreach (var button in actionFlow.Controls.OfType<ModernButton>())
+            {
+                button.MinimumSize = new Size(78, 28);
+                button.Margin = new Padding(2, 1, 2, 1);
+            }
+        }
         overviewLayout.Controls.Add(actionFlow, 1, 0);
         layout.Controls.Add(overview, 0, 0);
 
@@ -634,7 +623,7 @@ internal sealed class MainForm : Form
         var nameLabel = CreateDashboardValueLabel("No profile", IsCompactUi() ? 9.5F : 11, FontStyle.Bold);
         var statusLabel = CreateDashboardValueLabel("Waiting", IsCompactUi() ? 8.25F : 9, FontStyle.Bold, Color.FromArgb(92, 106, 126));
         var batteryLabel = CreateDashboardValueLabel("Virtual pad waiting", IsCompactUi() ? 8.25F : 9);
-        var batteryBar = new ProgressBar
+        var batteryBar = new ModernProgressBar
         {
             Dock = DockStyle.Fill,
             Minimum = 0,
@@ -1031,7 +1020,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(statusGroup, 0, 0);
 
         var deviceGroup = CreateGroup("Detected Stadia controllers");
-        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 220), ("Hardware", 88), ("Input", 62), ("Protected", 92), ("Device path", 420));
+        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 220), ("Hardware", 88), ("Input", 62), ("Protected", 92), ("Battery", 72));
         _windowsNativeDeviceList.ShowItemToolTips = true;
         _windowsNativeDeviceList.Resize += (_, _) => ResizeWindowsNativeColumns();
         _windowsNativeDeviceList.SelectedIndexChanged += (_, _) =>
@@ -1383,12 +1372,66 @@ internal sealed class MainForm : Form
         var page = CreatePage("Support", "Diagnostics");
         ConfigureLogBox(_diagnosticsBox, "Run self-test, update check, session report, or support bundle to see output here.");
         page.Controls.Add(_diagnosticsBox);
-        page.Controls.Add(BuildTopPanel("Diagnostics",
+        var topPanel = BuildTopPanel("Diagnostics",
             ("Self-test", async () => await RunSelfTestAsync()),
             ("Probe", async () => await ProbeWindowsNativeAsync()),
             ("Check updates", async () => await CheckUpdatesAsync()),
-            ("Support bundle", async () => await CreateSupportBundleAsync())));
+            ("Support bundle", async () => await CreateSupportBundleAsync()),
+            ("Rollback", async () => await RollbackUpdateAsync()));
+        ConfigureLanguageSelector();
+        AddTopPanelControl(topPanel, _languageCombo);
+        page.Controls.Add(topPanel);
         return page;
+    }
+
+    private void ConfigureLanguageSelector()
+    {
+        _languageCombo.Name = "LanguageSelector";
+        _languageCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _languageCombo.Width = IsCompactUi() ? 94 : 110;
+        _languageCombo.AccessibleName = "Language";
+        _languageCombo.Items.Clear();
+        _languageCombo.Items.AddRange(new object[] { "Italiano", "English" });
+        _languageCombo.SelectedIndex = _localization.IsItalian ? 0 : 1;
+        _languageCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_languageCombo.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            var languageCode = _languageCombo.SelectedIndex == 0 ? "it" : "en";
+            if (_localization.LanguageCode.Equals(languageCode, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _localization.SetLanguage(languageCode);
+            ApplyLocalization();
+            LogUserSelection("Language changed", ("language", languageCode));
+        };
+    }
+
+    private void ApplyLocalization()
+    {
+        _localization.Apply(this);
+        _localization.Apply(_trayIcon.ContextMenuStrip);
+        foreach (var pair in _tabButtons)
+        {
+            pair.Value.AccessibleName = pair.Value.Text;
+            pair.Value.Width = ModernTabWidth(pair.Value.Text);
+        }
+
+        var expectedLanguageIndex = _localization.IsItalian ? 0 : 1;
+        if (_languageCombo.Items.Count > 0 && _languageCombo.SelectedIndex != expectedLanguageIndex)
+        {
+            _languageCombo.SelectedIndex = expectedLanguageIndex;
+        }
+    }
+
+    private DialogResult ShowLocalizedMessage(string text, string caption, MessageBoxButtons buttons, MessageBoxIcon icon)
+    {
+        return MessageBox.Show(this, _localization.Translate(text), _localization.Translate(caption), buttons, icon);
     }
 
     private void ConfigureTimers()
@@ -1665,7 +1708,7 @@ internal sealed class MainForm : Form
             item.SubItems.Add($"{device.VendorId:X4}:{device.ProductId:X4}");
             item.SubItems.Add(device.MaxInputReportLength > 0 ? device.MaxInputReportLength.ToString() : "hidden");
             item.SubItems.Add(hidHideState);
-            item.SubItems.Add(device.FileSystemName);
+            item.SubItems.Add(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "-");
             _windowsNativeDeviceList.Items.Add(item);
         }
     }
@@ -1980,17 +2023,17 @@ internal sealed class MainForm : Form
 
         var available = Math.Max(420, _windowsNativeDeviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
         var padWidth = 42;
-        var vidWidth = 76;
-        var inputWidth = 56;
-        var hideWidth = 82;
-        var nameWidth = Math.Clamp((int)(available * 0.36), 150, 240);
-        var fixedWidth = padWidth + nameWidth + vidWidth + inputWidth + hideWidth;
+        var vidWidth = 70;
+        var inputWidth = 52;
+        var hideWidth = 74;
+        var batteryWidth = 64;
+        var nameWidth = Math.Max(130, available - padWidth - vidWidth - inputWidth - hideWidth - batteryWidth);
         _windowsNativeDeviceList.Columns[0].Width = padWidth;
         _windowsNativeDeviceList.Columns[1].Width = nameWidth;
         _windowsNativeDeviceList.Columns[2].Width = vidWidth;
         _windowsNativeDeviceList.Columns[3].Width = inputWidth;
         _windowsNativeDeviceList.Columns[4].Width = hideWidth;
-        _windowsNativeDeviceList.Columns[5].Width = Math.Max(120, available - fixedWidth);
+        _windowsNativeDeviceList.Columns[5].Width = batteryWidth;
     }
 
     private void ResizeDoctorColumns()
@@ -2135,6 +2178,29 @@ internal sealed class MainForm : Form
     {
         var usedKnownDevices = knownDevices is not null;
         var usedCache = false;
+        var nativeReceiverActive = WindowsNativeRuntime.TryGetActiveReceiver(
+            _paths,
+            out var nativeReceiverPid,
+            out var nativeControllerCount);
+
+        if (knownDevices is null && (nativeReceiverActive || _lastWindowsNativeDevices.Count > 0))
+        {
+            var scanner = new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
+            _lastWindowsNativeDevices = await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true);
+            PopulateWindowsNativeDevices(_lastWindowsNativeDevices);
+            ResizeWindowsNativeColumns();
+            knownDevices = _lastWindowsNativeDevices.Select(device => new LinuxBluetoothDevice(
+                device.DeviceInstancePath,
+                string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName,
+                "yes",
+                "yes",
+                "yes",
+                device.BatteryPercent,
+                true,
+                string.IsNullOrWhiteSpace(device.BatterySource) ? "Windows PnP" : device.BatterySource)).ToArray();
+            usedKnownDevices = true;
+        }
+
         if (knownDevices is null && IsLinuxBluetoothCacheFresh())
         {
             knownDevices = _lastLinuxBluetoothDevices;
@@ -2163,9 +2229,9 @@ internal sealed class MainForm : Form
             ("devices", string.Join(";", stadia.Take(4).Select(DeviceDebugText))));
         if (stadia.Length == 0)
         {
-            if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var receiverPid, out var activeControllers))
+            if (nativeReceiverActive)
             {
-                _batteryLabel.Text = $"Battery: unavailable in Windows Native for {activeControllers} controller(s). Overlay not available.";
+                _batteryLabel.Text = $"Battery: Windows has not exposed a level for {nativeControllerCount} controller(s) yet.";
                 HideBatteryOverlay();
                 if (DateTime.UtcNow >= _nextWindowsNativeBatteryUnavailableLogUtc)
                 {
@@ -2174,11 +2240,11 @@ internal sealed class MainForm : Form
                         _batteryOverlayCheck.Checked
                             ? "WINDOWS_NATIVE_BATTERY_OVERLAY_UNAVAILABLE"
                             : "WINDOWS_NATIVE_BATTERY_UNAVAILABLE",
-                        ("receiverPid", receiverPid.ToString()),
-                        ("controllers", activeControllers.ToString()),
+                        ("receiverPid", nativeReceiverPid.ToString()),
+                        ("controllers", nativeControllerCount.ToString()),
                         ("battery", "unavailable"),
                         ("overlay", "unavailable"),
-                        ("reason", "Windows Native receiver does not expose battery telemetry"));
+                        ("reason", "Windows PnP battery property is not available for the connected controller"));
                 }
                 RefreshDashboardUi();
                 return;
@@ -2197,10 +2263,11 @@ internal sealed class MainForm : Form
             var state = BatteryDeviceStateText(d);
             return string.IsNullOrWhiteSpace(state) ? $"P{i + 1} {battery}" : $"P{i + 1} {battery} ({state})";
         }));
-        var low = stadia.Where(d => d.BatteryPercent is <= 30).ToArray();
-        if (_batteryOverlayCheck.Checked)
+        var batteryKnown = stadia.Where(d => d.BatteryPercent.HasValue).ToArray();
+        var low = batteryKnown.Where(d => d.BatteryPercent is <= 30).ToArray();
+        if (_batteryOverlayCheck.Checked && batteryKnown.Length > 0)
         {
-            ShowBatteryOverlay(stadia, warning: low.Length > 0);
+            ShowBatteryOverlay(batteryKnown, warning: low.Length > 0);
         }
         else if (low.Length > 0)
         {
@@ -2371,18 +2438,28 @@ internal sealed class MainForm : Form
             _dashboardPadNameLabels[slot - 1].Text = ShortPadName(WindowsNativeDisplayName(device) ?? "Pad P" + slot);
             _dashboardPadStatusLabels[slot - 1].Text = state;
             _dashboardPadStatusLabels[slot - 1].ForeColor = DashboardStateColor(state);
-            _dashboardPadBatteryLabels[slot - 1].Text = state switch
+            _dashboardPadBatteryLabels[slot - 1].Text = device?.BatteryPercent is int batteryPercent
+                ? $"Battery {batteryPercent}%"
+                : state switch
+                {
+                    "Active" => "Virtual pad active",
+                    "Ready" => "Input protected",
+                    "Detected" => "Ready to start",
+                    _ => "Virtual pad waiting"
+                };
+            _dashboardPadBatteryBars[slot - 1].Value = device?.BatteryPercent is int percent
+                ? percent
+                : hasInput
+                    ? Math.Clamp((int)Math.Round((controller?.PacketsPerSecond ?? 0) * 8), 8, 100)
+                    : state == "Ready"
+                        ? 20
+                        : 0;
+            _dashboardPadBatteryBars[slot - 1].ForeColor = device?.BatteryPercent switch
             {
-                "Active" => "Virtual pad active",
-                "Ready" => "Input protected",
-                "Detected" => "Ready to start",
-                _ => "Virtual pad waiting"
+                < 10 => Color.FromArgb(211, 52, 52),
+                < 25 => Color.FromArgb(221, 140, 36),
+                _ => UiTheme.Accent
             };
-            _dashboardPadBatteryBars[slot - 1].Value = hasInput
-                ? Math.Clamp((int)Math.Round((controller?.PacketsPerSecond ?? 0) * 8), 8, 100)
-                : state == "Ready"
-                    ? 20
-                    : 0;
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
             _dashboardPadMacLabels[slot - 1].Text = "Automatic mapping";
         }
@@ -3025,20 +3102,88 @@ internal sealed class MainForm : Form
 
     private async Task CheckUpdatesAsync()
     {
+        await CheckForUpdatesAsync(interactive: true);
+    }
+
+    private async Task CheckForUpdatesAsync(bool interactive)
+    {
         LogUserAction("Check updates requested");
         try
         {
             var release = await _releaseChecker.GetLatestAsync();
             _diagnosticsBox.Text = $"Installed: {_paths.Version}{Environment.NewLine}Latest:    {release.Tag}{Environment.NewLine}URL:       {release.Url}";
-            _statusLabel.Text = release.Tag.Equals(_paths.Version, StringComparison.OrdinalIgnoreCase) ? "Up to date" : $"Update available: {release.Tag}";
+            if (!_updateService.IsUpdateAvailable(_paths.Version, release.Tag))
+            {
+                _statusLabel.Text = "Up to date";
+                if (interactive) _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+                return;
+            }
+
+            _statusLabel.Text = $"Update available: {release.Tag}";
             _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+            if (!_updateService.CanInstallAutomatically)
+            {
+                if (interactive && !string.IsNullOrWhiteSpace(release.Url)) Process.Start(new ProcessStartInfo(release.Url) { UseShellExecute = true });
+                return;
+            }
+
+            BeginOperationProgress("Updating Stadia X", "Downloading verified setup", 5);
+            var progress = new Progress<int>(percent => SetOperationProgress("Updating Stadia X", $"Downloading setup - {percent}%", Math.Clamp(percent, 5, 95)));
+            var prepared = await _updateService.PrepareAsync(release, _paths.Version, progress);
+            if (prepared is null)
+            {
+                CompleteOperationProgress("Updating Stadia X", "Already up to date");
+                return;
+            }
+
+            CompleteOperationProgress("Updating Stadia X", "Setup downloaded and SHA-256 verified");
+            var updatePrompt = _localization.IsItalian
+                ? $"La versione {release.Tag} è pronta. Stadia X si chiuderà, si aggiornerà e verrà riaperto. Se il nuovo avvio non riesce, la versione precedente verrà ripristinata automaticamente."
+                : $"Version {release.Tag} is ready. Stadia X will close, update itself, and reopen. If startup fails, the previous version will be restored automatically.";
+            var install = ShowLocalizedMessage(
+                updatePrompt,
+                "Stadia X update",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information);
+            if (install == DialogResult.Yes)
+            {
+                LogUserAction("Verified update install accepted", ("version", release.Tag));
+                _updateService.LaunchInstall(prepared, _paths.Version);
+                Close();
+            }
         }
         catch (Exception ex)
         {
             _diagnosticsBox.Text = ex.ToString();
             _statusLabel.Text = "Update check failed";
-            throw;
+            AppDiagnosticsLogger.Record("UPDATE_CHECK_FAILED", ("error", ex.ToString()));
+            if (interactive) throw;
         }
+    }
+
+    private Task RollbackUpdateAsync()
+    {
+        if (!_updateService.HasRollback)
+        {
+            ShowLocalizedMessage("No previous version is available.", "Stadia X update", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return Task.CompletedTask;
+        }
+
+        var rollbackPrompt = _localization.IsItalian
+            ? "Ripristinare la versione precedente di Stadia X? L'app si chiuderà e verrà riaperta automaticamente."
+            : "Restore the previous Stadia X version? The app will close and reopen automatically.";
+        var rollback = ShowLocalizedMessage(
+            rollbackPrompt,
+            "Stadia X update",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+        if (rollback == DialogResult.Yes)
+        {
+            LogUserAction("Update rollback accepted");
+            _updateService.LaunchRollback();
+            Close();
+        }
+        return Task.CompletedTask;
     }
 
     private async Task RunSelfTestAsync()
@@ -3185,7 +3330,7 @@ internal sealed class MainForm : Form
             {
                 var reason = RecordUiFailure("Post-start Linux Bluetooth refresh", ex);
                 FailOperationProgress("Starting bridge", $"Bluetooth refresh failed - {reason}");
-                MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowLocalizedMessage(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
         }
@@ -3334,7 +3479,7 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             RecordUiFailure("Save Bluetooth BUSID", ex);
-            MessageBox.Show(ex.Message, "Bluetooth BUSID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowLocalizedMessage(ex.Message, "Bluetooth BUSID", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -3364,7 +3509,7 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             RecordUiFailure("Save WSL distro", ex);
-            MessageBox.Show(ex.Message, "WSL distro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowLocalizedMessage(ex.Message, "WSL distro", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -3397,7 +3542,7 @@ internal sealed class MainForm : Form
         var devices = SelectedLinuxBluetoothDevices();
         if (devices.Count == 0)
         {
-            MessageBox.Show("Select one or more Linux Bluetooth devices first.", "Linux Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Select one or more Linux Bluetooth devices first.", "Linux Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3576,7 +3721,7 @@ internal sealed class MainForm : Form
         LogUserAction(enabled ? "Enable Windows Bluetooth requested" : "Disable Windows Bluetooth requested");
         if (_windowsBluetoothList.SelectedItems.Count == 0 || _windowsBluetoothList.SelectedItems[0].Tag is not WindowsBluetoothDevice device)
         {
-            MessageBox.Show("Select a Windows Bluetooth device first.", "Windows Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Select a Windows Bluetooth device first.", "Windows Bluetooth", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3622,7 +3767,7 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             RecordUiFailure("Save controller profile", ex);
-            MessageBox.Show(ex.Message, "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowLocalizedMessage(ex.Message, "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -3652,13 +3797,13 @@ internal sealed class MainForm : Form
         var device = SelectedLinuxBluetoothDevices().FirstOrDefault();
         if (device is null)
         {
-            MessageBox.Show("Select a Linux Bluetooth device first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Select a Linux Bluetooth device first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
         if (!NativeControlServices.IsBluetoothMac(device.Mac))
         {
-            MessageBox.Show("This receiver row does not expose a Bluetooth MAC yet. Use Refresh or Scan until the BlueZ row appears, then save the profile.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("This receiver row does not expose a Bluetooth MAC yet. Use Refresh or Scan until the BlueZ row appears, then save the profile.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3695,7 +3840,7 @@ internal sealed class MainForm : Form
         LogUserAction("Apply macro chord requested", ("chord", code), ("shortcut", shortcut));
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(shortcut))
         {
-            MessageBox.Show("Choose a chord and type a shortcut first.", "Macro editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Choose a chord and type a shortcut first.", "Macro editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -3767,7 +3912,7 @@ internal sealed class MainForm : Form
         {
             LogUserAction("Launch self command failed", ("argument", argument), ("reason", "StadiaX.exe not found"));
             AppDiagnosticsLogger.Record("SELF_COMMAND_START_FAILED", ("argument", argument), ("reason", "executable_missing"), ("root", _paths.Root));
-            MessageBox.Show("StadiaX.exe was not found. Build or install the native launcher first.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowLocalizedMessage("StadiaX.exe was not found. Build or install the native launcher first.", "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
@@ -3813,7 +3958,7 @@ internal sealed class MainForm : Form
                 ("executable", executable),
                 ("cwd", _paths.Root),
                 ("error", ex.Message));
-            MessageBox.Show(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ShowLocalizedMessage(ex.Message, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
@@ -4341,7 +4486,7 @@ internal sealed class MainForm : Form
             var reason = RecordUiFailure(actionName, ex, includeUserAction: showDialog);
             if (showDialog)
             {
-                MessageBox.Show(reason, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowLocalizedMessage(reason, "Stadia X", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
     }
@@ -4389,7 +4534,7 @@ internal sealed class MainForm : Form
                 ("exceptionType", ex.GetType().FullName),
                 ("error", ex.ToString()));
             FailOperationProgress(actionName, $"Failed - {reason}");
-            MessageBox.Show(
+            ShowLocalizedMessage(
                 $"{reason}{Environment.NewLine}{Environment.NewLine}Operation ID: {operationId}{Environment.NewLine}Full details were recorded in Logs.",
                 "Stadia X",
                 MessageBoxButtons.OK,
@@ -4542,7 +4687,7 @@ internal sealed class ModernTabButton : Control
                  ControlStyles.ResizeRedraw |
                  ControlStyles.SupportsTransparentBackColor, true);
         Cursor = Cursors.Hand;
-        TabStop = false;
+        TabStop = true;
         BackColor = Color.Transparent;
     }
 
@@ -4575,40 +4720,53 @@ internal sealed class ModernTabButton : Control
         base.OnMouseLeave(e);
     }
 
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Left or Keys.Right && Parent is { } parent)
+        {
+            var tabs = parent.Controls.OfType<ModernTabButton>().ToArray();
+            var current = Array.IndexOf(tabs, this);
+            if (current >= 0 && tabs.Length > 1)
+            {
+                var next = e.KeyCode == Keys.Right
+                    ? (current + 1) % tabs.Length
+                    : (current - 1 + tabs.Length) % tabs.Length;
+                tabs[next].Focus();
+                tabs[next].OnClick(EventArgs.Empty);
+                e.Handled = true;
+            }
+        }
+
+        if (e.KeyCode is Keys.Enter or Keys.Space)
+        {
+            OnClick(EventArgs.Empty);
+            e.Handled = true;
+        }
+
+        base.OnKeyDown(e);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = ClientRectangle;
-        bounds.Inflate(-1, -2);
+        bounds.Inflate(-1, 0);
         if (bounds.Width <= 0 || bounds.Height <= 0)
         {
             return;
         }
 
-        var fillColor = _isSelected
-            ? UiTheme.Surface
-            : _hover
-                ? UiTheme.AccentSoft
-                : UiTheme.Canvas;
-        var borderColor = _isSelected
-            ? UiTheme.BorderStrong
-            : _hover
-                ? Color.FromArgb(174, 214, 214)
-                : UiTheme.Canvas;
-        using (var path = UiTheme.RoundedPath(bounds, 6))
+        var fillColor = _hover ? UiTheme.AccentSoft : UiTheme.Canvas;
         using (var fill = new SolidBrush(fillColor))
-        using (var border = new Pen(borderColor, 1F))
         {
-            e.Graphics.FillPath(fill, path);
-            e.Graphics.DrawPath(border, path);
+            e.Graphics.FillRectangle(fill, bounds);
         }
 
         if (_isSelected)
         {
-            var accent = new Rectangle(bounds.Left + 9, bounds.Bottom - 3, Math.Max(10, bounds.Width - 18), 3);
-            using var accentPath = UiTheme.RoundedPath(accent, 2);
+            var accent = new Rectangle(bounds.Left + 7, bounds.Bottom - 2, Math.Max(10, bounds.Width - 14), 2);
             using var accentBrush = new SolidBrush(UiTheme.Accent);
-            e.Graphics.FillPath(accentBrush, accentPath);
+            e.Graphics.FillRectangle(accentBrush, accent);
         }
 
         using var selectedFont = _isSelected ? new Font(Font, FontStyle.Bold) : null;
@@ -4621,6 +4779,7 @@ internal sealed class ModernTabButton : Control
             textBounds,
             textColor,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
+
     }
 
 }

@@ -15,7 +15,9 @@ internal sealed record WindowsNativeHidDevice(
     int MaxInputReportLength,
     int MaxOutputReportLength,
     string DeviceInstancePath,
-    string HidHideSymbolicLink);
+    string HidHideSymbolicLink,
+    int? BatteryPercent = null,
+    string BatterySource = "");
 
 internal sealed record WindowsNativeHidScanResult(
     IReadOnlyList<WindowsNativeHidDevice> Devices,
@@ -279,6 +281,7 @@ internal sealed class WindowsNativeHidScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
+            .Select(WithWindowsBattery)
             .ToArray();
         var inventoryDevices = rawCandidates
             .Concat(BuildHidHideInventory(hiddenDevices))
@@ -287,6 +290,7 @@ internal sealed class WindowsNativeHidScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
+            .Select(WithWindowsBattery)
             .ToArray();
         return new WindowsNativeHidScanResult(
             devices,
@@ -306,6 +310,7 @@ internal sealed class WindowsNativeHidScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
+            .Select(WithWindowsBattery)
             .ToArray();
     }
 
@@ -343,6 +348,8 @@ internal sealed class WindowsNativeHidScanner
             lines.Add($"VID/PID: {device.VendorId:X4}:{device.ProductId:X4}");
             lines.Add($"HID path: {device.FileSystemName}");
             lines.Add($"HidHide instance: {EmptyAsNone(device.DeviceInstancePath)}");
+            lines.Add($"Windows battery: {(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "not exposed")}");
+            lines.Add($"Battery source: {EmptyAsNone(device.BatterySource)}");
             lines.Add($"Input report length: {device.MaxInputReportLength}");
             lines.Add($"Output report length: {device.MaxOutputReportLength}");
             if (scan.Devices.Any(candidate => SameDevice(candidate, device)))
@@ -454,6 +461,14 @@ internal sealed class WindowsNativeHidScanner
             .ThenByDescending(device => device.MaxOutputReportLength)
             .ThenBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .First();
+    }
+
+    private static WindowsNativeHidDevice WithWindowsBattery(WindowsNativeHidDevice device)
+    {
+        var reading = WindowsNativeBatteryReader.Read(device.DeviceInstancePath);
+        return reading is null
+            ? device
+            : device with { BatteryPercent = reading.Percent, BatterySource = reading.Source };
     }
 
     private static IEnumerable<string> CaptureReports(string fileSystemName, TimeSpan captureTime)

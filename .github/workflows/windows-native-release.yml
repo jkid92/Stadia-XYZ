@@ -42,6 +42,10 @@ jobs:
         shell: pwsh
         run: ./build/Download-ViGEmClient.ps1 -OutputDirectory .
 
+      - name: Download and verify Windows Native dependencies
+        shell: pwsh
+        run: ./build/Download-WindowsNativeDependencies.ps1
+
       - name: Resolve package version
         id: package_version
         shell: pwsh

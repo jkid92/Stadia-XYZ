@@ -14,6 +14,7 @@ support-bundles/
 /.deps/
 /artifacts/
 /dist/
+/dependencies/
 **/bin/
 **/obj/
 /stadia_bridge

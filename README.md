@@ -16,12 +16,15 @@ Stadia X Windows Native reads the physical Stadia controller directly, maps its 
 ## What It Does
 
 - Starts the complete controller route with one **Start** button.
-- Checks and installs HidHide and ViGEmBus automatically through `winget` when needed.
+- Includes pinned HidHide and ViGEmBus installers, verifies their SHA-256 hashes and Nefarius signatures, and installs them automatically when needed.
 - Hides physical Stadia input from games while the virtual controller is active.
 - Restores physical input when **Stop and restore** is pressed or startup fails.
 - Supports up to four controllers with separate P1-P4 virtual slots.
 - Shows live connection phases, progress, detected devices, input rate, logs, and user actions.
+- Reads the controller battery level from Windows when the Bluetooth driver exposes it, including P1-P4 dashboard and compact overlay warnings.
 - Includes a visual controller test, button highlights, stick and trigger telemetry, and rumble tests.
+- Offers Italian and English UI, verified layouts from 100% through 200% DPI, and multi-monitor window recovery.
+- Downloads verified updates in-app and keeps a rollback copy in case the new version does not remain healthy.
 - Keeps technical configuration out of the normal user flow.
 
 | Dashboard | Controller connection |
@@ -67,10 +70,9 @@ The physical device remains visible to Stadia X but is hidden from games. The vi
 - Windows 10 or Windows 11, 64-bit.
 - A Bluetooth adapter supported by Windows.
 - A Stadia controller already switched to Bluetooth mode.
-- Windows Package Manager (`winget`) for fully automatic driver installation.
 - Administrator permission when Windows needs to install or configure drivers.
 
-The application package includes its .NET runtime and native client libraries. HidHide and ViGEmBus are checked at startup and installed automatically when possible.
+The application package includes its .NET runtime, native client libraries, and the official HidHide and ViGEmBus installers. Their pinned hashes and Authenticode publisher are checked before automatic installation. `winget` is only a development fallback and is not required by the end user.
 
 ## Recovery And Logs
 

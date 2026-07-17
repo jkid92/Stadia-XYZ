@@ -35,6 +35,11 @@ if (Test-Path $shaPath) {
 
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 
+& (Join-Path $PSScriptRoot "Download-WindowsNativeDependencies.ps1") -OutputDirectory (Join-Path $repoRoot "dependencies")
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows Native dependency download failed with exit code $LASTEXITCODE"
+}
+
 $requiredFiles = @(
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
@@ -42,7 +47,10 @@ $requiredFiles = @(
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",
     "assets\StadiaControllerPhoto.png",
-    "assets\ATTRIBUTION.md"
+    "assets\ATTRIBUTION.md",
+    "dependencies\HidHide_1.5.230_x64.exe",
+    "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",
+    "dependencies\THIRD-PARTY-NOTICES.txt"
 )
 
 $binaryFiles = @(
