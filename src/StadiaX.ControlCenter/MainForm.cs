@@ -1150,7 +1150,7 @@ internal sealed class MainForm : Form
             LogUserSelection("Controller test pad selected", ("pad", _controllerPadCombo.SelectedItem?.ToString()));
             RefreshControllerTelemetry();
         };
-        padPanel.Controls.Add(new Label { Text = "Pad", Width = 50, Height = 26, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft });
+        padPanel.Controls.Add(new Label { Text = "Pad", Width = 50, Height = 32, Margin = new Padding(3, 0, 3, 0), AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft });
         padPanel.Controls.Add(_controllerPadCombo);
         telemetryLayout.Controls.Add(padPanel, 0, 0);
 
