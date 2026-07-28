@@ -21,6 +21,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - **Start**: prepares dependencies and starts the complete virtual controller route.
 - **Stop and restore**: stops the receiver and restores physical controller input.
 - **Check**: refreshes the detected Stadia controller inventory without starting.
+- **Mapping**: assigns each physical Stadia button to an Xbox 360 button. Use **Detect input** to select the next physical button you press, choose its Xbox output, then press **Apply**. Changes are applied while the receiver is running.
 - **Test input**: shows live buttons, sticks, triggers, packet rate, and rumble tests.
 - **Logs**: displays connection phases, user actions, and application diagnostics.
 - **Support**: creates a troubleshooting bundle.

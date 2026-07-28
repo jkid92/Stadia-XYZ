@@ -18,6 +18,7 @@ internal sealed class AppPaths
         SelectedControllerMacs = Path.Combine(root, "selected_controller_macs.txt");
         SelectedWslDistro = Path.Combine(root, "selected_wsl_distro.txt");
         ControllerProfiles = Path.Combine(root, "controller_profiles.json");
+        ControllerMapping = Path.Combine(root, "controller_mapping.json");
         SupportBundleDirectory = Path.Combine(root, "support-bundles");
         MacroConfig = Path.Combine(root, "stadia_buttons.ini");
         VersionFile = Path.Combine(root, "VERSION.txt");
@@ -43,6 +44,7 @@ internal sealed class AppPaths
     public string SelectedControllerMacs { get; }
     public string SelectedWslDistro { get; }
     public string ControllerProfiles { get; }
+    public string ControllerMapping { get; }
     public string SupportBundleDirectory { get; }
     public string MacroConfig { get; }
     public string VersionFile { get; }

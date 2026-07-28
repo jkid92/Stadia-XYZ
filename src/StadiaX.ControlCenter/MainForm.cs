@@ -38,9 +38,14 @@ internal sealed class MainForm : Form
     private readonly ListView _profilesList = new();
     private readonly ListView _macroList = new();
     private readonly ListView _controllerList = new();
+    private readonly ListView _buttonMappingList = new();
     private readonly ControllerVisualizer _controllerVisualizer = new();
     private readonly ComboBox _controllerPadCombo = new();
     private readonly Label _controllerVisualStatusLabel = new();
+    private readonly ComboBox _mappingInputCombo = new();
+    private readonly ComboBox _mappingOutputCombo = new();
+    private readonly Label _mappingStatusLabel = new();
+    private readonly ModernButton _mappingDetectButton = new();
     private readonly ComboBox _macroChordCombo = new();
     private readonly TextBox _macroShortcutText = new();
     private readonly TextBox _profileNameText = new();
@@ -87,6 +92,7 @@ internal sealed class MainForm : Form
     private readonly Dictionary<TabPage, ModernTabButton> _tabButtons = new();
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
+    private readonly System.Windows.Forms.Timer _mappingCaptureTimer = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly ImageList _linuxBluetoothRowSizer = new() { ImageSize = new Size(1, 26), ColorDepth = ColorDepth.Depth32Bit };
     private readonly Icon _baseIcon;
@@ -104,6 +110,9 @@ internal sealed class MainForm : Form
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
     private DateTime _lastTelemetryFailureLogUtc = DateTime.MinValue;
+    private ControllerButtonMapping _buttonMapping = ControllerButtonMapping.CreateDefault();
+    private HashSet<string> _mappingCaptureBaseline = new(StringComparer.OrdinalIgnoreCase);
+    private bool _mappingCaptureArmed;
 
     public MainForm(AppPaths paths) : this(paths, auditMode: false)
     {
@@ -119,6 +128,9 @@ internal sealed class MainForm : Form
         _actionLogger = new UserActionLogger(paths);
         _updateService = new UpdateService(paths, windowsNative: true);
         AppDiagnosticsLogger.Initialize(paths);
+        _buttonMapping = ControllerButtonMappingStore.Load(
+            paths.ControllerMapping,
+            warning => AppDiagnosticsLogger.Record("BUTTON_MAPPING_LOAD_WARN", ("error", warning)));
 
         Text = "Stadia X";
         _baseIcon = LoadApplicationIcon(paths);
@@ -179,6 +191,7 @@ internal sealed class MainForm : Form
             LogUserAction("App closing");
             _logTimer.Stop();
             _batteryTimer.Stop();
+            _mappingCaptureTimer.Stop();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
             _batteryIndicatorIcon?.Dispose();
@@ -431,6 +444,7 @@ internal sealed class MainForm : Form
 
         _tabs.TabPages.Add(BuildDashboardPage());
         _tabs.TabPages.Add(BuildWindowsNativePage());
+        _tabs.TabPages.Add(BuildButtonMappingPage());
         _tabs.TabPages.Add(BuildControllerTestPage());
         _tabs.TabPages.Add(BuildLogsPage());
         _tabs.TabPages.Add(BuildDiagnosticsPage());
@@ -1385,6 +1399,349 @@ internal sealed class MainForm : Form
         return page;
     }
 
+    private TabPage BuildButtonMappingPage()
+    {
+        var page = CreatePage("Mapping", "Button Mapping");
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = new Padding(14)
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 188 : 210));
+        page.Controls.Add(layout);
+
+        var listGroup = CreateGroup("Button mapping");
+        ConfigureList(_buttonMappingList, ("Stadia input", 280), ("Xbox output", 280));
+        _buttonMappingList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_buttonMappingList.SelectedItems.Count == 0 ||
+                _buttonMappingList.SelectedItems[0].Tag is not ControllerInputDescriptor input)
+            {
+                return;
+            }
+
+            SelectMappingInput(input.Id, selectList: false);
+            LogUserSelection(
+                "Button mapping selected",
+                ("input", input.Id.ToString()),
+                ("output", _buttonMapping[input.Id].ToString()));
+        };
+        listGroup.Controls.Add(_buttonMappingList);
+        layout.Controls.Add(listGroup, 0, 0);
+
+        var editorGroup = CreateGroup("Mapping editor");
+        var editor = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 4,
+            Padding = IsCompactUi() ? new Padding(10, 8, 10, 8) : new Padding(14, 10, 14, 10)
+        };
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 108 : 126));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 31 : 35));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 31 : 35));
+        editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 42 : 48));
+        editorGroup.Controls.Add(editor);
+
+        _mappingInputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _mappingInputCombo.Items.AddRange(ControllerButtonCatalog.Inputs.Cast<object>().ToArray());
+        _mappingInputCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_mappingInputCombo.SelectedItem is ControllerInputDescriptor input)
+            {
+                SelectMappingInput(input.Id, selectList: true);
+            }
+        };
+        AddEditorRow(editor, 0, "Stadia input", _mappingInputCombo);
+
+        _mappingOutputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _mappingOutputCombo.Items.AddRange(ControllerButtonCatalog.Outputs.Cast<object>().ToArray());
+        AddEditorRow(editor, 1, "Xbox output", _mappingOutputCombo);
+
+        _mappingStatusLabel.Text = "Ready";
+        _mappingStatusLabel.Dock = DockStyle.Fill;
+        _mappingStatusLabel.AutoEllipsis = true;
+        _mappingStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _mappingStatusLabel.ForeColor = Color.FromArgb(76, 91, 112);
+        editor.Controls.Add(_mappingStatusLabel, 0, 2);
+        editor.SetColumnSpan(_mappingStatusLabel, 2);
+
+        var actions = CreateFullWidthToolbarFlow();
+        actions.Dock = DockStyle.Fill;
+        actions.Padding = new Padding(0);
+        _mappingDetectButton.Text = "Detect input";
+        _mappingDetectButton.AutoSize = true;
+        _mappingDetectButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _mappingDetectButton.MinimumSize = new Size(IsCompactUi() ? 100 : 120, IsCompactUi() ? 30 : 36);
+        _mappingDetectButton.Padding = new Padding(8, 0, 8, 0);
+        _mappingDetectButton.Margin = new Padding(4, 2, 4, 2);
+        _mappingDetectButton.Click += (_, _) =>
+        {
+            LogUserAction("Button clicked: Detect input");
+            ToggleButtonMappingCapture();
+        };
+        actions.Controls.Add(_mappingDetectButton);
+        AddFlowButton(actions, "Apply", SaveSelectedButtonMapping, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actions, "Reset defaults", ResetButtonMapping);
+        editor.Controls.Add(actions, 0, 3);
+        editor.SetColumnSpan(actions, 2);
+        layout.Controls.Add(editorGroup, 0, 1);
+
+        RefreshButtonMappingList();
+        if (ControllerButtonCatalog.Inputs.Count > 0)
+        {
+            SelectMappingInput(ControllerButtonCatalog.Inputs[0].Id, selectList: true);
+        }
+        return page;
+    }
+
+    private void RefreshButtonMappingList()
+    {
+        var selectedInput = _buttonMappingList.SelectedItems.Count > 0 &&
+                            _buttonMappingList.SelectedItems[0].Tag is ControllerInputDescriptor selected
+            ? selected.Id
+            : (ControllerInputButton?)null;
+
+        _buttonMappingList.BeginUpdate();
+        try
+        {
+            _buttonMappingList.Items.Clear();
+            foreach (var input in ControllerButtonCatalog.Inputs)
+            {
+                var output = ControllerButtonCatalog.Output(_buttonMapping[input.Id]);
+                var item = new ListViewItem(_localization.Translate(input.DisplayName))
+                {
+                    Tag = input,
+                    ForeColor = output.Id == XboxOutputButton.None
+                        ? Color.FromArgb(112, 120, 132)
+                        : Color.FromArgb(38, 80, 62)
+                };
+                item.SubItems.Add(_localization.Translate(output.DisplayName));
+                _buttonMappingList.Items.Add(item);
+                if (selectedInput == input.Id)
+                {
+                    item.Selected = true;
+                }
+            }
+        }
+        finally
+        {
+            _buttonMappingList.EndUpdate();
+        }
+    }
+
+    private void SelectMappingInput(ControllerInputButton inputId, bool selectList)
+    {
+        var inputIndex = -1;
+        for (var index = 0; index < ControllerButtonCatalog.Inputs.Count; index++)
+        {
+            if (ControllerButtonCatalog.Inputs[index].Id == inputId)
+            {
+                inputIndex = index;
+                break;
+            }
+        }
+        if (inputIndex >= 0 && _mappingInputCombo.SelectedIndex != inputIndex)
+        {
+            _mappingInputCombo.SelectedIndex = inputIndex;
+        }
+
+        var outputId = _buttonMapping[inputId];
+        var outputIndex = -1;
+        for (var index = 0; index < ControllerButtonCatalog.Outputs.Count; index++)
+        {
+            if (ControllerButtonCatalog.Outputs[index].Id == outputId)
+            {
+                outputIndex = index;
+                break;
+            }
+        }
+        if (outputIndex >= 0)
+        {
+            _mappingOutputCombo.SelectedIndex = outputIndex;
+        }
+
+        if (!selectList)
+        {
+            return;
+        }
+
+        var matchingItem = _buttonMappingList.Items.Cast<ListViewItem>()
+            .FirstOrDefault(item => item.Tag is ControllerInputDescriptor input && input.Id == inputId);
+        if (matchingItem is not null && !matchingItem.Selected)
+        {
+            _buttonMappingList.SelectedItems.Clear();
+            matchingItem.Selected = true;
+            matchingItem.EnsureVisible();
+        }
+    }
+
+    private void SaveSelectedButtonMapping()
+    {
+        if (_mappingInputCombo.SelectedItem is not ControllerInputDescriptor input ||
+            _mappingOutputCombo.SelectedItem is not XboxOutputDescriptor output)
+        {
+            return;
+        }
+
+        try
+        {
+            var updated = _buttonMapping.With(input.Id, output.Id);
+            ControllerButtonMappingStore.Save(_paths.ControllerMapping, updated);
+            _buttonMapping = updated;
+            RefreshButtonMappingList();
+            SelectMappingInput(input.Id, selectList: true);
+            _mappingStatusLabel.Text = _localization.IsItalian
+                ? $"Salvato: {_localization.Translate(input.DisplayName)} -> {_localization.Translate(output.DisplayName)}"
+                : $"Saved: {input.DisplayName} -> {output.DisplayName}";
+            LogUserAction(
+                "Button mapping saved",
+                ("input", input.Id.ToString()),
+                ("output", output.Id.ToString()));
+            AppDiagnosticsLogger.Record(
+                "BUTTON_MAPPING_SAVED",
+                ("input", input.Id.ToString()),
+                ("output", output.Id.ToString()),
+                ("path", _paths.ControllerMapping));
+        }
+        catch (Exception ex)
+        {
+            var reason = RecordUiFailure("Save button mapping", ex);
+            _mappingStatusLabel.Text = $"Save failed: {reason}";
+            ShowLocalizedMessage(
+                $"The button mapping could not be saved.{Environment.NewLine}{reason}",
+                "Stadia X",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private void ResetButtonMapping()
+    {
+        var confirm = ShowLocalizedMessage(
+            "Reset all button mappings to the Stadia/Xbox defaults?",
+            "Stadia X",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            var defaults = ControllerButtonMapping.CreateDefault();
+            ControllerButtonMappingStore.Save(_paths.ControllerMapping, defaults);
+            _buttonMapping = defaults;
+            RefreshButtonMappingList();
+            SelectMappingInput(ControllerButtonCatalog.Inputs[0].Id, selectList: true);
+            _mappingStatusLabel.Text = _localization.Translate("Default mapping restored");
+            LogUserAction("Button mapping reset to defaults");
+            AppDiagnosticsLogger.Record("BUTTON_MAPPING_DEFAULTS_RESTORED", ("path", _paths.ControllerMapping));
+        }
+        catch (Exception ex)
+        {
+            var reason = RecordUiFailure("Reset button mapping", ex);
+            _mappingStatusLabel.Text = $"Reset failed: {reason}";
+        }
+    }
+
+    private void ToggleButtonMappingCapture()
+    {
+        if (_mappingCaptureArmed)
+        {
+            StopButtonMappingCapture("Input detection cancelled");
+            return;
+        }
+
+        try
+        {
+            _mappingCaptureBaseline = PressedTelemetryKeys(_native.ReadControllerTelemetry());
+        }
+        catch
+        {
+            _mappingCaptureBaseline.Clear();
+        }
+
+        _mappingCaptureArmed = true;
+        _mappingDetectButton.Text = _localization.Translate("Cancel detection");
+        _mappingStatusLabel.Text = _localization.Translate("Press one Stadia button");
+        _mappingCaptureTimer.Start();
+        AppDiagnosticsLogger.Record("BUTTON_MAPPING_CAPTURE_ARMED");
+    }
+
+    private void RefreshButtonMappingCapture()
+    {
+        if (!_mappingCaptureArmed)
+        {
+            return;
+        }
+
+        try
+        {
+            UpdateButtonMappingCapture(_native.ReadControllerTelemetry());
+        }
+        catch (Exception ex)
+        {
+            _mappingStatusLabel.Text = $"Waiting for controller: {ex.Message}";
+        }
+    }
+
+    private void UpdateButtonMappingCapture(ControllerTelemetrySnapshot snapshot)
+    {
+        if (!_mappingCaptureArmed)
+        {
+            return;
+        }
+
+        var pressed = PressedTelemetryKeys(snapshot);
+        var detectedKey = pressed.FirstOrDefault(key => !_mappingCaptureBaseline.Contains(key));
+        _mappingCaptureBaseline.IntersectWith(pressed);
+        if (detectedKey is null)
+        {
+            return;
+        }
+
+        var input = ControllerButtonCatalog.FindInput(detectedKey);
+        if (input is null)
+        {
+            return;
+        }
+
+        SelectMappingInput(input.Id, selectList: true);
+        StopButtonMappingCapture(_localization.IsItalian
+            ? $"Rilevato: {_localization.Translate(input.DisplayName)}"
+            : $"Detected: {input.DisplayName}");
+        LogUserSelection("Button mapping input detected", ("input", input.Id.ToString()));
+        AppDiagnosticsLogger.Record(
+            "BUTTON_MAPPING_INPUT_DETECTED",
+            ("input", input.Id.ToString()),
+            ("telemetryKey", input.TelemetryKey));
+    }
+
+    private void StopButtonMappingCapture(string status)
+    {
+        _mappingCaptureArmed = false;
+        _mappingCaptureTimer.Stop();
+        _mappingCaptureBaseline.Clear();
+        _mappingDetectButton.Text = _localization.Translate("Detect input");
+        _mappingStatusLabel.Text = _localization.Translate(status);
+    }
+
+    private static HashSet<string> PressedTelemetryKeys(ControllerTelemetrySnapshot snapshot)
+    {
+        return snapshot.Controllers
+            .SelectMany(controller => controller.Buttons)
+            .Where(pair => pair.Value)
+            .Select(pair => pair.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     private void ConfigureLanguageSelector()
     {
         _languageCombo.Name = "LanguageSelector";
@@ -1417,6 +1774,10 @@ internal sealed class MainForm : Form
     {
         _localization.Apply(this);
         _localization.Apply(_trayIcon.ContextMenuStrip);
+        if (_buttonMappingList.Columns.Count > 0)
+        {
+            RefreshButtonMappingList();
+        }
         foreach (var pair in _tabButtons)
         {
             pair.Value.AccessibleName = pair.Value.Text;
@@ -1446,6 +1807,9 @@ internal sealed class MainForm : Form
 
         _batteryTimer.Interval = 30000;
         _batteryTimer.Tick += (_, _) => { _ = RunActionWithDialogAsync("Battery refresh", () => UpdateBatteryAsync(), showDialog: false); };
+
+        _mappingCaptureTimer.Interval = 75;
+        _mappingCaptureTimer.Tick += (_, _) => RefreshButtonMappingCapture();
     }
 
     private void ConfigureTray()
@@ -2353,6 +2717,7 @@ internal sealed class MainForm : Form
         }
 
         _lastTelemetrySnapshot = snapshot;
+        UpdateButtonMappingCapture(snapshot);
         foreach (var controller in snapshot.Controllers)
         {
             var pressed = controller.Buttons.Where(pair => pair.Value).Select(pair => pair.Key).DefaultIfEmpty("-").ToArray();

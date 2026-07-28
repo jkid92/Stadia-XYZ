@@ -49,7 +49,8 @@ internal static class UiLayoutAudit
             {
                 var snapshotPath = SaveSnapshot(form, tabs, paths, density, reportKey);
                 observations.Add($"snapshot={snapshotPath}");
-                if (density == "comfortable" && scalePercent == 100)
+                var hostScalePercent = (int)Math.Round(form.DeviceDpi * 100d / DisplayLayout.BaseDpi);
+                if (density == "comfortable" && (scalePercent == 100 || scalePercent == hostScalePercent))
                 {
                     observations.AddRange(SaveFeatureSnapshots(form, tabs, paths).Select(path => $"feature-snapshot={path}"));
                 }
@@ -145,6 +146,7 @@ internal static class UiLayoutAudit
             (Name: "Doctor", File: "ui-layout-audit-comfortable-doctor.png"),
             (Name: "Bluetooth", File: "ui-layout-audit-comfortable-devices.png"),
             (Name: "Windows Native", File: "ui-layout-audit-comfortable-controllers.png"),
+            (Name: "Button Mapping", File: "ui-layout-audit-comfortable-mapping.png"),
             (Name: "Controller Test", File: "ui-layout-audit-comfortable-test.png")
         };
         var pathsWritten = new List<string>();

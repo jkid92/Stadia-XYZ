@@ -123,6 +123,7 @@ internal sealed class ControllerTelemetryWriter
         writer.WriteBoolean("l3", state.Has(ButtonBits.L3));
         writer.WriteBoolean("r3", state.Has(ButtonBits.R3));
         writer.WriteBoolean("assistant", state.Has(ButtonBits.Assistant));
+        writer.WriteBoolean("capture", state.Has(ButtonBits.Capture));
         writer.WriteBoolean("dpad_up", state.Has(ButtonBits.DpadUp));
         writer.WriteBoolean("dpad_down", state.Has(ButtonBits.DpadDown));
         writer.WriteBoolean("dpad_left", state.Has(ButtonBits.DpadLeft));

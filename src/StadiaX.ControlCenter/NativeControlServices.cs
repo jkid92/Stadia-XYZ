@@ -1035,6 +1035,7 @@ bluetoothctl devices 2>&1 || true
             Path.Combine(_paths.LogDirectory, "windows-native-probe.txt"),
             Path.Combine(_paths.LogDirectory, "self-test.txt"),
             Path.Combine(_paths.LogDirectory, "self-test.json"),
+            _paths.ControllerMapping,
             WindowsNativeRuntime.ReadyPath(_paths),
             _paths.VersionFile
         })

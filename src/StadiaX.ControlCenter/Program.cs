@@ -67,6 +67,8 @@ internal static class Program
         {
             UpdateService.RunSelfTest();
             WindowsNativeBatteryReader.RunSelfTest();
+            ControllerButtonMappingStore.RunSelfTest();
+            WindowsNativeHidMapper.RunSelfTest();
             Environment.Exit(0);
             return;
         }

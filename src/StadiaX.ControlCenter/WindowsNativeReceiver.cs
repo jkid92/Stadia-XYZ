@@ -16,6 +16,7 @@ internal sealed class WindowsNativeReceiver
     private readonly WindowsNativeHidScanner _scanner;
     private readonly IReadOnlyList<WindowsNativeHidDevice>? _initialDevices;
     private readonly ControllerTelemetryWriter _telemetryWriter;
+    private readonly ControllerButtonMappingProvider _mappingProvider;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
     private readonly object _controllerInputStateLock = new();
@@ -39,6 +40,10 @@ internal sealed class WindowsNativeReceiver
         _scanner = scanner;
         _initialDevices = initialDevices;
         _telemetryWriter = new ControllerTelemetryWriter(paths);
+        _mappingProvider = new ControllerButtonMappingProvider(
+            paths.ControllerMapping,
+            message => LogInfo("{0}", message),
+            message => LogError("{0}", message));
         _rumbleCallback = OnRumble;
     }
 
@@ -266,7 +271,10 @@ internal sealed class WindowsNativeReceiver
                             continue;
                         }
 
-                        var update = VigemNative.vigem_target_x360_update(_client, _targets[controllerIndex], ControllerStateMapper.ToXusb(state));
+                        var update = VigemNative.vigem_target_x360_update(
+                            _client,
+                            _targets[controllerIndex],
+                            ControllerStateMapper.ToXusb(state, _mappingProvider.GetCurrent()));
                         if (!VigemNative.Success(update))
                         {
                             LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
@@ -614,6 +622,11 @@ internal sealed class WindowsNativeHidMapper
     public bool TryParse(ReadOnlySpan<byte> reportBytes, out ControllerState state)
     {
         state = default;
+        if (TryParseKnownStadiaReport(reportBytes, out state))
+        {
+            return true;
+        }
+
         var report = ResolveReport(reportBytes);
         if (report is null)
         {
@@ -626,7 +639,7 @@ internal sealed class WindowsNativeHidMapper
             return false;
         }
 
-        ushort buttons = 0;
+        uint buttons = 0;
         byte leftTrigger = 0;
         byte rightTrigger = 0;
         short lx = 0;
@@ -699,7 +712,68 @@ internal sealed class WindowsNativeHidMapper
         return _descriptor.InputReports.FirstOrDefault();
     }
 
-    private static ushort ButtonFromHidButton(uint id)
+    internal static bool TryParseKnownStadiaReport(ReadOnlySpan<byte> data, out ControllerState state)
+    {
+        state = default;
+        if (data.Length < 10 || data[0] != 0x03)
+        {
+            return false;
+        }
+
+        uint buttons = DpadFromHat(data[1]);
+        if ((data[2] & 0x80) != 0) buttons |= ButtonBits.R3;
+        if ((data[2] & 0x40) != 0) buttons |= ButtonBits.Select;
+        if ((data[2] & 0x20) != 0) buttons |= ButtonBits.Start;
+        if ((data[2] & 0x10) != 0) buttons |= ButtonBits.Stadia;
+        if ((data[2] & 0x02) != 0) buttons |= ButtonBits.Assistant;
+        if ((data[2] & 0x01) != 0) buttons |= ButtonBits.Capture;
+
+        if ((data[3] & 0x40) != 0) buttons |= ButtonBits.A;
+        if ((data[3] & 0x20) != 0) buttons |= ButtonBits.B;
+        if ((data[3] & 0x10) != 0) buttons |= ButtonBits.X;
+        if ((data[3] & 0x08) != 0) buttons |= ButtonBits.Y;
+        if ((data[3] & 0x04) != 0) buttons |= ButtonBits.Lb;
+        if ((data[3] & 0x02) != 0) buttons |= ButtonBits.Rb;
+        if ((data[3] & 0x01) != 0) buttons |= ButtonBits.L3;
+
+        state = new ControllerState(
+            buttons,
+            data[8],
+            data[9],
+            ScaleRawStick(data[4]),
+            ScaleRawStick(data[5]),
+            ScaleRawStick(data[6]),
+            ScaleRawStick(data[7]));
+        return true;
+    }
+
+    internal static void RunSelfTest()
+    {
+        byte[] report = [0x03, 0x01, 0xD3, 0x77, 0x80, 0x01, 0xFF, 0x80, 0x20, 0xE0];
+        if (!TryParseKnownStadiaReport(report, out var state) ||
+            !state.Has(ButtonBits.A) ||
+            !state.Has(ButtonBits.B) ||
+            !state.Has(ButtonBits.X) ||
+            !state.Has(ButtonBits.Lb) ||
+            !state.Has(ButtonBits.Rb) ||
+            !state.Has(ButtonBits.L3) ||
+            !state.Has(ButtonBits.R3) ||
+            !state.Has(ButtonBits.Select) ||
+            !state.Has(ButtonBits.Capture) ||
+            !state.Has(ButtonBits.Assistant) ||
+            !state.Has(ButtonBits.DpadUp) ||
+            !state.Has(ButtonBits.DpadRight) ||
+            state.TriggerLeft != 0x20 ||
+            state.TriggerRight != 0xE0 ||
+            state.StickLeftX != 0 ||
+            state.StickLeftY >= 0 ||
+            state.StickRightX <= 0)
+        {
+            throw new InvalidOperationException("Known Stadia HID report parser self-test failed.");
+        }
+    }
+
+    private static uint ButtonFromHidButton(uint id)
     {
         return id switch
         {
@@ -719,7 +793,7 @@ internal sealed class WindowsNativeHidMapper
         };
     }
 
-    private static ushort DpadFromHat(int value)
+    private static uint DpadFromHat(int value)
     {
         return value switch
         {
@@ -746,6 +820,17 @@ internal sealed class WindowsNativeHidMapper
 
         var center = min + ((max - min) / 2.0);
         var normalized = (value - center) / Math.Max(center - min, max - center);
+        return (short)Math.Clamp((int)Math.Round(normalized * 32767), -32767, 32767);
+    }
+
+    private static short ScaleRawStick(byte value)
+    {
+        if (value == 0x80)
+        {
+            return 0;
+        }
+
+        var normalized = (value - 128) / 127d;
         return (short)Math.Clamp((int)Math.Round(normalized * 32767), -32767, 32767);
     }
 

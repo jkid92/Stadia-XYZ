@@ -415,6 +415,7 @@ internal sealed class IntegratedReceiver
         writer.WriteBoolean("l3", state.Has(ButtonBits.L3));
         writer.WriteBoolean("r3", state.Has(ButtonBits.R3));
         writer.WriteBoolean("assistant", state.Has(ButtonBits.Assistant));
+        writer.WriteBoolean("capture", state.Has(ButtonBits.Capture));
         writer.WriteBoolean("dpad_up", state.Has(ButtonBits.DpadUp));
         writer.WriteBoolean("dpad_down", state.Has(ButtonBits.DpadDown));
         writer.WriteBoolean("dpad_left", state.Has(ButtonBits.DpadLeft));
@@ -499,7 +500,7 @@ internal sealed class IntegratedReceiver
 }
 
 internal readonly record struct ControllerState(
-    ushort Buttons,
+    uint Buttons,
     byte TriggerLeft,
     byte TriggerRight,
     short StickLeftX,
@@ -507,27 +508,28 @@ internal readonly record struct ControllerState(
     short StickRightX,
     short StickRightY)
 {
-    public bool Has(ushort bit) => (Buttons & bit) != 0;
+    public bool Has(uint bit) => (Buttons & bit) != 0;
 }
 
 internal static class ButtonBits
 {
-    public const ushort A = 1 << 0;
-    public const ushort B = 1 << 1;
-    public const ushort X = 1 << 2;
-    public const ushort Y = 1 << 3;
-    public const ushort Lb = 1 << 4;
-    public const ushort Rb = 1 << 5;
-    public const ushort Select = 1 << 6;
-    public const ushort Start = 1 << 7;
-    public const ushort Stadia = 1 << 8;
-    public const ushort L3 = 1 << 9;
-    public const ushort R3 = 1 << 10;
-    public const ushort Assistant = 1 << 11;
-    public const ushort DpadUp = 1 << 12;
-    public const ushort DpadDown = 1 << 13;
-    public const ushort DpadLeft = 1 << 14;
-    public const ushort DpadRight = 1 << 15;
+    public const uint A = 1u << 0;
+    public const uint B = 1u << 1;
+    public const uint X = 1u << 2;
+    public const uint Y = 1u << 3;
+    public const uint Lb = 1u << 4;
+    public const uint Rb = 1u << 5;
+    public const uint Select = 1u << 6;
+    public const uint Start = 1u << 7;
+    public const uint Stadia = 1u << 8;
+    public const uint L3 = 1u << 9;
+    public const uint R3 = 1u << 10;
+    public const uint Assistant = 1u << 11;
+    public const uint DpadUp = 1u << 12;
+    public const uint DpadDown = 1u << 13;
+    public const uint DpadLeft = 1u << 14;
+    public const uint DpadRight = 1u << 15;
+    public const uint Capture = 1u << 16;
 }
 
 internal sealed record MacroHotkey(string Code, ushort Modifiers, ushort MainKey, bool Repeat);
