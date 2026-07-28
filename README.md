@@ -23,6 +23,7 @@ Stadia X Windows Native reads the physical Stadia controller directly, maps its 
 - Shows live connection phases, progress, detected devices, input rate, logs, and user actions.
 - Reads the controller battery level from Windows when the Bluetooth driver exposes it, including P1-P4 dashboard and compact overlay warnings.
 - Includes a visual controller test, button highlights, stick and trigger telemetry, and rumble tests.
+- Provides an Xbox-first visual mapping editor with recording, guided **Map all**, named profiles, conflict prevention, and live runtime reload.
 - Offers Italian and English UI, verified layouts from 100% through 200% DPI, and multi-monitor window recovery.
 - Downloads verified updates in-app and keeps a rollback copy in case the new version does not remain healthy.
 - Keeps technical configuration out of the normal user flow.
@@ -30,6 +31,10 @@ Stadia X Windows Native reads the physical Stadia controller directly, maps its 
 | Dashboard | Controller connection |
 |---|---|
 | ![Windows Native dashboard](docs/screenshots/home.png) | ![Detected controllers and connection progress](docs/screenshots/controllers.png) |
+
+### Visual Mapping
+
+![Xbox-first Stadia controller mapping editor](docs/screenshots/mapping.png)
 
 ## Install
 

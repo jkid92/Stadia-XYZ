@@ -8,6 +8,24 @@ namespace StadiaX.ControlCenter;
 internal sealed class MainForm : Form
 {
     private const double DefaultControllerFullBatteryHours = 8d;
+    private static readonly XboxOutputButton[] GuidedMappingSequence =
+    [
+        XboxOutputButton.A,
+        XboxOutputButton.B,
+        XboxOutputButton.X,
+        XboxOutputButton.Y,
+        XboxOutputButton.LeftShoulder,
+        XboxOutputButton.RightShoulder,
+        XboxOutputButton.Back,
+        XboxOutputButton.Start,
+        XboxOutputButton.LeftStick,
+        XboxOutputButton.RightStick,
+        XboxOutputButton.DpadUp,
+        XboxOutputButton.DpadDown,
+        XboxOutputButton.DpadLeft,
+        XboxOutputButton.DpadRight,
+        XboxOutputButton.Guide
+    ];
 
     private readonly AppPaths _paths;
     private readonly bool _auditMode;
@@ -40,12 +58,18 @@ internal sealed class MainForm : Form
     private readonly ListView _controllerList = new();
     private readonly ListView _buttonMappingList = new();
     private readonly ControllerVisualizer _controllerVisualizer = new();
+    private readonly ControllerMappingDiagram _mappingDiagram = new();
     private readonly ComboBox _controllerPadCombo = new();
     private readonly Label _controllerVisualStatusLabel = new();
+    private readonly ComboBox _mappingProfileCombo = new();
+    private readonly TextBox _mappingProfileNameText = new();
     private readonly ComboBox _mappingInputCombo = new();
     private readonly ComboBox _mappingOutputCombo = new();
     private readonly Label _mappingStatusLabel = new();
+    private readonly Label _mappingCompletenessLabel = new();
     private readonly ModernButton _mappingDetectButton = new();
+    private readonly ModernButton _mappingMapAllButton = new();
+    private readonly ModernButton _mappingSaveAllButton = new();
     private readonly ComboBox _macroChordCombo = new();
     private readonly TextBox _macroShortcutText = new();
     private readonly TextBox _profileNameText = new();
@@ -110,8 +134,14 @@ internal sealed class MainForm : Form
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
     private DateTime _lastTelemetryFailureLogUtc = DateTime.MinValue;
+    private ControllerMappingConfiguration _mappingConfiguration = ControllerMappingConfiguration.CreateDefault();
     private ControllerButtonMapping _buttonMapping = ControllerButtonMapping.CreateDefault();
     private HashSet<string> _mappingCaptureBaseline = new(StringComparer.OrdinalIgnoreCase);
+    private XboxOutputButton _selectedMappingOutput = XboxOutputButton.A;
+    private XboxOutputButton? _mappingCaptureTarget;
+    private int _mappingGuideIndex = -1;
+    private bool _mappingUiUpdating;
+    private bool _mappingDirty;
     private bool _mappingCaptureArmed;
 
     public MainForm(AppPaths paths) : this(paths, auditMode: false)
@@ -128,9 +158,10 @@ internal sealed class MainForm : Form
         _actionLogger = new UserActionLogger(paths);
         _updateService = new UpdateService(paths, windowsNative: true);
         AppDiagnosticsLogger.Initialize(paths);
-        _buttonMapping = ControllerButtonMappingStore.Load(
+        _mappingConfiguration = ControllerButtonMappingStore.LoadConfiguration(
             paths.ControllerMapping,
             warning => AppDiagnosticsLogger.Record("BUTTON_MAPPING_LOAD_WARN", ("error", warning)));
+        _buttonMapping = _mappingConfiguration.ActiveMapping;
 
         Text = "Stadia X";
         _baseIcon = LoadApplicationIcon(paths);
@@ -186,8 +217,31 @@ internal sealed class MainForm : Form
         };
         Shown += (_, _) => EnsureWindowFitsDisplay();
         DpiChanged += (_, _) => BeginInvoke(EnsureWindowFitsDisplay);
-        FormClosing += (_, _) =>
+        FormClosing += (_, args) =>
         {
+            if (!_auditMode && _mappingDirty && args.CloseReason == CloseReason.UserClosing)
+            {
+                var choice = ShowLocalizedMessage(
+                    "Save mapping changes before closing?",
+                    "Stadia X",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
+                if (choice == DialogResult.Cancel)
+                {
+                    args.Cancel = true;
+                    return;
+                }
+                if (choice == DialogResult.Yes)
+                {
+                    SaveAllButtonMappings();
+                    if (_mappingDirty)
+                    {
+                        args.Cancel = true;
+                        return;
+                    }
+                }
+            }
+
             LogUserAction("App closing");
             _logTimer.Stop();
             _batteryTimer.Stop();
@@ -1406,124 +1460,236 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 2,
-            Padding = new Padding(14)
+            RowCount = 3,
+            Padding = IsCompactUi() ? new Padding(10) : new Padding(14)
         };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 76 : 86));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 188 : 210));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 142 : 158));
         page.Controls.Add(layout);
 
-        var listGroup = CreateGroup("Button mapping");
-        ConfigureList(_buttonMappingList, ("Stadia input", 280), ("Xbox output", 280));
-        _buttonMappingList.SelectedIndexChanged += (_, _) =>
+        var profileGroup = CreateGroup("Mapping profiles");
+        var profileLayout = new TableLayoutPanel
         {
-            if (_buttonMappingList.SelectedItems.Count == 0 ||
-                _buttonMappingList.SelectedItems[0].Tag is not ControllerInputDescriptor input)
+            Dock = DockStyle.Fill,
+            ColumnCount = 5,
+            RowCount = 1,
+            Padding = IsCompactUi() ? new Padding(8, 5, 8, 5) : new Padding(10, 7, 10, 7)
+        };
+        profileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 58 : 70));
+        profileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 158 : 190));
+        profileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 50 : 62));
+        profileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        profileLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        profileGroup.Controls.Add(profileLayout);
+
+        profileLayout.Controls.Add(CreateMappingFieldLabel("Profile"), 0, 0);
+        _mappingProfileCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _mappingProfileCombo.Dock = DockStyle.Fill;
+        _mappingProfileCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_mappingUiUpdating || _mappingProfileCombo.SelectedItem is not ControllerMappingProfile profile)
             {
                 return;
             }
 
-            SelectMappingInput(input.Id, selectList: false);
-            LogUserSelection(
-                "Button mapping selected",
-                ("input", input.Id.ToString()),
-                ("output", _buttonMapping[input.Id].ToString()));
+            SelectMappingProfile(profile.Id);
         };
-        listGroup.Controls.Add(_buttonMappingList);
-        layout.Controls.Add(listGroup, 0, 0);
+        profileLayout.Controls.Add(_mappingProfileCombo, 1, 0);
 
-        var editorGroup = CreateGroup("Mapping editor");
-        var editor = new TableLayoutPanel
+        profileLayout.Controls.Add(CreateMappingFieldLabel("Name"), 2, 0);
+        _mappingProfileNameText.Dock = DockStyle.Fill;
+        _mappingProfileNameText.MaxLength = 64;
+        _mappingProfileNameText.TextChanged += (_, _) => StageMappingProfileName();
+        profileLayout.Controls.Add(_mappingProfileNameText, 3, 0);
+
+        var profileActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        AddFlowButton(profileActions, "Duplicate", DuplicateMappingProfile);
+        AddFlowButton(profileActions, "Delete", DeleteMappingProfile);
+        profileLayout.Controls.Add(profileActions, 4, 0);
+        layout.Controls.Add(profileGroup, 0, 0);
+
+        var workArea = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 4,
-            Padding = IsCompactUi() ? new Padding(10, 8, 10, 8) : new Padding(14, 10, 14, 10)
+            RowCount = 1,
+            Margin = new Padding(0)
         };
-        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 108 : 126));
-        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+        layout.Controls.Add(workArea, 0, 1);
+
+        var listGroup = CreateGroup("Xbox outputs");
+        listGroup.Margin = new Padding(0, 4, 4, 4);
+        ConfigureList(_buttonMappingList, ("Xbox output", 150), ("Stadia input", 180), ("State", 82));
+        _buttonMappingList.SelectedIndexChanged += (_, _) =>
+        {
+            if (_buttonMappingList.SelectedItems.Count == 0 ||
+                _buttonMappingList.SelectedItems[0].Tag is not XboxOutputDescriptor output)
+            {
+                return;
+            }
+
+            SelectMappingOutput(output.Id, selectList: false);
+            LogUserSelection(
+                "Button mapping selected",
+                ("output", output.Id.ToString()),
+                ("input", MappingInputSummary(output.Id)));
+        };
+        listGroup.Controls.Add(_buttonMappingList);
+        workArea.Controls.Add(listGroup, 0, 0);
+
+        var diagramGroup = CreateGroup("Virtual Xbox controller");
+        diagramGroup.Margin = new Padding(4);
+        _mappingDiagram.Dock = DockStyle.Fill;
+        _mappingDiagram.MinimumSize = new Size(IsCompactUi() ? 360 : 420, 250);
+        _mappingDiagram.OutputSelected += output =>
+        {
+            SelectMappingOutput(output, selectList: true);
+            LogUserSelection(
+                "Mapping diagram output selected",
+                ("output", output.ToString()),
+                ("input", MappingInputSummary(output)));
+        };
+        diagramGroup.Controls.Add(_mappingDiagram);
+        workArea.Controls.Add(diagramGroup, 1, 0);
+
+        var editorGroup = CreateGroup("Assignment");
+        editorGroup.Margin = new Padding(0, 4, 0, 0);
+        var editor = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 3,
+            Padding = IsCompactUi() ? new Padding(10, 6, 10, 6) : new Padding(14, 8, 14, 8)
+        };
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 82 : 102));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 82 : 102));
+        editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54));
         editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 31 : 35));
-        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 31 : 35));
+        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 28 : 32));
         editor.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        editor.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 42 : 48));
         editorGroup.Controls.Add(editor);
 
-        _mappingInputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _mappingInputCombo.Items.AddRange(ControllerButtonCatalog.Inputs.Cast<object>().ToArray());
-        _mappingInputCombo.SelectedIndexChanged += (_, _) =>
+        editor.Controls.Add(CreateMappingFieldLabel("Xbox output"), 0, 0);
+        _mappingOutputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _mappingOutputCombo.Dock = DockStyle.Fill;
+        _mappingOutputCombo.Items.AddRange(
+            ControllerButtonCatalog.Outputs
+                .Where(output => output.Id != XboxOutputButton.None)
+                .Cast<object>()
+                .ToArray());
+        _mappingOutputCombo.SelectedIndexChanged += (_, _) =>
         {
-            if (_mappingInputCombo.SelectedItem is ControllerInputDescriptor input)
+            if (!_mappingUiUpdating && _mappingOutputCombo.SelectedItem is XboxOutputDescriptor output)
             {
-                SelectMappingInput(input.Id, selectList: true);
+                SelectMappingOutput(output.Id, selectList: true);
             }
         };
-        AddEditorRow(editor, 0, "Stadia input", _mappingInputCombo);
+        editor.Controls.Add(_mappingOutputCombo, 1, 0);
 
-        _mappingOutputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _mappingOutputCombo.Items.AddRange(ControllerButtonCatalog.Outputs.Cast<object>().ToArray());
-        AddEditorRow(editor, 1, "Xbox output", _mappingOutputCombo);
+        editor.Controls.Add(CreateMappingFieldLabel("Stadia input"), 2, 0);
+        _mappingInputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _mappingInputCombo.Dock = DockStyle.Fill;
+        _mappingInputCombo.Items.Add(new MappingInputOption(null, "Not assigned"));
+        _mappingInputCombo.Items.AddRange(
+            ControllerButtonCatalog.Inputs
+                .Select(input => new MappingInputOption(input.Id, input.DisplayName))
+                .Cast<object>()
+                .ToArray());
+        _mappingInputCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_mappingUiUpdating && _mappingInputCombo.SelectedItem is MappingInputOption input)
+            {
+                StageMappingAssignment(_selectedMappingOutput, input.Id, detected: false);
+            }
+        };
+        editor.Controls.Add(_mappingInputCombo, 3, 0);
+
+        _mappingCompletenessLabel.Dock = DockStyle.Fill;
+        _mappingCompletenessLabel.AutoEllipsis = true;
+        _mappingCompletenessLabel.TextAlign = ContentAlignment.MiddleLeft;
+        _mappingCompletenessLabel.Font = new Font("Segoe UI", IsCompactUi() ? 7.75f : 8.25f, FontStyle.Bold);
+        editor.Controls.Add(_mappingCompletenessLabel, 0, 1);
+        editor.SetColumnSpan(_mappingCompletenessLabel, 2);
 
         _mappingStatusLabel.Text = "Ready";
         _mappingStatusLabel.Dock = DockStyle.Fill;
         _mappingStatusLabel.AutoEllipsis = true;
         _mappingStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
         _mappingStatusLabel.ForeColor = Color.FromArgb(76, 91, 112);
-        editor.Controls.Add(_mappingStatusLabel, 0, 2);
+        editor.Controls.Add(_mappingStatusLabel, 2, 1);
         editor.SetColumnSpan(_mappingStatusLabel, 2);
 
         var actions = CreateFullWidthToolbarFlow();
         actions.Dock = DockStyle.Fill;
         actions.Padding = new Padding(0);
-        _mappingDetectButton.Text = "Detect input";
-        _mappingDetectButton.AutoSize = true;
-        _mappingDetectButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _mappingDetectButton.MinimumSize = new Size(IsCompactUi() ? 100 : 120, IsCompactUi() ? 30 : 36);
-        _mappingDetectButton.Padding = new Padding(8, 0, 8, 0);
-        _mappingDetectButton.Margin = new Padding(4, 2, 4, 2);
-        _mappingDetectButton.Click += (_, _) =>
-        {
-            LogUserAction("Button clicked: Detect input");
-            ToggleButtonMappingCapture();
-        };
+        ConfigureMappingActionButton(_mappingDetectButton, "Record", ToggleButtonMappingCapture);
         actions.Controls.Add(_mappingDetectButton);
-        AddFlowButton(actions, "Apply", SaveSelectedButtonMapping, Color.FromArgb(45, 125, 90), Color.White);
+        AddFlowButton(actions, "Clear", () => StageMappingAssignment(_selectedMappingOutput, null, detected: false));
+        ConfigureMappingActionButton(_mappingMapAllButton, "Map all", ToggleGuidedButtonMapping);
+        actions.Controls.Add(_mappingMapAllButton);
+        ConfigureMappingActionButton(
+            _mappingSaveAllButton,
+            "Save all",
+            SaveAllButtonMappings,
+            Color.FromArgb(35, 116, 85),
+            Color.White);
+        actions.Controls.Add(_mappingSaveAllButton);
+        AddFlowButton(actions, "Revert", ReloadButtonMappings);
         AddFlowButton(actions, "Reset defaults", ResetButtonMapping);
-        editor.Controls.Add(actions, 0, 3);
-        editor.SetColumnSpan(actions, 2);
-        layout.Controls.Add(editorGroup, 0, 1);
+        editor.Controls.Add(actions, 0, 2);
+        editor.SetColumnSpan(actions, 4);
+        layout.Controls.Add(editorGroup, 0, 2);
 
-        RefreshButtonMappingList();
-        if (ControllerButtonCatalog.Inputs.Count > 0)
-        {
-            SelectMappingInput(ControllerButtonCatalog.Inputs[0].Id, selectList: true);
-        }
+        RefreshMappingProfileSelector();
         return page;
     }
 
     private void RefreshButtonMappingList()
     {
         var selectedInput = _buttonMappingList.SelectedItems.Count > 0 &&
-                            _buttonMappingList.SelectedItems[0].Tag is ControllerInputDescriptor selected
+                            _buttonMappingList.SelectedItems[0].Tag is XboxOutputDescriptor selected
             ? selected.Id
-            : (ControllerInputButton?)null;
+            : (XboxOutputButton?)null;
 
         _buttonMappingList.BeginUpdate();
         try
         {
             _buttonMappingList.Items.Clear();
-            foreach (var input in ControllerButtonCatalog.Inputs)
+            foreach (var output in ControllerButtonCatalog.Outputs.Where(output => output.Id != XboxOutputButton.None))
             {
-                var output = ControllerButtonCatalog.Output(_buttonMapping[input.Id]);
-                var item = new ListViewItem(_localization.Translate(input.DisplayName))
+                var inputs = _buttonMapping.InputsFor(output.Id);
+                var state = inputs.Count switch
                 {
-                    Tag = input,
-                    ForeColor = output.Id == XboxOutputButton.None
-                        ? Color.FromArgb(112, 120, 132)
-                        : Color.FromArgb(38, 80, 62)
+                    0 => "Missing",
+                    1 => "OK",
+                    _ => "Conflict"
                 };
-                item.SubItems.Add(_localization.Translate(output.DisplayName));
+                var item = new ListViewItem(_localization.Translate(output.DisplayName))
+                {
+                    Tag = output,
+                    ForeColor = state switch
+                    {
+                        "OK" => Color.FromArgb(38, 80, 62),
+                        "Missing" => Color.FromArgb(155, 92, 15),
+                        _ => Color.FromArgb(178, 45, 45)
+                    }
+                };
+                item.SubItems.Add(MappingInputSummary(output.Id));
+                item.SubItems.Add(_localization.Translate(state));
                 _buttonMappingList.Items.Add(item);
-                if (selectedInput == input.Id)
+                if (selectedInput == output.Id)
                 {
                     item.Selected = true;
                 }
@@ -1535,35 +1701,38 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void SelectMappingInput(ControllerInputButton inputId, bool selectList)
+    private void SelectMappingOutput(XboxOutputButton outputId, bool selectList)
     {
-        var inputIndex = -1;
-        for (var index = 0; index < ControllerButtonCatalog.Inputs.Count; index++)
+        if (outputId == XboxOutputButton.None)
         {
-            if (ControllerButtonCatalog.Inputs[index].Id == inputId)
-            {
-                inputIndex = index;
-                break;
-            }
-        }
-        if (inputIndex >= 0 && _mappingInputCombo.SelectedIndex != inputIndex)
-        {
-            _mappingInputCombo.SelectedIndex = inputIndex;
+            return;
         }
 
-        var outputId = _buttonMapping[inputId];
-        var outputIndex = -1;
-        for (var index = 0; index < ControllerButtonCatalog.Outputs.Count; index++)
+        _selectedMappingOutput = outputId;
+        _mappingDiagram.SelectedOutput = outputId;
+        _mappingUiUpdating = true;
+        try
         {
-            if (ControllerButtonCatalog.Outputs[index].Id == outputId)
+            var outputIndex = _mappingOutputCombo.Items
+                .Cast<XboxOutputDescriptor>()
+                .ToList()
+                .FindIndex(output => output.Id == outputId);
+            if (outputIndex >= 0)
             {
-                outputIndex = index;
-                break;
+                _mappingOutputCombo.SelectedIndex = outputIndex;
             }
+
+            var assignedInput = _buttonMapping.InputsFor(outputId).FirstOrDefault();
+            var hasAssignedInput = _buttonMapping.InputsFor(outputId).Count > 0;
+            var inputIndex = _mappingInputCombo.Items
+                .Cast<MappingInputOption>()
+                .ToList()
+                .FindIndex(input => input.Id == (hasAssignedInput ? assignedInput : null));
+            _mappingInputCombo.SelectedIndex = Math.Max(0, inputIndex);
         }
-        if (outputIndex >= 0)
+        finally
         {
-            _mappingOutputCombo.SelectedIndex = outputIndex;
+            _mappingUiUpdating = false;
         }
 
         if (!selectList)
@@ -1572,7 +1741,7 @@ internal sealed class MainForm : Form
         }
 
         var matchingItem = _buttonMappingList.Items.Cast<ListViewItem>()
-            .FirstOrDefault(item => item.Tag is ControllerInputDescriptor input && input.Id == inputId);
+            .FirstOrDefault(item => item.Tag is XboxOutputDescriptor output && output.Id == outputId);
         if (matchingItem is not null && !matchingItem.Selected)
         {
             _buttonMappingList.SelectedItems.Clear();
@@ -1581,37 +1750,97 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void SaveSelectedButtonMapping()
+    private void StageMappingAssignment(
+        XboxOutputButton output,
+        ControllerInputButton? input,
+        bool detected)
     {
-        if (_mappingInputCombo.SelectedItem is not ControllerInputDescriptor input ||
-            _mappingOutputCombo.SelectedItem is not XboxOutputDescriptor output)
+        if (_mappingUiUpdating)
         {
             return;
         }
 
         try
         {
-            var updated = _buttonMapping.With(input.Id, output.Id);
-            ControllerButtonMappingStore.Save(_paths.ControllerMapping, updated);
-            _buttonMapping = updated;
+            var previousOutput = input is null ? XboxOutputButton.None : _buttonMapping[input.Value];
+            _buttonMapping = _buttonMapping.AssignOutput(output, input);
+            _mappingConfiguration = _mappingConfiguration.ReplaceProfile(
+                _mappingConfiguration.ActiveProfileId,
+                _mappingConfiguration.ActiveProfile.Name,
+                _buttonMapping);
+            SetMappingDirty(true);
             RefreshButtonMappingList();
-            SelectMappingInput(input.Id, selectList: true);
-            _mappingStatusLabel.Text = _localization.IsItalian
-                ? $"Salvato: {_localization.Translate(input.DisplayName)} -> {_localization.Translate(output.DisplayName)}"
-                : $"Saved: {input.DisplayName} -> {output.DisplayName}";
+            _mappingDiagram.SetMapping(_buttonMapping);
+            SelectMappingOutput(output, selectList: true);
+            UpdateMappingValidation();
+
+            var outputName = _localization.Translate(ControllerButtonCatalog.Output(output).DisplayName);
+            var inputName = input is null
+                ? _localization.Translate("Not assigned")
+                : _localization.Translate(ControllerButtonCatalog.Input(input.Value).DisplayName);
+            _mappingStatusLabel.Text = detected
+                ? $"{_localization.Translate("Recorded")}: {outputName} <- {inputName}"
+                : $"{outputName} <- {inputName}";
             LogUserAction(
-                "Button mapping saved",
-                ("input", input.Id.ToString()),
-                ("output", output.Id.ToString()));
+                "Button mapping staged",
+                ("profile", _mappingConfiguration.ActiveProfile.Name),
+                ("input", input?.ToString() ?? "none"),
+                ("output", output.ToString()),
+                ("previousOutput", previousOutput.ToString()),
+                ("detected", detected.ToString()));
+            AppDiagnosticsLogger.Record(
+                "BUTTON_MAPPING_STAGED",
+                ("profileId", _mappingConfiguration.ActiveProfileId),
+                ("input", input?.ToString() ?? "none"),
+                ("output", output.ToString()),
+                ("detected", detected.ToString()));
+        }
+        catch (Exception ex)
+        {
+            var reason = RecordUiFailure("Stage button mapping", ex);
+            _mappingStatusLabel.Text = $"Mapping failed: {reason}";
+        }
+    }
+
+    private void SaveAllButtonMappings()
+    {
+        try
+        {
+            CommitMappingProfileName();
+            var validation = _buttonMapping.Validate();
+            if (!validation.IsComplete)
+            {
+                var confirm = ShowLocalizedMessage(
+                    "This profile has unassigned or conflicting Xbox outputs. Save it anyway?",
+                    "Stadia X",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (confirm != DialogResult.Yes)
+                {
+                    return;
+                }
+            }
+
+            ControllerButtonMappingStore.Save(_paths.ControllerMapping, _mappingConfiguration);
+            SetMappingDirty(false);
+            RefreshMappingProfileSelector();
+            _mappingStatusLabel.Text = _localization.Translate("Mapping saved and active");
+            LogUserAction(
+                "Button mappings saved",
+                ("profile", _mappingConfiguration.ActiveProfile.Name),
+                ("profiles", _mappingConfiguration.Profiles.Count.ToString()),
+                ("assigned", validation.AssignedOutputCount.ToString()),
+                ("total", validation.TotalOutputCount.ToString()));
             AppDiagnosticsLogger.Record(
                 "BUTTON_MAPPING_SAVED",
-                ("input", input.Id.ToString()),
-                ("output", output.Id.ToString()),
+                ("profileId", _mappingConfiguration.ActiveProfileId),
+                ("profile", _mappingConfiguration.ActiveProfile.Name),
+                ("profiles", _mappingConfiguration.Profiles.Count.ToString()),
                 ("path", _paths.ControllerMapping));
         }
         catch (Exception ex)
         {
-            var reason = RecordUiFailure("Save button mapping", ex);
+            var reason = RecordUiFailure("Save button mappings", ex);
             _mappingStatusLabel.Text = $"Save failed: {reason}";
             ShowLocalizedMessage(
                 $"The button mapping could not be saved.{Environment.NewLine}{reason}",
@@ -1621,10 +1850,35 @@ internal sealed class MainForm : Form
         }
     }
 
+    private void ReloadButtonMappings()
+    {
+        if (_mappingDirty)
+        {
+            var confirm = ShowLocalizedMessage(
+                "Discard all unsaved mapping changes?",
+                "Stadia X",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes)
+            {
+                return;
+            }
+        }
+
+        _mappingConfiguration = ControllerButtonMappingStore.LoadConfiguration(
+            _paths.ControllerMapping,
+            warning => AppDiagnosticsLogger.Record("BUTTON_MAPPING_RELOAD_WARN", ("error", warning)));
+        _buttonMapping = _mappingConfiguration.ActiveMapping;
+        SetMappingDirty(false);
+        RefreshMappingProfileSelector();
+        _mappingStatusLabel.Text = _localization.Translate("Saved mapping reloaded");
+        LogUserAction("Button mappings reloaded");
+    }
+
     private void ResetButtonMapping()
     {
         var confirm = ShowLocalizedMessage(
-            "Reset all button mappings to the Stadia/Xbox defaults?",
+            "Reset the current profile to the Stadia/Xbox defaults?",
             "Stadia X",
             MessageBoxButtons.YesNo,
             MessageBoxIcon.Question);
@@ -1635,20 +1889,213 @@ internal sealed class MainForm : Form
 
         try
         {
-            var defaults = ControllerButtonMapping.CreateDefault();
-            ControllerButtonMappingStore.Save(_paths.ControllerMapping, defaults);
-            _buttonMapping = defaults;
+            _buttonMapping = ControllerButtonMapping.CreateDefault();
+            _mappingConfiguration = _mappingConfiguration.ReplaceProfile(
+                _mappingConfiguration.ActiveProfileId,
+                _mappingConfiguration.ActiveProfile.Name,
+                _buttonMapping);
+            SetMappingDirty(true);
             RefreshButtonMappingList();
-            SelectMappingInput(ControllerButtonCatalog.Inputs[0].Id, selectList: true);
+            _mappingDiagram.SetMapping(_buttonMapping);
+            SelectMappingOutput(XboxOutputButton.A, selectList: true);
+            UpdateMappingValidation();
             _mappingStatusLabel.Text = _localization.Translate("Default mapping restored");
-            LogUserAction("Button mapping reset to defaults");
-            AppDiagnosticsLogger.Record("BUTTON_MAPPING_DEFAULTS_RESTORED", ("path", _paths.ControllerMapping));
+            LogUserAction(
+                "Button mapping reset to defaults",
+                ("profile", _mappingConfiguration.ActiveProfile.Name));
+            AppDiagnosticsLogger.Record(
+                "BUTTON_MAPPING_DEFAULTS_RESTORED",
+                ("profileId", _mappingConfiguration.ActiveProfileId));
         }
         catch (Exception ex)
         {
             var reason = RecordUiFailure("Reset button mapping", ex);
             _mappingStatusLabel.Text = $"Reset failed: {reason}";
         }
+    }
+
+    private void RefreshMappingProfileSelector()
+    {
+        _mappingUiUpdating = true;
+        try
+        {
+            _mappingProfileCombo.Items.Clear();
+            _mappingProfileCombo.Items.AddRange(_mappingConfiguration.Profiles.Cast<object>().ToArray());
+            var activeIndex = _mappingConfiguration.Profiles
+                .Select((profile, index) => (profile, index))
+                .First(pair => pair.profile.Id.Equals(
+                    _mappingConfiguration.ActiveProfileId,
+                    StringComparison.OrdinalIgnoreCase))
+                .index;
+            _mappingProfileCombo.SelectedIndex = activeIndex;
+            _mappingProfileNameText.Text = _mappingConfiguration.ActiveProfile.Name;
+            _buttonMapping = _mappingConfiguration.ActiveMapping;
+        }
+        finally
+        {
+            _mappingUiUpdating = false;
+        }
+
+        RefreshButtonMappingList();
+        _mappingDiagram.SetMapping(_buttonMapping);
+        SelectMappingOutput(_selectedMappingOutput, selectList: true);
+        UpdateMappingValidation();
+    }
+
+    private void SelectMappingProfile(string profileId)
+    {
+        try
+        {
+            CommitMappingProfileName();
+            _mappingConfiguration = _mappingConfiguration.WithActiveProfile(profileId);
+            _buttonMapping = _mappingConfiguration.ActiveMapping;
+            SetMappingDirty(true);
+            RefreshMappingProfileSelector();
+            _mappingStatusLabel.Text = $"{_localization.Translate("Active profile")}: {_mappingConfiguration.ActiveProfile.Name}";
+            LogUserSelection(
+                "Mapping profile selected",
+                ("profileId", profileId),
+                ("profile", _mappingConfiguration.ActiveProfile.Name));
+        }
+        catch (Exception ex)
+        {
+            _mappingStatusLabel.Text = $"Profile selection failed: {RecordUiFailure("Select mapping profile", ex)}";
+        }
+    }
+
+    private void StageMappingProfileName()
+    {
+        if (_mappingUiUpdating || string.IsNullOrWhiteSpace(_mappingProfileNameText.Text))
+        {
+            return;
+        }
+
+        try
+        {
+            _mappingConfiguration = _mappingConfiguration.ReplaceProfile(
+                _mappingConfiguration.ActiveProfileId,
+                _mappingProfileNameText.Text,
+                _buttonMapping);
+            SetMappingDirty(true);
+        }
+        catch (ArgumentException)
+        {
+            // The validation message is shown when the user saves.
+        }
+    }
+
+    private void CommitMappingProfileName()
+    {
+        if (string.IsNullOrWhiteSpace(_mappingProfileNameText.Text))
+        {
+            throw new InvalidOperationException(_localization.Translate("Profile name cannot be empty"));
+        }
+
+        _mappingConfiguration = _mappingConfiguration.ReplaceProfile(
+            _mappingConfiguration.ActiveProfileId,
+            _mappingProfileNameText.Text,
+            _buttonMapping);
+    }
+
+    private void DuplicateMappingProfile()
+    {
+        try
+        {
+            CommitMappingProfileName();
+            var baseName = _localization.IsItalian ? "Profilo" : "Profile";
+            var existingNames = _mappingConfiguration.Profiles
+                .Select(profile => profile.Name)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var index = 2;
+            var name = $"{baseName} {index}";
+            while (existingNames.Contains(name))
+            {
+                name = $"{baseName} {++index}";
+            }
+
+            _mappingConfiguration = _mappingConfiguration.AddProfile(name, _buttonMapping);
+            _buttonMapping = _mappingConfiguration.ActiveMapping;
+            SetMappingDirty(true);
+            RefreshMappingProfileSelector();
+            _mappingProfileNameText.SelectAll();
+            _mappingProfileNameText.Focus();
+            _mappingStatusLabel.Text = _localization.Translate("Profile duplicated");
+            LogUserAction(
+                "Mapping profile duplicated",
+                ("profileId", _mappingConfiguration.ActiveProfileId),
+                ("profile", name));
+        }
+        catch (Exception ex)
+        {
+            _mappingStatusLabel.Text = $"Profile duplication failed: {RecordUiFailure("Duplicate mapping profile", ex)}";
+        }
+    }
+
+    private void DeleteMappingProfile()
+    {
+        if (_mappingConfiguration.Profiles.Count == 1)
+        {
+            _mappingStatusLabel.Text = _localization.Translate("At least one mapping profile is required");
+            return;
+        }
+
+        var profile = _mappingConfiguration.ActiveProfile;
+        var confirm = ShowLocalizedMessage(
+            _localization.IsItalian
+                ? $"Eliminare il profilo di mappatura '{profile.Name}'?"
+                : $"Delete mapping profile '{profile.Name}'?",
+            "Stadia X",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _mappingConfiguration = _mappingConfiguration.RemoveProfile(profile.Id);
+            _buttonMapping = _mappingConfiguration.ActiveMapping;
+            SetMappingDirty(true);
+            RefreshMappingProfileSelector();
+            _mappingStatusLabel.Text = _localization.Translate("Profile deleted");
+            LogUserAction("Mapping profile deleted", ("profileId", profile.Id), ("profile", profile.Name));
+        }
+        catch (Exception ex)
+        {
+            _mappingStatusLabel.Text = $"Profile deletion failed: {RecordUiFailure("Delete mapping profile", ex)}";
+        }
+    }
+
+    private void SetMappingDirty(bool dirty)
+    {
+        _mappingDirty = dirty;
+        _mappingSaveAllButton.Text = _localization.Translate(dirty ? "Save all changes" : "Save all");
+        _mappingSaveAllButton.BackColor = dirty ? Color.FromArgb(35, 116, 85) : Color.FromArgb(72, 88, 104);
+        _mappingSaveAllButton.Invalidate();
+    }
+
+    private void UpdateMappingValidation()
+    {
+        var validation = _buttonMapping.Validate();
+        var unusedInputs = ControllerButtonCatalog.Inputs.Count(input =>
+            _buttonMapping[input.Id] == XboxOutputButton.None);
+        _mappingCompletenessLabel.Text =
+            $"{validation.AssignedOutputCount}/{validation.TotalOutputCount} {_localization.Translate("Xbox outputs assigned")}  ·  " +
+            $"{unusedInputs} {_localization.Translate("unused Stadia inputs")}";
+        _mappingCompletenessLabel.ForeColor = validation.IsComplete
+            ? Color.FromArgb(26, 118, 78)
+            : Color.FromArgb(166, 91, 10);
+    }
+
+    private string MappingInputSummary(XboxOutputButton output)
+    {
+        var inputs = _buttonMapping.InputsFor(output);
+        return inputs.Count == 0
+            ? _localization.Translate("Not assigned")
+            : string.Join(
+                ", ",
+                inputs.Select(input => _localization.Translate(ControllerButtonCatalog.Input(input).DisplayName)));
     }
 
     private void ToggleButtonMappingCapture()
@@ -1659,6 +2106,34 @@ internal sealed class MainForm : Form
             return;
         }
 
+        _mappingGuideIndex = -1;
+        ArmButtonMappingCapture(_selectedMappingOutput);
+    }
+
+    private void ToggleGuidedButtonMapping()
+    {
+        if (_mappingCaptureArmed && _mappingGuideIndex >= 0)
+        {
+            StopButtonMappingCapture("Guided mapping cancelled");
+            return;
+        }
+        if (_mappingCaptureArmed)
+        {
+            StopButtonMappingCapture("Input detection cancelled");
+        }
+
+        _mappingGuideIndex = 0;
+        ArmButtonMappingCapture(GuidedMappingSequence[_mappingGuideIndex]);
+        _mappingMapAllButton.Text = _localization.Translate("Cancel guided mapping");
+        _mappingStatusLabel.Text = GuidedMappingPrompt();
+        AppDiagnosticsLogger.Record(
+            "BUTTON_MAPPING_GUIDE_STARTED",
+            ("profileId", _mappingConfiguration.ActiveProfileId),
+            ("steps", GuidedMappingSequence.Length.ToString()));
+    }
+
+    private void ArmButtonMappingCapture(XboxOutputButton output)
+    {
         try
         {
             _mappingCaptureBaseline = PressedTelemetryKeys(_native.ReadControllerTelemetry());
@@ -1668,11 +2143,22 @@ internal sealed class MainForm : Form
             _mappingCaptureBaseline.Clear();
         }
 
+        _mappingCaptureTarget = output;
         _mappingCaptureArmed = true;
-        _mappingDetectButton.Text = _localization.Translate("Cancel detection");
-        _mappingStatusLabel.Text = _localization.Translate("Press one Stadia button");
+        _mappingDetectButton.Text = _localization.Translate(
+            _mappingGuideIndex >= 0 ? "Recording guided mapping" : "Cancel detection");
+        _mappingDetectButton.Enabled = _mappingGuideIndex < 0;
+        SelectMappingOutput(output, selectList: true);
+        if (_mappingGuideIndex < 0)
+        {
+            var outputName = _localization.Translate(ControllerButtonCatalog.Output(output).DisplayName);
+            _mappingStatusLabel.Text = $"{_localization.Translate("Press one Stadia button for")} {outputName}";
+        }
         _mappingCaptureTimer.Start();
-        AppDiagnosticsLogger.Record("BUTTON_MAPPING_CAPTURE_ARMED");
+        AppDiagnosticsLogger.Record(
+            "BUTTON_MAPPING_CAPTURE_ARMED",
+            ("output", output.ToString()),
+            ("guided", (_mappingGuideIndex >= 0).ToString()));
     }
 
     private void RefreshButtonMappingCapture()
@@ -1694,12 +2180,17 @@ internal sealed class MainForm : Form
 
     private void UpdateButtonMappingCapture(ControllerTelemetrySnapshot snapshot)
     {
+        var pressed = PressedTelemetryKeys(snapshot);
+        _mappingDiagram.SetPressedInputs(
+            pressed
+                .Select(ControllerButtonCatalog.FindInput)
+                .Where(input => input is not null)
+                .Select(input => input!.Id));
         if (!_mappingCaptureArmed)
         {
             return;
         }
 
-        var pressed = PressedTelemetryKeys(snapshot);
         var detectedKey = pressed.FirstOrDefault(key => !_mappingCaptureBaseline.Contains(key));
         _mappingCaptureBaseline.IntersectWith(pressed);
         if (detectedKey is null)
@@ -1713,15 +2204,43 @@ internal sealed class MainForm : Form
             return;
         }
 
-        SelectMappingInput(input.Id, selectList: true);
-        StopButtonMappingCapture(_localization.IsItalian
-            ? $"Rilevato: {_localization.Translate(input.DisplayName)}"
-            : $"Detected: {input.DisplayName}");
-        LogUserSelection("Button mapping input detected", ("input", input.Id.ToString()));
+        var target = _mappingCaptureTarget ?? _selectedMappingOutput;
+        StageMappingAssignment(target, input.Id, detected: true);
+        LogUserSelection(
+            "Button mapping input detected",
+            ("input", input.Id.ToString()),
+            ("output", target.ToString()),
+            ("guidedStep", _mappingGuideIndex.ToString()));
         AppDiagnosticsLogger.Record(
             "BUTTON_MAPPING_INPUT_DETECTED",
             ("input", input.Id.ToString()),
-            ("telemetryKey", input.TelemetryKey));
+            ("output", target.ToString()),
+            ("telemetryKey", input.TelemetryKey),
+            ("guidedStep", _mappingGuideIndex.ToString()));
+
+        if (_mappingGuideIndex < 0)
+        {
+            StopButtonMappingCapture(
+                $"{_localization.Translate("Recorded")}: " +
+                $"{_localization.Translate(ControllerButtonCatalog.Output(target).DisplayName)} <- " +
+                _localization.Translate(input.DisplayName));
+            return;
+        }
+
+        _mappingCaptureBaseline = pressed;
+        _mappingGuideIndex++;
+        if (_mappingGuideIndex >= GuidedMappingSequence.Length)
+        {
+            StopButtonMappingCapture("Guided mapping complete. Save all changes.");
+            AppDiagnosticsLogger.Record(
+                "BUTTON_MAPPING_GUIDE_COMPLETED",
+                ("profileId", _mappingConfiguration.ActiveProfileId));
+            return;
+        }
+
+        _mappingCaptureTarget = GuidedMappingSequence[_mappingGuideIndex];
+        SelectMappingOutput(_mappingCaptureTarget.Value, selectList: true);
+        _mappingStatusLabel.Text = GuidedMappingPrompt();
     }
 
     private void StopButtonMappingCapture(string status)
@@ -1729,8 +2248,20 @@ internal sealed class MainForm : Form
         _mappingCaptureArmed = false;
         _mappingCaptureTimer.Stop();
         _mappingCaptureBaseline.Clear();
-        _mappingDetectButton.Text = _localization.Translate("Detect input");
+        _mappingCaptureTarget = null;
+        _mappingGuideIndex = -1;
+        _mappingDetectButton.Enabled = true;
+        _mappingDetectButton.Text = _localization.Translate("Record");
+        _mappingMapAllButton.Text = _localization.Translate("Map all");
         _mappingStatusLabel.Text = _localization.Translate(status);
+    }
+
+    private string GuidedMappingPrompt()
+    {
+        var output = GuidedMappingSequence[Math.Clamp(_mappingGuideIndex, 0, GuidedMappingSequence.Length - 1)];
+        var outputName = _localization.Translate(ControllerButtonCatalog.Output(output).DisplayName);
+        return $"{_localization.Translate("Step")} {_mappingGuideIndex + 1}/{GuidedMappingSequence.Length}: " +
+               $"{_localization.Translate("press the Stadia input for")} {outputName}";
     }
 
     private static HashSet<string> PressedTelemetryKeys(ControllerTelemetrySnapshot snapshot)
@@ -1740,6 +2271,46 @@ internal sealed class MainForm : Form
             .Where(pair => pair.Value)
             .Select(pair => pair.Key)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Label CreateMappingFieldLabel(string text)
+    {
+        return new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            AutoEllipsis = true,
+            Font = new Font("Segoe UI", IsCompactUi() ? 7.75f : 8.25f, FontStyle.Bold)
+        };
+    }
+
+    private void ConfigureMappingActionButton(
+        ModernButton button,
+        string text,
+        Action action,
+        Color? backColor = null,
+        Color? foreColor = null)
+    {
+        button.Text = text;
+        button.AutoSize = true;
+        button.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        button.MinimumSize = new Size(IsCompactUi() ? 92 : 108, IsCompactUi() ? 30 : 36);
+        button.Padding = IsCompactUi() ? new Padding(7, 0, 7, 0) : new Padding(10, 0, 10, 0);
+        button.Margin = new Padding(4, 2, 4, 2);
+        button.BackColor = backColor ?? SystemColors.Control;
+        button.ForeColor = foreColor ?? SystemColors.ControlText;
+        button.UseVisualStyleBackColor = backColor is null;
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            action();
+        };
+    }
+
+    private sealed record MappingInputOption(ControllerInputButton? Id, string DisplayName)
+    {
+        public override string ToString() => UiLocalization.Current.Translate(DisplayName);
     }
 
     private void ConfigureLanguageSelector()
@@ -1777,6 +2348,11 @@ internal sealed class MainForm : Form
         if (_buttonMappingList.Columns.Count > 0)
         {
             RefreshButtonMappingList();
+            _mappingDiagram.SetMapping(_buttonMapping);
+            UpdateMappingValidation();
+            SetMappingDirty(_mappingDirty);
+            _mappingInputCombo.Refresh();
+            _mappingOutputCombo.Refresh();
         }
         foreach (var pair in _tabButtons)
         {
