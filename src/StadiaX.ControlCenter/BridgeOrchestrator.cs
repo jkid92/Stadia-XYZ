@@ -119,18 +119,20 @@ internal sealed class BridgeOrchestrator
 
         var wslCheck = await _runner.RunAsync(
             "wsl",
-            new[] { "-d", distro, "echo", "ok" },
+            new[] { "-d", distro, "--exec", "sh", "-lc", "printf '__STADIAX_WSL_READY__ '; uname -r" },
             _paths.Root,
-            15000,
+            30000,
             cancellationToken: cancellation.Token).ConfigureAwait(false);
         if (ReportStartCancelled(cancellation.Token, status, 2, "WSL distro")) return 0;
-        if (wslCheck.ExitCode != 0)
+        var wslCheckDetail = Shorten(FirstNonEmpty(wslCheck.Error, wslCheck.Output, "no diagnostic output"), 300);
+        if (wslCheck.ExitCode != 0 ||
+            !wslCheck.Output.Contains("__STADIAX_WSL_READY__", StringComparison.Ordinal))
         {
-            status.Write("WSL_DISTRO_START_FAILED", $"WSL distro {distro} did not start correctly");
-            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", $"WSL distro {distro} did not start correctly");
+            status.Write("WSL_DISTRO_START_FAILED", $"WSL distro {distro} did not start correctly: {wslCheckDetail}");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "FAIL", $"WSL could not start {distro}: {wslCheckDetail}");
             return 1;
         }
-        status.Write("WSL_DISTRO_SELECTED", $"Using WSL distro {distro}");
+        status.Write("WSL_DISTRO_SELECTED", $"Using WSL distro {distro}: {Shorten(wslCheck.Output.Trim(), 180)}");
         status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL distro", "OK", $"Using WSL distro {distro}");
         if (!TryWriteWslSessionFile(distro, status))
         {
@@ -148,16 +150,32 @@ internal sealed class BridgeOrchestrator
 
         status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "START", $"Starting WSL distro {distro}");
         status.Write("WSL_START", $"Starting WSL distro {distro}");
-        await _runner.RunAsync("wsl", new[] { "-d", distro, "echo", "WSL Booted" }, _paths.Root, 15000).ConfigureAwait(false);
-        if (!await WaitForWslNetworkAsync(distro).ConfigureAwait(false))
+        var wslBoot = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "--exec", "sh", "-lc", "printf '__STADIAX_WSL_BOOTED__'" },
+            _paths.Root,
+            30000,
+            cancellationToken: cancellation.Token).ConfigureAwait(false);
+        if (ReportStartCancelled(cancellation.Token, status, 2, "WSL network")) return 0;
+        if (wslBoot.ExitCode != 0 ||
+            !wslBoot.Output.Contains("__STADIAX_WSL_BOOTED__", StringComparison.Ordinal))
         {
-            if (ReportStartCancelled(cancellation.Token, status, 2, "WSL network")) return 0;
-            status.Write("WSL_NETWORK_TIMEOUT", "Timed out waiting for WSL network");
-            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "FAIL", "Timed out waiting for WSL network");
+            var detail = Shorten(FirstNonEmpty(wslBoot.Error, wslBoot.Output, "no diagnostic output"), 300);
+            status.Write("WSL_BOOT_FAILED", $"WSL distro {distro} stopped responding: {detail}");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "FAIL", $"WSL distro stopped responding: {detail}");
             return 1;
         }
-        status.Write("WSL_NETWORK_READY", "WSL network is ready");
-        status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "OK", "WSL network is ready");
+
+        if (await WaitForWslNetworkAsync(distro, status).ConfigureAwait(false))
+        {
+            status.Write("WSL_NETWORK_READY", "WSL network is ready");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "OK", "WSL network is ready");
+        }
+        else
+        {
+            status.Write("WSL_NETWORK_FALLBACK", "WSL is running but no global IPv4 address was detected; continuing with localhost forwarding");
+            status.WritePhase("Linux bridge", 2, StartPhaseCount, "WSL network", "WARN", "WSL is running; using localhost-compatible networking");
+        }
 
         status.WritePhase("Linux bridge", 3, StartPhaseCount, "Bluetooth adapter", "START", "Resolving Bluetooth adapter BUSID");
         var busId = await ResolveBluetoothBusIdAsync(status).ConfigureAwait(false);
@@ -588,6 +606,24 @@ internal sealed class BridgeOrchestrator
         }
 
         await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        var restartedKernel = await _runner.RunAsync(
+            "wsl",
+            new[] { "-d", distro, "-u", "root", "bash", "-lc", kernelProbe },
+            _paths.Root,
+            45000).ConfigureAwait(false);
+        if (restartedKernel.ExitCode != 0)
+        {
+            var detail = Shorten(FirstNonEmpty(restartedKernel.Error, restartedKernel.Output, "no diagnostic output"), 300);
+            status.Write("WSL_KERNEL_VERIFY_FAILED", $"WSL restarted but USB/HID kernel support is unavailable: {detail}");
+            AppDiagnosticsLogger.Record(
+                "WSL_KERNEL_VERIFY_FAILED",
+                ("distro", distro),
+                ("exitCode", restartedKernel.ExitCode.ToString()),
+                ("detail", detail));
+            return false;
+        }
+
+        status.Write("WSL_KERNEL_RESTART_OK", "WSL restarted and custom USB/HID kernel support was verified");
         return true;
     }
 
@@ -627,16 +663,30 @@ internal sealed class BridgeOrchestrator
         ClearReceiverStopSignal(status, startRequestedAt);
     }
 
-    private async Task<bool> WaitForWslNetworkAsync(string distro)
+    private async Task<bool> WaitForWslNetworkAsync(string distro, StatusWriter status)
     {
-        for (var attempt = 0; attempt < 30; attempt++)
+        for (var attempt = 1; attempt <= 10; attempt++)
         {
-            var result = await _runner.RunAsync("wsl", new[] { "-d", distro, "bash", "-lc", "ip addr show eth0 2>/dev/null | grep -q 'inet '" }, _paths.Root, 8000).ConfigureAwait(false);
+            var result = await _runner.RunAsync(
+                "wsl",
+                new[] { "-d", distro, "--exec", "sh", "-lc", "ip -o -4 addr show scope global 2>/dev/null | grep -q 'inet '" },
+                _paths.Root,
+                8000).ConfigureAwait(false);
             if (result.ExitCode == 0)
             {
                 return true;
             }
-            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+
+            if (attempt == 1 || attempt == 10)
+            {
+                status.Write(
+                    "WSL_NETWORK_PROBE",
+                    $"attempt={attempt}/10 exit={result.ExitCode} detail={Shorten(FirstNonEmpty(result.Error, result.Output, "no global IPv4 address"), 180)}");
+            }
+            if (attempt < 10)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
         }
 
         return false;
@@ -753,7 +803,21 @@ internal sealed class BridgeOrchestrator
         {
             status.Write("BT_ATTACH_START", $"Attempt {attempt}/3 attaching Bluetooth BUSID {busId} to WSL distro {distro}");
             var bind = await _runner.RunAsync("usbipd", new[] { "bind", "--busid", busId, "--force" }, _paths.Root, 20000).ConfigureAwait(false);
-            status.Write("BT_ATTACH_BIND_RESULT", $"attempt={attempt} exit={bind.ExitCode} detail={Shorten(FirstNonEmpty(bind.Error, bind.Output, "none"), 240)}");
+            var bindDetail = Shorten(FirstNonEmpty(bind.Error, bind.Output, "none"), 240);
+            status.Write("BT_ATTACH_BIND_RESULT", $"attempt={attempt} exit={bind.ExitCode} detail={bindDetail}");
+            if (bind.ExitCode != 0 &&
+                (bindDetail.Contains("administrator", StringComparison.OrdinalIgnoreCase) ||
+                 bindDetail.Contains("access denied", StringComparison.OrdinalIgnoreCase) ||
+                 bindDetail.Contains("privileges", StringComparison.OrdinalIgnoreCase)))
+            {
+                status.Write("BT_ATTACH_ADMIN_REQUIRED", "Bluetooth adapter sharing requires an elevated Stadia X process");
+                AppDiagnosticsLogger.Record(
+                    "BT_ATTACH_ADMIN_REQUIRED",
+                    ("busId", busId),
+                    ("attempt", attempt.ToString()),
+                    ("detail", bindDetail));
+                return false;
+            }
             var help = await _runner.RunAsync("usbipd", new[] { "attach", "--help" }, _paths.Root, 15000).ConfigureAwait(false);
             var attachArgs = help.Output.Contains("--distribution", StringComparison.OrdinalIgnoreCase)
                 ? new[] { "attach", "--wsl", "--busid", busId, "--distribution", distro }
