@@ -71,6 +71,7 @@ internal static class Program
             ControllerVisualizer.RunSelfTest();
             WindowsNativeHidMapper.RunSelfTest();
             ControllerStateMapper.RunSelfTest();
+            WindowsNativeRumbleProtocol.RunSelfTest();
             VigemNative.RunSelfTest();
             Environment.Exit(0);
             return;

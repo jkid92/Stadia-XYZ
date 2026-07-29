@@ -22,9 +22,11 @@ internal sealed class WindowsNativeReceiver
     private readonly object _telemetryErrorLock = new();
     private readonly object _controllerInputStateLock = new();
     private readonly object _virtualUpdateStateLock = new();
+    private readonly object _rumbleStateLock = new();
     private readonly bool[] _controllerInputsOpen = new bool[MaxControllers];
     private readonly bool[] _virtualUpdateFailed = new bool[MaxControllers];
     private readonly DateTimeOffset[] _nextVirtualUpdateErrorLog = new DateTimeOffset[MaxControllers];
+    private readonly long[] _nextRumbleWaitLogTick = new long[MaxControllers];
     private readonly WindowsNativeRumbleWriter?[] _rumbleWriters = new WindowsNativeRumbleWriter?[MaxControllers];
 
     private IVirtualGamepadBus? _virtualGamepads;
@@ -72,9 +74,12 @@ internal sealed class WindowsNativeReceiver
             _expectedControllerCount = devices.Length;
             for (var i = 0; i < devices.Length; i++)
             {
+                var rumble = devices[i].MaxOutputReportLength >= WindowsNativeRumbleReport.MinimumLength
+                    ? $"ready outputReportLength={devices[i].MaxOutputReportLength}"
+                    : $"unavailable outputReportLength={devices[i].MaxOutputReportLength}";
                 _status.Write(
                     "WINDOWS_NATIVE_CONTROLLER_CAPABILITIES",
-                    $"P{i + 1} battery=unavailable batteryOverlay=unavailable rumble=experimental device={devices[i].FriendlyName}");
+                    $"P{i + 1} battery=windows rumble={rumble} device={devices[i].FriendlyName}");
             }
             InitializeVirtualGamepads(devices.Length);
             _status.WritePhase(
@@ -225,12 +230,20 @@ internal sealed class WindowsNativeReceiver
                     LogError);
                 var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
                 var nextPresenceProbe = Environment.TickCount64 + HidPresenceProbeIntervalMs;
-                _rumbleWriters[controllerIndex] = rumbleWriter;
+                Interlocked.Exchange(ref _rumbleWriters[controllerIndex], rumbleWriter)?.Dispose();
+                lock (_rumbleStateLock)
+                {
+                    _nextRumbleWaitLogTick[controllerIndex] = 0;
+                }
                 reconnectAttempt = 0;
                 neutralized = false;
                 _status.Write(
                     connectedOnce ? "WINDOWS_NATIVE_CONTROLLER_RECONNECTED" : "WINDOWS_NATIVE_CONTROLLER_OPEN",
                     $"P{controllerIndex + 1}: {currentDevice.FriendlyName}");
+                _status.Write(
+                    rumbleWriter.IsSupported ? "WINDOWS_NATIVE_RUMBLE_READY" : "WINDOWS_NATIVE_RUMBLE_UNAVAILABLE",
+                    $"P{controllerIndex + 1} rumble={(rumbleWriter.IsSupported ? "ready" : "unavailable")} " +
+                    $"route=ViGEm-to-Stadia-HID outputReportLength={rumbleWriter.OutputReportLength}");
                 LogInfo(
                     connectedOnce ? "P{0} Windows Native HID reconnected: {1}" : "P{0} Windows Native HID open: {1}",
                     controllerIndex + 1,
@@ -294,8 +307,7 @@ internal sealed class WindowsNativeReceiver
                 }
                 finally
                 {
-                    try { rumbleWriter.Send(0, 0); } catch { }
-                    _rumbleWriters[controllerIndex] = null;
+                    Interlocked.Exchange(ref _rumbleWriters[controllerIndex], null)?.Dispose();
                     if (!cancellationToken.IsCancellationRequested)
                     {
                         ReportControllerInputState(controllerIndex, open: false);
@@ -546,13 +558,40 @@ internal sealed class WindowsNativeReceiver
             return;
         }
 
-        var writer = _rumbleWriters[controllerIndex];
+        var writer = Volatile.Read(ref _rumbleWriters[controllerIndex]);
         if (writer is null)
         {
+            ReportRumbleWaitingForHid(controllerIndex, largeMotor, smallMotor);
             return;
         }
 
         writer.Send(largeMotor, smallMotor);
+    }
+
+    private void ReportRumbleWaitingForHid(int controllerIndex, byte largeMotor, byte smallMotor)
+    {
+        if (largeMotor == 0 && smallMotor == 0)
+        {
+            return;
+        }
+
+        var now = Environment.TickCount64;
+        lock (_rumbleStateLock)
+        {
+            if (now < _nextRumbleWaitLogTick[controllerIndex])
+            {
+                return;
+            }
+
+            _nextRumbleWaitLogTick[controllerIndex] = now + 5000;
+        }
+
+        _status.Write(
+            "WINDOWS_NATIVE_RUMBLE_WAIT",
+            $"P{controllerIndex + 1} rumble=waiting reason=physical HID stream not ready");
+        LogInfo(
+            "P{0} rumble requested while the physical Stadia HID stream is reconnecting; waiting for HID.",
+            controllerIndex + 1);
     }
 
     private void CleanupVirtualGamepads()

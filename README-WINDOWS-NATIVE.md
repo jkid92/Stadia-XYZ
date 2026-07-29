@@ -27,7 +27,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - **Map all**: walks through every Xbox button in sequence and records the Stadia input you press for each one.
 - **Mapping profiles**: duplicate, rename, activate, or delete independent layouts. Existing schema-1 mapping files are migrated automatically and invalid files never replace the last valid runtime profile.
 - **Mapping safety**: assigning an input replaces conflicting assignments, incomplete profiles are highlighted before saving, and unsaved changes are offered for saving when the app closes.
-- **Mapping + Test**: combines profiles, button assignments, the live controller image, sticks, triggers, packet rate, and rumble testing.
+- **Mapping + Test**: combines profiles, button assignments, the live controller image, sticks, triggers, packet rate, and rumble testing. Game rumble from each virtual Xbox pad is routed back to the matching P1-P4 Stadia controller through the native Windows HID output report.
 - **Logs**: displays connection phases, user actions, and application diagnostics.
 - **Support**: creates a troubleshooting bundle.
 
@@ -44,4 +44,4 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 
 Use **Stop and restore** before troubleshooting the physical controller or uninstalling drivers. The startup path also rolls back HidHide automatically when a later phase fails.
 
-Battery reporting uses the level exposed by Windows and feeds the P1-P4 dashboard and compact overlay when available. Battery and rumble behavior can vary by controller firmware and Bluetooth stack; a real Stadia controller is required to validate those hardware-dependent paths.
+Battery reporting uses the level exposed by Windows and feeds the P1-P4 dashboard and compact overlay when available. The native rumble route uses the same Stadia motor report as the Linux bridge, adapted to Windows HID and dispatched away from the ViGEm callback to avoid feedback stalls. Battery and rumble behavior can vary by controller firmware and Bluetooth stack; a real Stadia controller is required to validate those hardware-dependent paths.

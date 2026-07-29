@@ -24,7 +24,7 @@ Version `v0.9.0-beta.3` starts the consolidated native-backend line. Windows HID
 - Supports up to four controllers with separate P1-P4 virtual slots.
 - Shows live connection phases, progress, detected devices, input rate, logs, and user actions.
 - Reads the controller battery level from Windows when the Bluetooth driver exposes it, including the P1-P4 dashboard and the same compact pill overlay used by the Linux edition: white text normally and red below 10%.
-- Includes a visual controller test, button highlights, stick and trigger telemetry, and rumble tests.
+- Includes a visual controller test, button highlights, stick and trigger telemetry, and native low-latency rumble tests.
 - Provides an Xbox-first visual mapping editor: click a target on the controller image and press the physical button to associate it. Manual recording, guided **Map all**, named profiles, conflict prevention, and live runtime reload remain available.
 - Offers Italian and English UI, verified layouts from 100% through 200% DPI, and multi-monitor window recovery.
 - Downloads verified updates in-app and keeps a rollback copy in case the new version does not remain healthy.
@@ -67,7 +67,7 @@ flowchart LR
     F["HidHide input isolation"] -. blocks duplicate physical input .-> E
     A --> F
     E -. rumble .-> D
-    D -. feedback routing .-> A
+    D -. per-pad rumble via native HID .-> A
 ```
 
 The physical device remains visible to Stadia X but is hidden from games. The virtual Xbox 360 pad is the only gameplay input device, preventing duplicated presses.

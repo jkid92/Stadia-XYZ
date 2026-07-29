@@ -1,7 +1,7 @@
-using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using HidSharp;
 
 namespace StadiaX.ControlCenter;
@@ -259,6 +259,11 @@ internal static class WindowsNativeRumbleProtocol
 
     public static byte[] BuildPacket(int controllerIndex, byte largeMotor, byte smallMotor)
     {
+        if (controllerIndex < 0 || controllerIndex >= WindowsNativeRuntime.MaxControllers)
+        {
+            throw new ArgumentOutOfRangeException(nameof(controllerIndex));
+        }
+
         return new[]
         {
             PacketMagic,
@@ -276,7 +281,11 @@ internal static class WindowsNativeRumbleProtocol
         largeMotor = 0;
         smallMotor = 0;
 
-        if (data.Length != PacketSize || data[0] != PacketMagic || data[1] != PacketVersion || data[2] >= 4)
+        if (data.Length != PacketSize ||
+            data[0] != PacketMagic ||
+            data[1] != PacketVersion ||
+            data[2] >= WindowsNativeRuntime.MaxControllers ||
+            data[3] != 0)
         {
             return false;
         }
@@ -286,28 +295,106 @@ internal static class WindowsNativeRumbleProtocol
         smallMotor = data[5];
         return true;
     }
+
+    internal static void RunSelfTest()
+    {
+        for (var expectedControllerIndex = 0; expectedControllerIndex < WindowsNativeRuntime.MaxControllers; expectedControllerIndex++)
+        {
+            var packet = BuildPacket(expectedControllerIndex, 220, 180);
+            if (!TryParse(packet, out var controllerIndex, out var largeMotor, out var smallMotor) ||
+                controllerIndex != expectedControllerIndex ||
+                largeMotor != 220 ||
+                smallMotor != 180)
+            {
+                throw new InvalidOperationException($"Windows Native P{expectedControllerIndex + 1} rumble packet self-test failed.");
+            }
+        }
+
+        var invalidPacket = BuildPacket(0, 220, 180);
+        invalidPacket[3] = 1;
+        if (TryParse(invalidPacket, out _, out _, out _))
+        {
+            throw new InvalidOperationException("Windows Native rumble packet validation self-test failed.");
+        }
+
+        var outputReport = WindowsNativeRumbleReport.Build(8, 220, 180);
+        byte[] expected = [0x05, 220, 220, 180, 180, 0, 0, 0];
+        if (!outputReport.SequenceEqual(expected))
+        {
+            throw new InvalidOperationException("Windows Native Stadia HID rumble report self-test failed.");
+        }
+
+        var fullReport = WindowsNativeRumbleReport.Build(5, byte.MaxValue, 0);
+        byte[] expectedFullReport = [0x05, 0xFF, 0xFF, 0x00, 0x00];
+        if (!fullReport.SequenceEqual(expectedFullReport))
+        {
+            throw new InvalidOperationException("Windows Native Stadia HID motor range self-test failed.");
+        }
+
+        try
+        {
+            _ = WindowsNativeRumbleReport.Build(4, 1, 1);
+            throw new InvalidOperationException("Windows Native rumble report length self-test failed.");
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+        }
+    }
 }
 
-internal sealed class WindowsNativeRumbleWriter
+internal static class WindowsNativeRumbleReport
 {
-    private const byte StadiaRumbleReportId = 5;
+    public const int MinimumLength = 5;
+    private const byte StadiaRumbleReportId = 0x05;
+
+    public static byte[] Build(int reportLength, byte largeMotor, byte smallMotor)
+    {
+        if (reportLength < MinimumLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(reportLength),
+                $"Stadia rumble requires an output report of at least {MinimumLength} bytes.");
+        }
+
+        var buffer = new byte[reportLength];
+        buffer[0] = StadiaRumbleReportId;
+        buffer[1] = largeMotor;
+        buffer[2] = largeMotor;
+        buffer[3] = smallMotor;
+        buffer[4] = smallMotor;
+        return buffer;
+    }
+}
+
+internal sealed class WindowsNativeRumbleWriter : IDisposable
+{
     private const int DuplicateWindowMs = 4;
     private const int SuccessLogIntervalMs = 1000;
     private const int ErrorLogIntervalMs = 5000;
+    private const int QueueCapacity = 16;
+    private const int WorkerStopTimeoutMs = 250;
 
     private readonly int _controllerNumber;
-    private readonly HidDevice _device;
     private readonly HidStream _stream;
     private readonly StatusWriter _status;
     private readonly Action<string, object[]> _logInfo;
     private readonly Action<string, object[]> _logError;
-    private readonly object _lock = new();
+    private readonly int _outputReportLength;
+    private readonly Channel<RumbleCommand> _commands;
+    private readonly CancellationTokenSource _shutdown = new();
+    private readonly Task _worker;
+    private readonly object _queueLock = new();
+    private readonly object _sendLock = new();
 
     private byte _lastLarge;
     private byte _lastSmall;
     private long _lastTick;
+    private byte _lastQueuedLarge;
+    private byte _lastQueuedSmall;
+    private long _lastQueuedTick;
     private long _nextSuccessLogTick;
     private long _nextErrorLogTick;
+    private int _disposed;
 
     public WindowsNativeRumbleWriter(
         int controllerNumber,
@@ -318,18 +405,112 @@ internal sealed class WindowsNativeRumbleWriter
         Action<string, object[]> logError)
     {
         _controllerNumber = controllerNumber;
-        _device = device;
         _stream = stream;
         _status = status;
         _logInfo = logInfo;
         _logError = logError;
+        _outputReportLength = ReadOutputReportLength(device);
+        _commands = Channel.CreateBounded<RumbleCommand>(new BoundedChannelOptions(QueueCapacity)
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest,
+            AllowSynchronousContinuations = false
+        });
+        _worker = Task.Run(ProcessCommandsAsync);
     }
+
+    public bool IsSupported => _outputReportLength >= WindowsNativeRumbleReport.MinimumLength;
+
+    public int OutputReportLength => _outputReportLength;
 
     public void Send(byte largeMotor, byte smallMotor)
     {
+        if (Volatile.Read(ref _disposed) != 0)
+        {
+            return;
+        }
+
+        lock (_queueLock)
+        {
+            var now = Environment.TickCount64;
+            if (_lastQueuedTick != 0 &&
+                now - _lastQueuedTick >= 0 &&
+                now - _lastQueuedTick < DuplicateWindowMs &&
+                _lastQueuedLarge == largeMotor &&
+                _lastQueuedSmall == smallMotor)
+            {
+                return;
+            }
+
+            if (_commands.Writer.TryWrite(new RumbleCommand(largeMotor, smallMotor)))
+            {
+                _lastQueuedLarge = largeMotor;
+                _lastQueuedSmall = smallMotor;
+                _lastQueuedTick = now;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _commands.Writer.TryComplete();
+        _shutdown.Cancel();
+        try
+        {
+            _worker.Wait(WorkerStopTimeoutMs);
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(error => error is OperationCanceledException))
+        {
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        lock (_sendLock)
+        {
+            _ = TrySendOutputReport(0, 0, out _);
+            _lastLarge = 0;
+            _lastSmall = 0;
+            _lastTick = Environment.TickCount64;
+        }
+
+        _shutdown.Dispose();
+    }
+
+    private async Task ProcessCommandsAsync()
+    {
+        try
+        {
+            await foreach (var command in _commands.Reader.ReadAllAsync(_shutdown.Token).ConfigureAwait(false))
+            {
+                SendNow(command.LargeMotor, command.SmallMotor);
+            }
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logError(
+                "P{0} Windows Native rumble worker failed: {1}",
+                new object[] { _controllerNumber, ex.Message });
+            _status.Write(
+                "WINDOWS_NATIVE_RUMBLE_WORKER_FAILED",
+                $"P{_controllerNumber} rumble=unavailable error={ex.Message}");
+        }
+    }
+
+    private void SendNow(byte largeMotor, byte smallMotor)
+    {
         string? errorToLog = null;
         var logSuccess = false;
-        lock (_lock)
+        lock (_sendLock)
         {
             var now = Environment.TickCount64;
             if (_lastTick != 0 &&
@@ -390,23 +571,19 @@ internal sealed class WindowsNativeRumbleWriter
         error = "";
         try
         {
-            var maxOutputLength = _device.GetMaxOutputReportLength();
-            if (maxOutputLength <= 0)
+            if (_outputReportLength <= 0)
             {
                 error = "HID device does not expose an output report.";
                 return false;
             }
 
-            if (maxOutputLength < 5)
+            if (_outputReportLength < WindowsNativeRumbleReport.MinimumLength)
             {
-                error = $"HID output report is too short for Stadia rumble: {maxOutputLength} byte(s).";
+                error = $"HID output report is too short for Stadia rumble: {_outputReportLength} byte(s).";
                 return false;
             }
 
-            var buffer = new byte[maxOutputLength];
-            buffer[0] = StadiaRumbleReportId;
-            BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(1, 2), ScaleRumble(largeMotor));
-            BinaryPrimitives.WriteUInt16LittleEndian(buffer.AsSpan(3, 2), ScaleRumble(smallMotor));
+            var buffer = WindowsNativeRumbleReport.Build(_outputReportLength, largeMotor, smallMotor);
             _stream.Write(buffer);
             return true;
         }
@@ -417,10 +594,19 @@ internal sealed class WindowsNativeRumbleWriter
         }
     }
 
-    private static ushort ScaleRumble(byte value)
+    private static int ReadOutputReportLength(HidDevice device)
     {
-        return (ushort)(value * 257);
+        try
+        {
+            return device.GetMaxOutputReportLength();
+        }
+        catch
+        {
+            return 0;
+        }
     }
+
+    private readonly record struct RumbleCommand(byte LargeMotor, byte SmallMotor);
 }
 
 internal sealed class WindowsNativeRumbleUdpServer
