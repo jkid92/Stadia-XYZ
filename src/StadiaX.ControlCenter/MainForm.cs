@@ -37,6 +37,7 @@ internal sealed class MainForm : Form
     private readonly UserActionLogger _actionLogger;
     private readonly UiLocalization _localization = UiLocalization.Current;
     private readonly UpdateService _updateService;
+    private int _updateCheckInProgress;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -4050,6 +4051,25 @@ internal sealed class MainForm : Form
     private async Task CheckForUpdatesAsync(bool interactive)
     {
         LogUserAction("Check updates requested");
+        if (Interlocked.CompareExchange(ref _updateCheckInProgress, 1, 0) != 0)
+        {
+            AppDiagnosticsLogger.Record(
+                "UPDATE_CHECK_SKIPPED",
+                ("reason", "already_running"),
+                ("interactive", interactive.ToString()));
+            if (interactive)
+            {
+                _statusLabel.Text = _localization.IsItalian
+                    ? "Controllo aggiornamenti già in corso"
+                    : "Update check already running";
+            }
+            return;
+        }
+
+        AppDiagnosticsLogger.Record(
+            "UPDATE_CHECK_STARTED",
+            ("installedVersion", _paths.Version),
+            ("interactive", interactive.ToString()));
         try
         {
             var release = await _releaseChecker.GetLatestAsync();
@@ -4057,11 +4077,21 @@ internal sealed class MainForm : Form
             if (!_updateService.IsUpdateAvailable(_paths.Version, release.Tag))
             {
                 _statusLabel.Text = "Up to date";
+                AppDiagnosticsLogger.Record(
+                    "UPDATE_CHECK_COMPLETED",
+                    ("result", "up_to_date"),
+                    ("installedVersion", _paths.Version),
+                    ("targetVersion", release.Tag));
                 if (interactive) _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
                 return;
             }
 
             _statusLabel.Text = $"Update available: {release.Tag}";
+            AppDiagnosticsLogger.Record(
+                "UPDATE_AVAILABLE",
+                ("installedVersion", _paths.Version),
+                ("targetVersion", release.Tag),
+                ("automaticInstall", _updateService.CanInstallAutomatically.ToString()));
             _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
             if (!_updateService.CanInstallAutomatically)
             {
@@ -4075,6 +4105,11 @@ internal sealed class MainForm : Form
             if (prepared is null)
             {
                 CompleteOperationProgress("Updating Stadia X", "Already up to date");
+                AppDiagnosticsLogger.Record(
+                    "UPDATE_CHECK_COMPLETED",
+                    ("result", "up_to_date_after_wait"),
+                    ("installedVersion", _paths.Version),
+                    ("targetVersion", release.Tag));
                 return;
             }
 
@@ -4090,16 +4125,40 @@ internal sealed class MainForm : Form
             if (install == DialogResult.Yes)
             {
                 LogUserAction("Verified update install accepted", ("version", release.Tag));
+                AppDiagnosticsLogger.Record(
+                    "UPDATE_INSTALL_ACCEPTED",
+                    ("installedVersion", _paths.Version),
+                    ("targetVersion", release.Tag),
+                    ("sha256", prepared.ExpectedSha256));
                 _updateService.LaunchInstall(prepared, _paths.Version);
                 Close();
+            }
+            else
+            {
+                AppDiagnosticsLogger.Record(
+                    "UPDATE_INSTALL_DEFERRED",
+                    ("installedVersion", _paths.Version),
+                    ("targetVersion", release.Tag));
             }
         }
         catch (Exception ex)
         {
             _diagnosticsBox.Text = ex.ToString();
-            _statusLabel.Text = "Update check failed";
-            AppDiagnosticsLogger.Record("UPDATE_CHECK_FAILED", ("error", ex.ToString()));
+            var serviceUnavailable = ex is HttpRequestException or TaskCanceledException;
+            _statusLabel.Text = serviceUnavailable
+                ? (_localization.IsItalian ? "Servizio aggiornamenti non raggiungibile" : "Update service unavailable")
+                : (_localization.IsItalian ? "Controllo aggiornamenti non riuscito" : "Update check failed");
+            AppDiagnosticsLogger.Record(
+                serviceUnavailable ? "UPDATE_CHECK_UNAVAILABLE" : "UPDATE_CHECK_FAILED",
+                ("interactive", interactive.ToString()),
+                ("exceptionType", ex.GetType().FullName),
+                ("message", ex.Message),
+                ("details", interactive ? "See matching UI_ASYNC_ACTION_FAILED event." : ex.ToString()));
             if (interactive) throw;
+        }
+        finally
+        {
+            Volatile.Write(ref _updateCheckInProgress, 0);
         }
     }
 

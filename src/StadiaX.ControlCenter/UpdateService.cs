@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -15,6 +16,7 @@ internal sealed class UpdateService
     private readonly string _dataDirectory;
     private readonly string _statePath;
     private readonly string _helperPath;
+    private readonly SemaphoreSlim _prepareGate = new(1, 1);
 
     internal UpdateService(AppPaths paths, bool windowsNative)
     {
@@ -38,11 +40,66 @@ internal sealed class UpdateService
         {
             throw new InvalidOperationException("Update version or checksum validation failed its self-test.");
         }
+
+        var testDirectory = Path.Combine(Path.GetTempPath(), $"StadiaX-update-self-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(testDirectory);
+        try
+        {
+            var destination = Path.Combine(testDirectory, "setup.exe");
+            File.WriteAllText(destination, "stale");
+            var payload = new byte[] { 0x53, 0x74, 0x61, 0x64, 0x69, 0x61, 0x58 };
+            using var client = new HttpClient(new StaticResponseHandler(payload));
+            DownloadAsync(
+                client,
+                "https://self-test.invalid/setup.exe",
+                destination,
+                progress: null,
+                CancellationToken.None).GetAwaiter().GetResult();
+
+            if (!File.ReadAllBytes(destination).SequenceEqual(payload) ||
+                Directory.EnumerateFiles(testDirectory, "*.download.*.tmp").Any())
+            {
+                throw new InvalidOperationException("Atomic update download failed its self-test.");
+            }
+
+            using var exclusive = new FileStream(destination, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            Directory.Delete(testDirectory, recursive: true);
+        }
     }
 
     internal async Task<PreparedUpdate?> PrepareAsync(ReleaseInfo release, string installedVersion, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
     {
         if (!IsUpdateAvailable(installedVersion, release.Tag)) return null;
+        var enteredImmediately = await _prepareGate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
+        if (!enteredImmediately)
+        {
+            AppDiagnosticsLogger.Record(
+                "UPDATE_PREPARE_QUEUED",
+                ("installedVersion", installedVersion),
+                ("targetVersion", release.Tag));
+            await _prepareGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            if (!IsUpdateAvailable(installedVersion, release.Tag)) return null;
+            return await PrepareCoreAsync(release, installedVersion, progress, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _prepareGate.Release();
+        }
+    }
+
+    private async Task<PreparedUpdate> PrepareCoreAsync(ReleaseInfo release, string installedVersion, IProgress<int>? progress, CancellationToken cancellationToken)
+    {
+        AppDiagnosticsLogger.Record(
+            "UPDATE_PREPARE_STARTED",
+            ("installedVersion", installedVersion),
+            ("targetVersion", release.Tag));
         var installer = release.Assets.FirstOrDefault(asset => asset.Name.EndsWith("-Setup.exe", StringComparison.OrdinalIgnoreCase) && (_windowsNative ? asset.Name.Contains("Windows-Native", StringComparison.OrdinalIgnoreCase) : !asset.Name.Contains("Windows-Native", StringComparison.OrdinalIgnoreCase)));
         if (installer is null) throw new InvalidOperationException("The release does not contain the expected setup file.");
         var checksum = release.Assets.FirstOrDefault(asset => asset.Name.Equals(installer.Name + ".sha256", StringComparison.OrdinalIgnoreCase));
@@ -52,11 +109,44 @@ internal sealed class UpdateService
         var installerPath = Path.Combine(releaseDirectory, installer.Name);
         var checksumPath = installerPath + ".sha256";
         using var client = ReleaseChecker.CreateClient();
+        AppDiagnosticsLogger.Record(
+            "UPDATE_CHECKSUM_DOWNLOAD_STARTED",
+            ("targetVersion", release.Tag),
+            ("asset", checksum.Name));
         await DownloadAsync(client, checksum.DownloadUrl, checksumPath, null, cancellationToken).ConfigureAwait(false);
         var expectedHash = ParseExpectedHash(await File.ReadAllTextAsync(checksumPath, cancellationToken).ConfigureAwait(false));
-        if (!File.Exists(installerPath) || !HashMatches(installerPath, expectedHash)) await DownloadAsync(client, installer.DownloadUrl, installerPath, progress, cancellationToken).ConfigureAwait(false);
-        if (!HashMatches(installerPath, expectedHash)) { File.Delete(installerPath); throw new InvalidDataException("The downloaded setup did not pass SHA-256 verification."); }
+        var canReuseInstaller = File.Exists(installerPath) && HashMatches(installerPath, expectedHash);
+        if (canReuseInstaller)
+        {
+            AppDiagnosticsLogger.Record(
+                "UPDATE_INSTALLER_REUSED",
+                ("targetVersion", release.Tag),
+                ("asset", installer.Name),
+                ("sha256", expectedHash));
+        }
+        else
+        {
+            AppDiagnosticsLogger.Record(
+                "UPDATE_INSTALLER_DOWNLOAD_STARTED",
+                ("targetVersion", release.Tag),
+                ("asset", installer.Name),
+                ("sizeBytes", installer.Size.ToString()));
+            await DownloadAsync(client, installer.DownloadUrl, installerPath, progress, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!HashMatches(installerPath, expectedHash))
+        {
+            TryDeleteFile(installerPath);
+            throw new InvalidDataException("The downloaded setup did not pass SHA-256 verification.");
+        }
+
         progress?.Report(100);
+        AppDiagnosticsLogger.Record(
+            "UPDATE_PREPARE_COMPLETED",
+            ("targetVersion", release.Tag),
+            ("asset", installer.Name),
+            ("sha256", expectedHash),
+            ("reused", canReuseInstaller.ToString()));
         return new PreparedUpdate(release.Tag, installerPath, expectedHash, release.Url);
     }
 
@@ -90,16 +180,82 @@ internal sealed class UpdateService
 
     private static async Task DownloadAsync(HttpClient client, string url, string destination, IProgress<int>? progress, CancellationToken cancellationToken)
     {
-        var temporaryPath = destination + ".download";
-        using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        var total = response.Content.Headers.ContentLength;
-        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        await using var target = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-        var buffer = new byte[81920]; long written = 0;
-        while (true) { var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false); if (read == 0) break; await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false); written += read; if (total is > 0) progress?.Report(Math.Clamp((int)(written * 100 / total.Value), 1, 99)); }
-        await target.FlushAsync(cancellationToken).ConfigureAwait(false);
-        File.Move(temporaryPath, destination, overwrite: true);
+        var temporaryPath = destination + $".download.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var total = response.Content.Headers.ContentLength;
+            long written = 0;
+
+            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+            await using (var target = new FileStream(
+                temporaryPath,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.None,
+                81920,
+                FileOptions.Asynchronous | FileOptions.SequentialScan))
+            {
+                var buffer = new byte[81920];
+                while (true)
+                {
+                    var read = await source.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+                    if (read == 0) break;
+                    await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
+                    written += read;
+                    if (total is > 0)
+                    {
+                        progress?.Report(Math.Clamp((int)(written * 100 / total.Value), 1, 99));
+                    }
+                }
+
+                await target.FlushAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (total is >= 0 && written != total.Value)
+            {
+                throw new EndOfStreamException($"The update download was incomplete: expected {total.Value} bytes, received {written}.");
+            }
+
+            await CommitDownloadedFileAsync(temporaryPath, destination, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            TryDeleteFile(temporaryPath);
+        }
+    }
+
+    private static async Task CommitDownloadedFileAsync(string temporaryPath, string destination, CancellationToken cancellationToken)
+    {
+        const int attempts = 8;
+        for (var attempt = 1; ; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                File.Move(temporaryPath, destination, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < attempts)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(75 * attempt), cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
     }
 
     private static bool HashMatches(string path, string expectedHash) { using var stream = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(stream)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase); }
@@ -133,6 +289,19 @@ internal sealed class UpdateService
     private void WriteState(UpdateState state) { Directory.CreateDirectory(_dataDirectory); File.WriteAllText(_statePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true })); }
     private void WriteHelperScript() { Directory.CreateDirectory(_dataDirectory); File.WriteAllText(_helperPath, HelperScript); }
     private static string SanitizeFileName(string value) => string.Concat(value.Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '-' : character));
+
+    private sealed class StaticResponseHandler(byte[] payload) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                RequestMessage = request,
+                Content = new ByteArrayContent(payload)
+            };
+            return Task.FromResult(response);
+        }
+    }
 
     private const string HelperScript = """
 param([ValidateSet('install','rollback')][string]$Mode,[int]$ParentPid,[string]$Root,[string]$Backup,[string]$Installer,[string]$Executable,[string]$StatePath)
