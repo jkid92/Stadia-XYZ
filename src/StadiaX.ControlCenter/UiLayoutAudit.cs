@@ -23,7 +23,6 @@ internal static class UiLayoutAudit
             Location = Screen.PrimaryScreen?.WorkingArea.Location ?? Point.Empty,
             Opacity = 1
         };
-        _ = form.Handle;
         MainFormRuntimeTuner.ApplyForAudit(form);
         form.Show();
         Application.DoEvents();
