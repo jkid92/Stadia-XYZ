@@ -333,7 +333,7 @@ internal static class MainFormRuntimeTuner
         var timer = new System.Windows.Forms.Timer { Interval = 33 };
         timer.Tick += (_, _) =>
         {
-            if (form.IsDisposed || tabs.SelectedTab?.Name != "Controller Test")
+            if (form.IsDisposed || tabs.SelectedTab?.Name != "Controller Mapping")
             {
                 return;
             }

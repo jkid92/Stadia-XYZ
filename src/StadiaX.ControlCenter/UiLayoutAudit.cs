@@ -156,8 +156,7 @@ internal static class UiLayoutAudit
             (Name: "Doctor", File: "ui-layout-audit-comfortable-doctor.png"),
             (Name: "Bluetooth", File: "ui-layout-audit-comfortable-devices.png"),
             (Name: "Windows Native", File: "ui-layout-audit-comfortable-controllers.png"),
-            (Name: "Button Mapping", File: "ui-layout-audit-comfortable-mapping.png"),
-            (Name: "Controller Test", File: "ui-layout-audit-comfortable-test.png")
+            (Name: "Controller Mapping", File: "ui-layout-audit-comfortable-mapping-test.png")
         };
         var pathsWritten = new List<string>();
         foreach (var target in targets)

@@ -15,6 +15,7 @@ internal sealed class ControllerVisualizer : Control
 
     private Image? _controllerImage;
     private ControllerTelemetryRow? _controller;
+    private ControllerInputButton? _selectedInput;
     private string _status = "Waiting for controller telemetry.";
     private string _missingImageDetail = "Controller image not found";
 
@@ -22,8 +23,28 @@ internal sealed class ControllerVisualizer : Control
     {
         DoubleBuffered = true;
         ResizeRedraw = true;
+        TabStop = true;
+        AccessibleRole = AccessibleRole.Diagram;
+        AccessibleName = "Stadia controller input map";
         BackColor = SurfaceBottom;
         Font = new Font("Segoe UI", 9, FontStyle.Bold);
+    }
+
+    public event Action<ControllerInputButton>? InputSelected;
+
+    public ControllerInputButton? SelectedInput
+    {
+        get => _selectedInput;
+        set
+        {
+            if (_selectedInput == value)
+            {
+                return;
+            }
+
+            _selectedInput = value;
+            Invalidate();
+        }
     }
 
     public bool LoadControllerImage(params string[] candidatePaths)
@@ -102,6 +123,32 @@ internal sealed class ControllerVisualizer : Control
         DrawControllerOverlays(g, imageBounds);
     }
 
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        Cursor = HitTestInput(e.Location) is null ? Cursors.Default : Cursors.Hand;
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        Cursor = Cursors.Default;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        Focus();
+        var input = HitTestInput(e.Location);
+        if (input is null)
+        {
+            return;
+        }
+
+        SelectedInput = input;
+        InputSelected?.Invoke(input.Value);
+    }
+
     private RectangleF GetImageBounds()
     {
         var margin = 18f;
@@ -153,32 +200,34 @@ internal sealed class ControllerVisualizer : Control
 
     private void DrawDpadSegment(Graphics g, RectangleF bounds, string button, float x, float y, float w, float h, string label)
     {
-        if (!IsPressed(button))
+        var active = IsPressed(button);
+        var selected = IsSelected(button);
+        if (!active && !selected)
         {
             return;
         }
 
         using var path = RoundedRect(RectOnImage(bounds, x, y, w, h), Scale(bounds, 28));
-        DrawContour(g, path, true, label, DpadGlow);
+        DrawContour(g, path, active, label, DpadGlow, selected: selected);
     }
 
     private void DrawCircleButton(Graphics g, RectangleF bounds, string button, float x, float y, float radius, string label, Color color)
     {
         using var path = new GraphicsPath();
         path.AddEllipse(RectOnImage(bounds, x - radius, y - radius, radius * 2, radius * 2));
-        DrawContour(g, path, IsPressed(button), label, color);
+        DrawContour(g, path, IsPressed(button), label, color, selected: IsSelected(button));
     }
 
     private void DrawPillButton(Graphics g, RectangleF bounds, string button, float centerX, float centerY, float width, float height, string label, Color color)
     {
         using var path = RoundedRect(RectOnImage(bounds, centerX - width / 2f, centerY - height / 2f, width, height), Scale(bounds, height / 2f));
-        DrawContour(g, path, IsPressed(button), label, color);
+        DrawContour(g, path, IsPressed(button), label, color, selected: IsSelected(button));
     }
 
     private void DrawVisibleShoulder(Graphics g, RectangleF bounds, string button, float x, float y, float width, float height, string label)
     {
         using var path = RoundedRect(RectOnImage(bounds, x, y, width, height), Scale(bounds, 42));
-        DrawContour(g, path, IsPressed(button), label, SystemGlow);
+        DrawContour(g, path, IsPressed(button), label, SystemGlow, selected: IsSelected(button));
     }
 
     private void DrawVirtualTrigger(Graphics g, RectangleF bounds, string label, int value, float xRatio)
@@ -210,7 +259,13 @@ internal sealed class ControllerVisualizer : Control
         var clicked = IsPressed(clickButton);
         using var path = new GraphicsPath();
         path.AddEllipse(RectOnImage(bounds, x - 94, y - 94, 188, 188));
-        DrawContour(g, path, moved || clicked, clicked ? label : "", clicked ? FaceGlow : DpadGlow);
+        DrawContour(
+            g,
+            path,
+            moved || clicked,
+            clicked ? label : "",
+            clicked ? FaceGlow : DpadGlow,
+            selected: IsSelected(clickButton));
 
         if (moved)
         {
@@ -225,7 +280,14 @@ internal sealed class ControllerVisualizer : Control
         }
     }
 
-    private void DrawContour(Graphics g, GraphicsPath path, bool active, string label, Color color, bool activeOnlyFill = false)
+    private void DrawContour(
+        Graphics g,
+        GraphicsPath path,
+        bool active,
+        string label,
+        Color color,
+        bool activeOnlyFill = false,
+        bool selected = false)
     {
         if (active)
         {
@@ -246,6 +308,16 @@ internal sealed class ControllerVisualizer : Control
             };
             g.DrawPath(hotBorder, path);
         }
+        else if (selected)
+        {
+            using var selectedFill = new SolidBrush(Color.FromArgb(58, SystemGlow));
+            using var selectedBorder = new Pen(Color.FromArgb(245, 35, 116, 146), Math.Max(2.2f, Width / 620f))
+            {
+                LineJoin = LineJoin.Round
+            };
+            g.FillPath(selectedFill, path);
+            g.DrawPath(selectedBorder, path);
+        }
         else if (!activeOnlyFill)
         {
             using var outline = new Pen(Color.FromArgb(95, 72, 220, 211), Math.Max(1f, Width / 1120f))
@@ -256,7 +328,7 @@ internal sealed class ControllerVisualizer : Control
             g.DrawPath(outline, path);
         }
 
-        if (active && !string.IsNullOrWhiteSpace(label))
+        if ((active || selected) && !string.IsNullOrWhiteSpace(label))
         {
             DrawCenteredText(g, label, path.GetBounds(), Color.FromArgb(12, 18, 26));
         }
@@ -283,6 +355,56 @@ internal sealed class ControllerVisualizer : Control
     private bool IsPressed(string button)
     {
         return _controller?.Buttons.TryGetValue(button, out var pressed) == true && pressed;
+    }
+
+    private bool IsSelected(string telemetryKey)
+    {
+        return _selectedInput is not null &&
+               ControllerButtonCatalog.FindInput(telemetryKey)?.Id == _selectedInput;
+    }
+
+    private ControllerInputButton? HitTestInput(Point location)
+    {
+        var bounds = GetImageBounds();
+        if (!bounds.Contains(location))
+        {
+            return null;
+        }
+
+        var source = new PointF(
+            (location.X - bounds.Left) * SourceWidth / bounds.Width,
+            (location.Y - bounds.Top) * SourceHeight / bounds.Height);
+
+        if (HitRectangle(source, 545, 34, 370, 86)) return ControllerInputButton.Lb;
+        if (HitRectangle(source, 1318, 34, 370, 86)) return ControllerInputButton.Rb;
+        if (HitCircle(source, 1487, 162, 70)) return ControllerInputButton.Y;
+        if (HitCircle(source, 1605, 269, 70)) return ControllerInputButton.B;
+        if (HitCircle(source, 1384, 270, 70)) return ControllerInputButton.X;
+        if (HitCircle(source, 1485, 373, 70)) return ControllerInputButton.A;
+        if (HitRectangle(source, 782, 125, 114, 66)) return ControllerInputButton.Select;
+        if (HitRectangle(source, 1157, 125, 114, 66)) return ControllerInputButton.Start;
+        if (HitCircle(source, 908, 274, 52)) return ControllerInputButton.Assistant;
+        if (HitCircle(source, 1146, 272, 52)) return ControllerInputButton.Capture;
+        if (HitCircle(source, 1027, 496, 76)) return ControllerInputButton.Stadia;
+        if (HitCircle(source, 755, 501, 108)) return ControllerInputButton.L3;
+        if (HitCircle(source, 1286, 496, 108)) return ControllerInputButton.R3;
+        if (HitRectangle(source, 520, 140, 96, 108)) return ControllerInputButton.DpadUp;
+        if (HitRectangle(source, 520, 300, 96, 108)) return ControllerInputButton.DpadDown;
+        if (HitRectangle(source, 420, 226, 112, 98)) return ControllerInputButton.DpadLeft;
+        if (HitRectangle(source, 602, 226, 104, 98)) return ControllerInputButton.DpadRight;
+        return null;
+    }
+
+    private static bool HitRectangle(PointF point, float x, float y, float width, float height)
+    {
+        return point.X >= x && point.X <= x + width && point.Y >= y && point.Y <= y + height;
+    }
+
+    private static bool HitCircle(PointF point, float centerX, float centerY, float radius)
+    {
+        var dx = point.X - centerX;
+        var dy = point.Y - centerY;
+        return dx * dx + dy * dy <= radius * radius;
     }
 
     private static float NormalizeStick(int value)

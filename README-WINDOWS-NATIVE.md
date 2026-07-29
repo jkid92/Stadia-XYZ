@@ -12,7 +12,7 @@ The `v0.9.0-beta.3` line separates HID discovery, controller state and mapping f
 2. Pair the Stadia controller in Windows Bluetooth settings.
 3. Press **Start**.
 4. Approve the Windows administrator request if a driver needs to be installed or configured.
-5. Open **Test input** and press controller buttons to verify the virtual pad.
+5. Open **Mapping + Test** and press controller buttons to verify or customize the virtual pad.
 
 Start checks HidHide and ViGEmBus, installs the bundled official components when needed, protects the physical device, creates up to four virtual Xbox 360 slots, and starts forwarding input. The pinned SHA-256 hashes and Nefarius Authenticode publisher are verified before installation; `winget` is not required. No separate configuration utility is needed.
 
@@ -27,7 +27,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - **Map all**: walks through every Xbox button in sequence and records the Stadia input you press for each one.
 - **Mapping profiles**: duplicate, rename, activate, or delete independent layouts. Existing schema-1 mapping files are migrated automatically and invalid files never replace the last valid runtime profile.
 - **Mapping safety**: assigning an input replaces conflicting assignments, incomplete profiles are highlighted before saving, and unsaved changes are offered for saving when the app closes.
-- **Test input**: shows live buttons, sticks, triggers, packet rate, and rumble tests.
+- **Mapping + Test**: combines profiles, button assignments, the live controller image, sticks, triggers, packet rate, and rumble testing.
 - **Logs**: displays connection phases, user actions, and application diagnostics.
 - **Support**: creates a troubleshooting bundle.
 

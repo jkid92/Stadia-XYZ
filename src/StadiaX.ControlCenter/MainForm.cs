@@ -59,7 +59,6 @@ internal sealed class MainForm : Form
     private readonly ListView _controllerList = new();
     private readonly ListView _buttonMappingList = new();
     private readonly ControllerVisualizer _controllerVisualizer = new();
-    private readonly ControllerMappingDiagram _mappingDiagram = new();
     private readonly ComboBox _controllerPadCombo = new();
     private readonly Label _controllerVisualStatusLabel = new();
     private readonly ComboBox _mappingProfileCombo = new();
@@ -118,6 +117,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
     private readonly System.Windows.Forms.Timer _mappingCaptureTimer = new();
+    private readonly ToolTip _controllerToolTip = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly ImageList _linuxBluetoothRowSizer = new() { ImageSize = new Size(1, 26), ColorDepth = ColorDepth.Depth32Bit };
     private readonly Icon _baseIcon;
@@ -247,6 +247,7 @@ internal sealed class MainForm : Form
             _logTimer.Stop();
             _batteryTimer.Stop();
             _mappingCaptureTimer.Stop();
+            _controllerToolTip.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
             _batteryIndicatorIcon?.Dispose();
@@ -437,7 +438,7 @@ internal sealed class MainForm : Form
         AddActionGridButton(actionGrid, "Stop and restore", 0, 1, 2, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
         AddActionGridButton(actionGrid, "Check", 0, 2, 1, async () => await ProbeWindowsNativeAsync());
         AddActionGridButton(actionGrid, "Refresh", 1, 2, 1, async () => await RefreshEverythingAsync());
-        AddActionGridButton(actionGrid, "Test input", 0, 3, 1, () => SelectTabIfExists("Controller Test"));
+        AddActionGridButton(actionGrid, "Test input", 0, 3, 1, () => SelectTabIfExists("Controller Mapping"));
         AddActionGridButton(actionGrid, "Logs", 1, 3, 1, () => SelectTabIfExists("Logs"));
 
         var summary = new TextBox
@@ -500,7 +501,6 @@ internal sealed class MainForm : Form
         _tabs.TabPages.Add(BuildDashboardPage());
         _tabs.TabPages.Add(BuildWindowsNativePage());
         _tabs.TabPages.Add(BuildButtonMappingPage());
-        _tabs.TabPages.Add(BuildControllerTestPage());
         _tabs.TabPages.Add(BuildLogsPage());
         _tabs.TabPages.Add(BuildDiagnosticsPage());
         if (_tabs.TabPages.Count > 0)
@@ -625,7 +625,7 @@ internal sealed class MainForm : Form
         AddFlowButton(actionFlow, "Start", StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
         AddFlowButton(actionFlow, "Stop and restore", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
         AddFlowButton(actionFlow, "Check controllers", async () => await ProbeWindowsNativeAsync());
-        AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Test"));
+        AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Mapping"));
         AddFlowButton(actionFlow, "Logs", () => SelectTabIfExists("Logs"));
         if (IsCompactUi())
         {
@@ -922,7 +922,7 @@ internal sealed class MainForm : Form
         AddFlowButton(flow, "Pair", async () => await RunLinuxCommandForSelectedAsync("pair"));
         AddFlowButton(flow, "Connect", async () => await RunLinuxCommandForSelectedAsync("connect"));
         AddFlowButton(flow, "Use selected", UseSelectedLinuxControllers);
-        AddFlowButton(flow, "Test input", () => SelectTabIfExists("Controller Test"));
+        AddFlowButton(flow, "Test input", () => SelectTabIfExists("Controller Mapping"));
         return flow;
     }
 
@@ -1075,7 +1075,7 @@ internal sealed class MainForm : Form
             AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
             AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
             AddActionGridButton(actions, "Stop", 0, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Test"));
+            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Mapping"));
             AddActionGridButton(actions, "Connection details", 0, 2, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         else
@@ -1083,7 +1083,7 @@ internal sealed class MainForm : Form
             AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
             AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
             AddActionGridButton(actions, "Stop", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-            AddActionGridButton(actions, "Test input", 0, 1, 1, () => SelectTabIfExists("Controller Test"));
+            AddActionGridButton(actions, "Test input", 0, 1, 1, () => SelectTabIfExists("Controller Mapping"));
             AddActionGridButton(actions, "Connection details", 1, 1, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         statusLayout.Controls.Add(actions, 0, 3);
@@ -1280,78 +1280,137 @@ internal sealed class MainForm : Form
         return page;
     }
 
-    private TabPage BuildControllerTestPage()
+    private Control BuildControllerLivePanel()
     {
-        var page = CreatePage("Test", "Controller Test");
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(14) };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 300));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        page.Controls.Add(layout);
+        var liveGroup = CreateGroup("Live controller");
+        liveGroup.Margin = new Padding(4, 4, 0, 4);
+        var liveLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = IsCompactUi() ? new Padding(6) : new Padding(8)
+        };
+        liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 34 : 38));
+        liveLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        liveLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 42 : 48));
+        liveGroup.Controls.Add(liveLayout);
 
-        var visualGroup = CreateGroup("Visual controller test");
-        _controllerVisualizer.Dock = DockStyle.Fill;
-        _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerPhoto.png").ToArray());
-        visualGroup.Controls.Add(_controllerVisualizer);
-        layout.Controls.Add(visualGroup, 1, 0);
+        var toolbar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 26 : 34));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 70 : 104));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 48 : 56));
+        toolbar.Controls.Add(new Label
+        {
+            Text = "Pad",
+            Dock = DockStyle.Fill,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
 
-        var telemetryGroup = CreateGroup("Telemetry");
-        var telemetryLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(10) };
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 46 : 48));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 88));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
-        telemetryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        telemetryGroup.Controls.Add(telemetryLayout);
-
-        var padPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false };
         _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _controllerPadCombo.Width = 150;
-        _controllerPadCombo.Items.AddRange(new object[] { "Auto active", "P1", "P2", "P3", "P4" });
+        _controllerPadCombo.Dock = DockStyle.Fill;
+        _controllerPadCombo.Items.AddRange(new object[] { "Auto", "P1", "P2", "P3", "P4" });
         _controllerPadCombo.SelectedIndex = 0;
         _controllerPadCombo.SelectedIndexChanged += (_, _) =>
         {
             LogUserSelection("Controller test pad selected", ("pad", _controllerPadCombo.SelectedItem?.ToString()));
             RefreshControllerTelemetry();
         };
-        padPanel.Controls.Add(new Label { Text = "Pad", Width = 50, Height = 32, Margin = new Padding(3, 0, 3, 0), AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft });
-        padPanel.Controls.Add(_controllerPadCombo);
-        telemetryLayout.Controls.Add(padPanel, 0, 0);
+        toolbar.Controls.Add(_controllerPadCombo, 1, 0);
+        AddControllerLiveButton(toolbar, "Vibrate", 2, TestSelectedRumbleAsync);
+        AddControllerLiveButton(
+            toolbar,
+            "Refresh",
+            3,
+            () =>
+            {
+                RefreshControllerTelemetry();
+                return Task.CompletedTask;
+            },
+            glyph: "\u21BB");
+        liveLayout.Controls.Add(toolbar, 0, 0);
 
-        var rumbleGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 5, RowCount = 1, Margin = new Padding(0) };
-        rumbleGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 62));
-        for (var slot = 0; slot < 4; slot++)
+        _controllerVisualizer.Dock = DockStyle.Fill;
+        _controllerVisualizer.MinimumSize = new Size(IsCompactUi() ? 300 : 360, IsCompactUi() ? 170 : 200);
+        _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerPhoto.png").ToArray());
+        _controllerVisualizer.InputSelected += SelectMappingInputFromVisualizer;
+        liveLayout.Controls.Add(_controllerVisualizer, 0, 1);
+
+        var statusRow = new TableLayoutPanel
         {
-            rumbleGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
-        }
-        rumbleGrid.Controls.Add(new Label { Text = "Rumble", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
-        AddActionGridButton(rumbleGrid, "1", 1, 0, 1, async () => await TestRumbleAsync(1));
-        AddActionGridButton(rumbleGrid, "2", 2, 0, 1, async () => await TestRumbleAsync(2));
-        AddActionGridButton(rumbleGrid, "3", 3, 0, 1, async () => await TestRumbleAsync(3));
-        AddActionGridButton(rumbleGrid, "4", 4, 0, 1, async () => await TestRumbleAsync(4));
-        telemetryLayout.Controls.Add(rumbleGrid, 0, 1);
-
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        statusRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 74 : 90));
         _controllerVisualStatusLabel.AutoSize = false;
         _controllerVisualStatusLabel.Dock = DockStyle.Fill;
         _controllerVisualStatusLabel.AutoEllipsis = true;
-        _controllerVisualStatusLabel.TextAlign = ContentAlignment.TopLeft;
-        telemetryLayout.Controls.Add(_controllerVisualStatusLabel, 0, 2);
+        _controllerVisualStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
+        statusRow.Controls.Add(_controllerVisualStatusLabel, 0, 0);
+        AddControllerLiveButton(
+            statusRow,
+            "State",
+            1,
+            () =>
+            {
+                OpenFileIfExists(_paths.ControllerState);
+                return Task.CompletedTask;
+            });
+        liveLayout.Controls.Add(statusRow, 0, 2);
+        return liveGroup;
+    }
 
-        telemetryLayout.Controls.Add(new Label
+    private Task TestSelectedRumbleAsync()
+    {
+        var selectedPad = _controllerPadCombo.SelectedIndex;
+        if (selectedPad <= 0)
         {
-            Text = "Pads",
-            Dock = DockStyle.Fill,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI", 9, FontStyle.Bold)
-        }, 0, 3);
-        _controllerList.Dock = DockStyle.Fill;
-        ConfigureList(_controllerList, ("Pad", 42), ("On", 38), ("P/s", 54), ("Trig", 58), ("Pressed", 96));
-        telemetryLayout.Controls.Add(_controllerList, 0, 4);
-        layout.Controls.Add(telemetryGroup, 0, 0);
+            selectedPad = _lastTelemetrySnapshot?.Controllers
+                .FirstOrDefault(controller => controller.Active)?.Index ?? 1;
+        }
 
-        page.Controls.Add(BuildTopPanel("Reads logs/controller-state.json from the native receiver",
-            ("Refresh", RefreshControllerTelemetry),
-            ("Open state", () => OpenFileIfExists(_paths.ControllerState))));
-        return page;
+        return TestRumbleAsync(Math.Clamp(selectedPad, 1, 4));
+    }
+
+    private void AddControllerLiveButton(
+        TableLayoutPanel parent,
+        string text,
+        int column,
+        Func<Task> action,
+        string? glyph = null)
+    {
+        var button = new ModernButton
+        {
+            Text = glyph ?? text,
+            Dock = DockStyle.Fill,
+            MinimumSize = new Size(0, IsCompactUi() ? 26 : 30),
+            Margin = new Padding(2, 1, 2, 1),
+            Padding = new Padding(3, 0, 3, 0),
+            AccessibleName = text,
+            AccessibleRole = AccessibleRole.PushButton
+        };
+        if (glyph is not null)
+        {
+            button.Font = new Font("Segoe UI Symbol", IsCompactUi() ? 10F : 11F, FontStyle.Bold);
+        }
+        _controllerToolTip.SetToolTip(button, _localization.Translate(text));
+        button.Click += (_, _) =>
+        {
+            LogUserAction($"Button clicked: {text}");
+            _ = RunActionWithDialogAsync(text, action, showDialog: true);
+        };
+        parent.Controls.Add(button, column, 0);
     }
 
     private TabPage BuildMacrosPage()
@@ -1456,7 +1515,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildButtonMappingPage()
     {
-        var page = CreatePage("Mapping", "Button Mapping");
+        var page = CreatePage("Mapping + Test", "Controller Mapping");
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -1525,13 +1584,24 @@ internal sealed class MainForm : Form
             RowCount = 1,
             Margin = new Padding(0)
         };
-        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
+        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        workArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         layout.Controls.Add(workArea, 0, 1);
+
+        var leftStack = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0)
+        };
+        leftStack.RowStyles.Add(new RowStyle(SizeType.Percent, 64));
+        leftStack.RowStyles.Add(new RowStyle(SizeType.Percent, 36));
+        workArea.Controls.Add(leftStack, 0, 0);
 
         var listGroup = CreateGroup("Xbox outputs");
         listGroup.Margin = new Padding(0, 4, 4, 4);
-        ConfigureList(_buttonMappingList, ("Xbox output", 150), ("Stadia input", 180), ("State", 82));
+        ConfigureList(_buttonMappingList, ("Xbox output", 108), ("Stadia input", 120), ("State", 54));
         _buttonMappingList.SelectedIndexChanged += (_, _) =>
         {
             if (_buttonMappingList.SelectedItems.Count == 0 ||
@@ -1547,22 +1617,37 @@ internal sealed class MainForm : Form
                 ("input", MappingInputSummary(output.Id)));
         };
         listGroup.Controls.Add(_buttonMappingList);
-        workArea.Controls.Add(listGroup, 0, 0);
+        leftStack.Controls.Add(listGroup, 0, 0);
 
-        var diagramGroup = CreateGroup("Virtual Xbox controller");
-        diagramGroup.Margin = new Padding(4);
-        _mappingDiagram.Dock = DockStyle.Fill;
-        _mappingDiagram.MinimumSize = new Size(IsCompactUi() ? 360 : 420, 250);
-        _mappingDiagram.OutputSelected += output =>
+        var telemetryGroup = CreateGroup("Connected pads");
+        telemetryGroup.Margin = new Padding(0, 4, 4, 4);
+        ConfigureList(
+            _controllerList,
+            ("Pad", 38),
+            ("On", 34),
+            ("P/s", 46),
+            ("Trig", 52),
+            ("Pressed", 96));
+        _controllerList.SelectedIndexChanged += (_, _) =>
         {
-            SelectMappingOutput(output, selectList: true);
-            LogUserSelection(
-                "Mapping diagram output selected",
-                ("output", output.ToString()),
-                ("input", MappingInputSummary(output)));
+            if (_controllerList.SelectedItems.Count == 0)
+            {
+                return;
+            }
+
+            var padText = _controllerList.SelectedItems[0].Text;
+            if (padText.Length == 2 &&
+                padText[0] == 'P' &&
+                int.TryParse(padText[1..], out var pad) &&
+                pad is >= 1 and <= 4)
+            {
+                _controllerPadCombo.SelectedIndex = pad;
+            }
         };
-        diagramGroup.Controls.Add(_mappingDiagram);
-        workArea.Controls.Add(diagramGroup, 1, 0);
+        telemetryGroup.Controls.Add(_controllerList);
+        leftStack.Controls.Add(telemetryGroup, 0, 1);
+
+        workArea.Controls.Add(BuildControllerLivePanel(), 1, 0);
 
         var editorGroup = CreateGroup("Assignment");
         editorGroup.Margin = new Padding(0, 4, 0, 0);
@@ -1710,7 +1795,6 @@ internal sealed class MainForm : Form
         }
 
         _selectedMappingOutput = outputId;
-        _mappingDiagram.SelectedOutput = outputId;
         _mappingUiUpdating = true;
         try
         {
@@ -1730,6 +1814,7 @@ internal sealed class MainForm : Form
                 .ToList()
                 .FindIndex(input => input.Id == (hasAssignedInput ? assignedInput : null));
             _mappingInputCombo.SelectedIndex = Math.Max(0, inputIndex);
+            _controllerVisualizer.SelectedInput = hasAssignedInput ? assignedInput : null;
         }
         finally
         {
@@ -1749,6 +1834,36 @@ internal sealed class MainForm : Form
             matchingItem.Selected = true;
             matchingItem.EnsureVisible();
         }
+    }
+
+    private void SelectMappingInputFromVisualizer(ControllerInputButton input)
+    {
+        if (_mappingCaptureArmed)
+        {
+            StopButtonMappingCapture("Input detection cancelled");
+        }
+
+        var inputIndex = _mappingInputCombo.Items
+            .Cast<MappingInputOption>()
+            .ToList()
+            .FindIndex(option => option.Id == input);
+        if (inputIndex < 0)
+        {
+            return;
+        }
+
+        var output = _selectedMappingOutput;
+        if (_mappingInputCombo.SelectedIndex == inputIndex)
+        {
+            _controllerVisualizer.SelectedInput = input;
+            return;
+        }
+
+        _mappingInputCombo.SelectedIndex = inputIndex;
+        LogUserSelection(
+            "Controller image input selected",
+            ("input", input.ToString()),
+            ("output", output.ToString()));
     }
 
     private void StageMappingAssignment(
@@ -1771,7 +1886,6 @@ internal sealed class MainForm : Form
                 _buttonMapping);
             SetMappingDirty(true);
             RefreshButtonMappingList();
-            _mappingDiagram.SetMapping(_buttonMapping);
             SelectMappingOutput(output, selectList: true);
             UpdateMappingValidation();
 
@@ -1897,7 +2011,6 @@ internal sealed class MainForm : Form
                 _buttonMapping);
             SetMappingDirty(true);
             RefreshButtonMappingList();
-            _mappingDiagram.SetMapping(_buttonMapping);
             SelectMappingOutput(XboxOutputButton.A, selectList: true);
             UpdateMappingValidation();
             _mappingStatusLabel.Text = _localization.Translate("Default mapping restored");
@@ -1938,7 +2051,6 @@ internal sealed class MainForm : Form
         }
 
         RefreshButtonMappingList();
-        _mappingDiagram.SetMapping(_buttonMapping);
         SelectMappingOutput(_selectedMappingOutput, selectList: true);
         UpdateMappingValidation();
     }
@@ -2182,11 +2294,6 @@ internal sealed class MainForm : Form
     private void UpdateButtonMappingCapture(ControllerTelemetrySnapshot snapshot)
     {
         var pressed = PressedTelemetryKeys(snapshot);
-        _mappingDiagram.SetPressedInputs(
-            pressed
-                .Select(ControllerButtonCatalog.FindInput)
-                .Where(input => input is not null)
-                .Select(input => input!.Id));
         if (!_mappingCaptureArmed)
         {
             return;
@@ -2349,7 +2456,6 @@ internal sealed class MainForm : Form
         if (_buttonMappingList.Columns.Count > 0)
         {
             RefreshButtonMappingList();
-            _mappingDiagram.SetMapping(_buttonMapping);
             UpdateMappingValidation();
             SetMappingDirty(_mappingDirty);
             _mappingInputCombo.Refresh();
@@ -3331,15 +3437,16 @@ internal sealed class MainForm : Form
         if (selected is null)
         {
             var stateText = File.Exists(_paths.ControllerState) && !NativeControlServices.IsControllerTelemetryFileFresh(_paths.ControllerState)
-                ? $"Controller telemetry is stale. Last update {snapshot.ReadAt.ToLocalTime():HH:mm:ss}."
-                : "No controller telemetry yet. Start Windows Native and press a button.";
+                ? $"{_localization.Translate("Controller telemetry is stale. Last update")} {snapshot.ReadAt.ToLocalTime():HH:mm:ss}."
+                : _localization.Translate("No controller telemetry yet. Start Windows Native and press a button.");
             _controllerVisualizer.SetTelemetry(null, stateText);
             _controllerVisualStatusLabel.Text = stateText;
             return;
         }
 
         var pressed = selected.Buttons.Where(pair => pair.Value).Select(pair => pair.Key.ToUpperInvariant()).ToArray();
-        var status = $"P{selected.Index} active={selected.Active}{Environment.NewLine}packets/s={selected.PacketsPerSecond:0.0} packets={selected.Packets}{Environment.NewLine}triggers={selected.TriggerLeft}/{selected.TriggerRight}{Environment.NewLine}pressed={(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
+        var status = $"P{selected.Index}  |  {selected.PacketsPerSecond:0.0} p/s  |  LT/RT {selected.TriggerLeft}/{selected.TriggerRight}  |  " +
+                     $"{_localization.Translate("Pressed")}: {(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
         _controllerVisualizer.SetTelemetry(selected, status);
         _controllerVisualStatusLabel.Text = status;
     }

@@ -53,7 +53,7 @@ Windows may request administrator permission while a driver is installed or whil
 1. Turn on the paired Stadia controller.
 2. Open Stadia X Windows Native.
 3. Press **Start**.
-4. Open **Test input** to confirm buttons and sticks.
+4. Open **Mapping + Test** to confirm buttons and sticks or customize the mapping.
 5. Press **Stop and restore** before troubleshooting the physical device or uninstalling drivers.
 
 ## How It Works
