@@ -4,7 +4,7 @@ This package contains the experimental Windows Native edition of Stadia X. It do
 
 Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus. Games therefore receive one clean input stream instead of duplicated presses.
 
-The `v0.9.0-beta.2` line separates HID discovery, controller state and mapping from the virtual-gamepad bus. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
+The `v0.9.0-beta.3` line separates HID discovery, controller state and mapping from the virtual-gamepad bus. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
 
 ## First Run
 

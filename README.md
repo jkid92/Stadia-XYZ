@@ -13,7 +13,7 @@
 
 Stadia X Windows Native reads the physical Stadia controller directly, maps its input, and creates a standard virtual Xbox 360 controller through ViGEmBus. HidHide isolates the original device so games receive one input stream instead of duplicated button presses.
 
-Version `v0.9.0-beta.2` starts the consolidated native-backend line. Windows HID discovery, controller state, mapping, physical-device isolation, and virtual-controller output now have separate ownership boundaries. ViGEmBus remains the current output implementation, but it is no longer embedded directly in the receiver.
+Version `v0.9.0-beta.3` starts the consolidated native-backend line. Windows HID discovery, controller state, mapping, physical-device isolation, and virtual-controller output now have separate ownership boundaries. ViGEmBus remains the current output implementation, but it is no longer embedded directly in the receiver.
 
 ## What It Does
 
