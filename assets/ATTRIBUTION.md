@@ -12,6 +12,11 @@
 - Local changes: the original controller pixels and geometry are preserved; an AI-assisted silhouette mask removes the photographic background and watermark for the interactive mapping view.
 - Note: the same redistribution consideration as the source photo applies.
 
+## StadiaX-WindowsNative-icon.png / StadiaX-WindowsNative.ico
+
+- Source: the Windows Native icon now incorporates the transparent controller reference from `StadiaControllerCutout.png`.
+- Local changes: AI-assisted compositing replaces the previous illustrated controller while preserving the Windows badge and Stadia X branding; the ICO contains dedicated Windows sizes from 16 through 256 pixels.
+
 ## Bundled Windows Native dependencies
 
 - HidHide 1.5.230: official signed installer, MIT license, https://github.com/nefarius/HidHide/releases/tag/v1.5.230.0
