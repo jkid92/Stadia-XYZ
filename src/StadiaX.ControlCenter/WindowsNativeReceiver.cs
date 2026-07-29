@@ -19,6 +19,7 @@ internal sealed class WindowsNativeReceiver
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly ControllerButtonMappingProvider _mappingProvider;
     private readonly ControllerRumbleSettingsProvider _rumbleSettings;
+    private readonly WindowsNativeMacroEngine _macroEngine;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
     private readonly object _controllerInputStateLock = new();
@@ -52,6 +53,7 @@ internal sealed class WindowsNativeReceiver
             message => LogInfo("{0}", message),
             message => LogError("{0}", message));
         _rumbleSettings = new ControllerRumbleSettingsProvider(paths.RumbleSettings);
+        _macroEngine = new WindowsNativeMacroEngine(paths.MacroConfig, LogInfo, LogError);
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -61,9 +63,12 @@ internal sealed class WindowsNativeReceiver
 
         try
         {
-            var devices = ((_initialDevices is { Count: > 0 }
+            var discoveredDevices = (_initialDevices is { Count: > 0 }
                     ? _initialDevices
-                    : await _scanner.FindStadiaControllersAsync().ConfigureAwait(false)))
+                    : await _scanner.FindStadiaControllersAsync().ConfigureAwait(false));
+            var profiles = new NativeControlServices(_paths, new ProcessRunner()).GetProfiles();
+            var devices = NativeControlServices
+                .OrderWindowsNativeDevices(discoveredDevices, profiles)
                 .Take(MaxControllers)
                 .ToArray();
             if (devices.Length == 0)
@@ -182,6 +187,7 @@ internal sealed class WindowsNativeReceiver
             DeleteReadyMarker();
             ClearControllerTelemetry();
             CleanupVirtualGamepads();
+            _macroEngine.Dispose();
             LogInfo("Windows Native receiver stopped");
         }
     }
@@ -290,12 +296,13 @@ internal sealed class WindowsNativeReceiver
                             continue;
                         }
 
+                        var outputState = _macroEngine.ProcessState(controllerIndex, state);
                         var virtualGamepads = _virtualGamepads;
                         var updateError = "bus unavailable";
                         if (virtualGamepads is null ||
                             !virtualGamepads.TryUpdate(
                                 controllerIndex,
-                                ControllerStateMapper.ToXusb(state, _mappingProvider.GetCurrent()),
+                                ControllerStateMapper.ToXusb(outputState, _mappingProvider.GetCurrent()),
                                 out updateError))
                         {
                             ReportVirtualUpdateFailure(controllerIndex, updateError);
@@ -310,6 +317,7 @@ internal sealed class WindowsNativeReceiver
                 }
                 finally
                 {
+                    _macroEngine.ResetController(controllerIndex);
                     Interlocked.Exchange(ref _rumbleWriters[controllerIndex], null)?.Dispose();
                     if (!cancellationToken.IsCancellationRequested)
                     {

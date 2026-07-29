@@ -29,6 +29,12 @@ internal sealed record ControllerProfile(string Name, string Mac, int Slot, bool
 
 internal sealed record MacroMapping(string Code, string Shortcut);
 
+internal sealed record WindowsNativeCapacityEstimate(
+    int Controllers,
+    string Confidence,
+    string AdapterName,
+    int OtherActiveBluetoothDevices);
+
 internal sealed record ControllerTelemetryRow(
     int Index,
     bool Active,
@@ -737,6 +743,179 @@ bluetoothctl devices 2>&1 || true
         return path;
     }
 
+    public async Task<string> CreateWindowsNativeCapacityReportAsync()
+    {
+        Directory.CreateDirectory(_paths.LogDirectory);
+        var windowsBluetooth = await GetWindowsBluetoothDevicesAsync().ConfigureAwait(false);
+        var scanner = new WindowsNativeHidScanner(new HidHideManager(_paths, _runner));
+        IReadOnlyList<WindowsNativeHidDevice> controllers;
+        try
+        {
+            controllers = OrderWindowsNativeDevices(
+                await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(false));
+        }
+        catch (Exception ex)
+        {
+            controllers = Array.Empty<WindowsNativeHidDevice>();
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_CAPACITY_SCAN_WARN",
+                ("error", ex.ToString()));
+        }
+
+        var estimate = EstimateWindowsNativeCapacity(windowsBluetooth, controllers.Count);
+        var profiles = GetProfiles().OrderBy(profile => profile.Slot).ToArray();
+        var mappings = LoadMacroMappings();
+        var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(
+            _paths,
+            out var receiverPid,
+            out var activeSlots);
+        var path = Path.Combine(_paths.LogDirectory, "windows-native-capacity.txt");
+        var lines = new List<string>
+        {
+            "Stadia X Windows Native controller capacity report",
+            $"Created: {DateTimeOffset.Now:o}",
+            $"Bluetooth adapter: {estimate.AdapterName}",
+            $"Estimated reliable capacity: {estimate.Controllers}/4 controller(s)",
+            $"Estimate confidence: {estimate.Confidence}",
+            $"Other active Bluetooth devices: {estimate.OtherActiveBluetoothDevices}",
+            $"Visible Stadia HID controllers: {controllers.Count}",
+            $"Receiver active: {receiverActive}",
+            $"Receiver PID/slots: {(receiverActive ? receiverPid : 0)}/{(receiverActive ? activeSlots : 0)}",
+            $"Preferred controller profiles: {profiles.Count(profile => profile.AutoConnect)}",
+            $"Configured macro shortcuts: {mappings.Count}",
+            "",
+            "Stadia controllers:"
+        };
+        lines.AddRange(controllers.Count == 0
+            ? new[] { "- none visible" }
+            : controllers.Select((device, index) =>
+                $"- P{index + 1}: {device.FriendlyName} address={EmptyAsNone(device.BluetoothAddress)} " +
+                $"battery={(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "unknown")} " +
+                $"input={device.MaxInputReportLength} output={device.MaxOutputReportLength}"));
+        lines.Add("");
+        lines.Add("Preferred profiles:");
+        lines.AddRange(profiles.Length == 0
+            ? new[] { "- none" }
+            : profiles.Select(profile =>
+                $"- P{profile.Slot}: {profile.Name} {profile.Mac} startup={profile.AutoConnect}"));
+        lines.Add("");
+        lines.Add("Guidance:");
+        lines.Add("- A modern Bluetooth 5.x adapter is recommended for three or four controllers.");
+        lines.Add("- Bluetooth audio on the same radio can reduce stable controller capacity.");
+        lines.Add("- Preferred profiles keep controller ordering deterministic when Windows exposes the Bluetooth address.");
+
+        await File.WriteAllTextAsync(
+            path,
+            string.Join(Environment.NewLine, lines) + Environment.NewLine).ConfigureAwait(false);
+        return path;
+    }
+
+    internal static WindowsNativeCapacityEstimate EstimateWindowsNativeCapacity(
+        IReadOnlyList<WindowsBluetoothDevice> devices,
+        int visibleControllers)
+    {
+        var adapter = devices.FirstOrDefault(device => IsLikelyWindowsBluetoothAdapter(device.Name));
+        var adapterName = adapter?.Name ?? "Windows Bluetooth adapter (model unavailable)";
+        var normalized = adapterName.ToLowerInvariant();
+        var capacity = 2;
+        var confidence = "low";
+        if (normalized.Contains("intel") ||
+            normalized.Contains("qualcomm") ||
+            normalized.Contains("mediatek") ||
+            normalized.Contains("bluetooth 5"))
+        {
+            capacity = 4;
+            confidence = "good";
+        }
+        else if (normalized.Contains("realtek") || normalized.Contains("broadcom"))
+        {
+            capacity = 3;
+            confidence = "medium";
+        }
+        else if (normalized.Contains("csr") ||
+                 normalized.Contains("generic") ||
+                 normalized.Contains("4.0"))
+        {
+            capacity = 2;
+            confidence = "low";
+        }
+
+        var otherActive = devices
+            .Where(device =>
+                device.Status.Equals("OK", StringComparison.OrdinalIgnoreCase) &&
+                IsWindowsBluetoothPhysicalDevice(device.InstanceId) &&
+                !device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase))
+            .Select(device =>
+                string.IsNullOrWhiteSpace(device.Name)
+                    ? WindowsBluetoothIdentity.TryExtractAddress(device.InstanceId, out var address)
+                        ? address
+                        : device.InstanceId
+                    : device.Name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (otherActive >= 3)
+        {
+            capacity--;
+        }
+
+        capacity = Math.Clamp(Math.Max(capacity, visibleControllers), 1, 4);
+        return new WindowsNativeCapacityEstimate(
+            capacity,
+            confidence,
+            adapterName,
+            otherActive);
+    }
+
+    internal static void RunWindowsNativeCapacitySelfTest()
+    {
+        var devices = new[]
+        {
+            new WindowsBluetoothDevice("Intel(R) Wireless Bluetooth(R)", "OK", "USB\\VID_8087"),
+            new WindowsBluetoothDevice(
+                "Stadia Controller",
+                "OK",
+                @"BTHENUM\DEV_001122334455\1&2&BLUETOOTHDEVICE_001122334455"),
+            new WindowsBluetoothDevice(
+                "Bluetooth headphones",
+                "OK",
+                @"BTHENUM\DEV_AABBCCDDEEFF\1&2&BLUETOOTHDEVICE_AABBCCDDEEFF"),
+            new WindowsBluetoothDevice(
+                "Bluetooth headphones",
+                "OK",
+                @"BTHLE\DEV_AABBCCDDEEFF\1&2&AABBCCDDEEFF"),
+            new WindowsBluetoothDevice(
+                "Servizio attributo generico Bluetooth a basso consumo",
+                "OK",
+                @"BTHLEDEVICE\{0000180F-0000-1000-8000-00805F9B34FB}_DEV_VID&0101F1_PID&0173_REV&0120_AABBCCDDEEFF\A&123&0&0010")
+        };
+        var estimate = EstimateWindowsNativeCapacity(devices, 2);
+        if (estimate.Controllers != 4 ||
+            estimate.Confidence != "good" ||
+            estimate.OtherActiveBluetoothDevices != 1)
+        {
+            throw new InvalidOperationException("Windows Native controller capacity self-test failed.");
+        }
+    }
+
+    private static bool IsLikelyWindowsBluetoothAdapter(string name)
+    {
+        return name.Contains("bluetooth", StringComparison.OrdinalIgnoreCase) &&
+               (name.Contains("adapter", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("radio", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("intel", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("realtek", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("qualcomm", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("mediatek", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("broadcom", StringComparison.OrdinalIgnoreCase) ||
+                name.Contains("csr", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsWindowsBluetoothPhysicalDevice(string instanceId)
+    {
+        return instanceId.StartsWith(@"BTHENUM\DEV_", StringComparison.OrdinalIgnoreCase) ||
+               instanceId.StartsWith(@"BTHLE\DEV_", StringComparison.OrdinalIgnoreCase);
+    }
+
     public IReadOnlyList<string> GetSelectedControllerMacs()
     {
         if (!File.Exists(_paths.SelectedControllerMacs))
@@ -776,7 +955,9 @@ bluetoothctl devices 2>&1 || true
 
         try
         {
-            return JsonSerializer.Deserialize<List<ControllerProfile>>(File.ReadAllText(_paths.ControllerProfiles)) ?? new List<ControllerProfile>();
+            var profiles = JsonSerializer.Deserialize<List<ControllerProfile>>(
+                File.ReadAllText(_paths.ControllerProfiles));
+            return NormalizeProfiles(profiles ?? new List<ControllerProfile>());
         }
         catch
         {
@@ -788,19 +969,108 @@ bluetoothctl devices 2>&1 || true
 
     public void SaveProfiles(IEnumerable<ControllerProfile> profiles)
     {
-        var clean = profiles
-            .Where(p => !string.IsNullOrWhiteSpace(p.Name) && IsMac(p.Mac))
-            .Select(p => new ControllerProfile(p.Name.Trim(), p.Mac.Trim().ToUpperInvariant(), Math.Clamp(p.Slot, 1, 4), p.AutoConnect))
-            .GroupBy(p => p.Slot)
-            .Select(g => g.Last())
-            .OrderBy(p => p.Slot)
-            .ToArray();
-        File.WriteAllText(_paths.ControllerProfiles, JsonSerializer.Serialize(clean, new JsonSerializerOptions { WriteIndented = true }));
+        var clean = NormalizeProfiles(profiles);
+        WriteTextAtomically(
+            _paths.ControllerProfiles,
+            JsonSerializer.Serialize(clean, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     public void ApplyAutoConnectProfiles()
     {
         SaveSelectedControllerMacs(GetProfiles().Where(p => p.AutoConnect).OrderBy(p => p.Slot).Select(p => p.Mac));
+    }
+
+    public IReadOnlyList<WindowsNativeHidDevice> OrderWindowsNativeDevices(
+        IEnumerable<WindowsNativeHidDevice> devices)
+    {
+        return OrderWindowsNativeDevices(devices, GetProfiles());
+    }
+
+    internal static IReadOnlyList<WindowsNativeHidDevice> OrderWindowsNativeDevices(
+        IEnumerable<WindowsNativeHidDevice> devices,
+        IEnumerable<ControllerProfile> profiles)
+    {
+        var preferred = profiles
+            .Where(profile => profile.AutoConnect && IsMac(profile.Mac))
+            .GroupBy(profile => profile.Mac, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderBy(profile => profile.Slot).First(),
+                StringComparer.OrdinalIgnoreCase);
+
+        return devices
+            .Select((device, index) => new
+            {
+                Device = device,
+                OriginalIndex = index,
+                Profile = !string.IsNullOrWhiteSpace(device.BluetoothAddress) &&
+                          preferred.TryGetValue(device.BluetoothAddress, out var profile)
+                    ? profile
+                    : null
+            })
+            .OrderBy(item => item.Profile is null ? 1 : 0)
+            .ThenBy(item => item.Profile?.Slot ?? int.MaxValue)
+            .ThenBy(item => item.Device.BluetoothAddress, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Device.FileSystemName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.OriginalIndex)
+            .Select(item => item.Device)
+            .Take(4)
+            .ToArray();
+    }
+
+    internal static void RunWindowsNativeProfileOrderingSelfTest()
+    {
+        var first = new WindowsNativeHidDevice(
+            0x18D1, 0x9400, "Stadia", "Google", "First", "hid-first",
+            10, 10, "first", "first", BluetoothAddress: "AA:00:00:00:00:01");
+        var second = new WindowsNativeHidDevice(
+            0x18D1, 0x9400, "Stadia", "Google", "Second", "hid-second",
+            10, 10, "second", "second", BluetoothAddress: "AA:00:00:00:00:02");
+        var profiles = new[]
+        {
+            new ControllerProfile("Second pad", second.BluetoothAddress, 1, true),
+            new ControllerProfile("First pad", first.BluetoothAddress, 2, true)
+        };
+        var ordered = OrderWindowsNativeDevices(new[] { first, second }, profiles);
+        if (ordered.Count != 2 ||
+            ordered[0].BluetoothAddress != second.BluetoothAddress ||
+            ordered[1].BluetoothAddress != first.BluetoothAddress)
+        {
+            throw new InvalidOperationException("Windows Native controller profile ordering self-test failed.");
+        }
+
+        var normalized = NormalizeProfiles(
+        [
+            new ControllerProfile("First old", first.BluetoothAddress, 1, true),
+            new ControllerProfile("First new", first.BluetoothAddress, 2, true),
+            new ControllerProfile("Second", second.BluetoothAddress, 2, true)
+        ]);
+        if (normalized.Length != 1 ||
+            normalized[0].Name != "Second" ||
+            normalized[0].Slot != 2)
+        {
+            throw new InvalidOperationException("Windows Native controller profile normalization self-test failed.");
+        }
+    }
+
+    private static ControllerProfile[] NormalizeProfiles(IEnumerable<ControllerProfile> profiles)
+    {
+        return profiles
+            .Where(profile =>
+                profile is not null &&
+                !string.IsNullOrWhiteSpace(profile.Name) &&
+                IsMac(profile.Mac))
+            .Select(profile => new ControllerProfile(
+                profile.Name.Trim(),
+                profile.Mac.Trim().ToUpperInvariant(),
+                Math.Clamp(profile.Slot, 1, 4),
+                profile.AutoConnect))
+            .GroupBy(profile => profile.Mac, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
+            .GroupBy(profile => profile.Slot)
+            .Select(group => group.Last())
+            .OrderBy(profile => profile.Slot)
+            .ToArray();
     }
 
     public IReadOnlyList<MacroMapping> LoadMacroMappings()
@@ -854,7 +1124,30 @@ bluetoothctl devices 2>&1 || true
             File.Copy(_paths.MacroConfig, backup, overwrite: true);
         }
 
-        File.WriteAllText(_paths.MacroConfig, text);
+        WriteTextAtomically(_paths.MacroConfig, text);
+    }
+
+    private static void WriteTextAtomically(string path, string text)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var tempPath = path + ".tmp";
+        try
+        {
+            File.WriteAllText(tempPath, text);
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
     }
 
     public ControllerTelemetrySnapshot ReadControllerTelemetry()
@@ -957,6 +1250,10 @@ bluetoothctl devices 2>&1 || true
         var winBt = await GetWindowsBluetoothDevicesAsync().ConfigureAwait(false);
         var requirements = await new RequirementChecker(_paths, _runner).RunAsync().ConfigureAwait(false);
         var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var receiverPid, out var virtualPads);
+        var profiles = GetProfiles().OrderBy(profile => profile.Slot).ToArray();
+        var macroMappings = LoadMacroMappings()
+            .Where(mapping => !string.IsNullOrWhiteSpace(mapping.Shortcut))
+            .ToArray();
         IReadOnlyList<WindowsNativeHidDevice> hidDevices = Array.Empty<WindowsNativeHidDevice>();
         string? hidScanError = null;
         try
@@ -983,6 +1280,10 @@ bluetoothctl devices 2>&1 || true
             $"- Virtual Xbox 360 pads: {(receiverActive ? virtualPads : 0)}",
             $"- Stadia HID devices: {hidDevices.Count}",
             $"- HidHide matches: {hidDevices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath))}",
+            $"- Battery values exposed: {hidDevices.Count(device => device.BatteryPercent.HasValue)}",
+            $"- Rumble-capable HID outputs: {hidDevices.Count(device => device.MaxOutputReportLength >= WindowsNativeRumbleReport.MinimumLength)}",
+            $"- Preferred controller profiles: {profiles.Length}",
+            $"- Configured native macros: {macroMappings.Length}",
             $"- HID scan error: {EmptyAsNone(hidScanError ?? "")}",
             $"- Windows Bluetooth devices: {winBt.Count}",
             "",
@@ -999,7 +1300,29 @@ bluetoothctl devices 2>&1 || true
         lines.AddRange(hidDevices.Count == 0
             ? new[] { "- none visible" }
             : hidDevices.Select((device, index) =>
-                $"- P{index + 1}: {EmptyAsNone(device.FriendlyName)} [{device.VendorId:X4}:{device.ProductId:X4}] input={device.MaxInputReportLength} HidHide={(string.IsNullOrWhiteSpace(device.DeviceInstancePath) ? "missing" : "matched")}"));
+                $"- P{index + 1}: {EmptyAsNone(device.FriendlyName)} [{device.VendorId:X4}:{device.ProductId:X4}] " +
+                $"address={EmptyAsNone(device.BluetoothAddress)} input={device.MaxInputReportLength} output={device.MaxOutputReportLength} " +
+                $"battery={(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "unknown")} " +
+                $"HidHide={(string.IsNullOrWhiteSpace(device.DeviceInstancePath) ? "missing" : "matched")}"));
+        lines.AddRange(new[]
+        {
+            "",
+            "## Preferred Controller Order",
+            ""
+        });
+        lines.AddRange(profiles.Length == 0
+            ? new[] { "- none configured" }
+            : profiles.Select(profile =>
+                $"- P{profile.Slot}: {profile.Name} {profile.Mac} startup={profile.AutoConnect}"));
+        lines.AddRange(new[]
+        {
+            "",
+            "## Native Macros",
+            ""
+        });
+        lines.AddRange(macroMappings.Length == 0
+            ? new[] { "- none configured" }
+            : macroMappings.Select(mapping => $"- {mapping.Code}: {mapping.Shortcut}"));
         lines.AddRange(new[]
         {
             "",
@@ -1059,7 +1382,9 @@ bluetoothctl devices 2>&1 || true
             Path.Combine(_paths.LogDirectory, "self-test.txt"),
             Path.Combine(_paths.LogDirectory, "self-test.json"),
             _paths.ControllerMapping,
+            _paths.ControllerProfiles,
             _paths.RumbleSettings,
+            _paths.MacroConfig,
             WindowsNativeRuntime.ReadyPath(_paths),
             _paths.VersionFile
         })
@@ -1069,6 +1394,8 @@ bluetoothctl devices 2>&1 || true
 
         var report = await CreateSessionReportAsync().ConfigureAwait(false);
         CopySupportFile(report, workDir, manifest, "session-report.md");
+        var capacityReport = await CreateWindowsNativeCapacityReportAsync().ConfigureAwait(false);
+        CopySupportFile(capacityReport, workDir, manifest, "windows-native-capacity.txt");
         var commandReport = new StringBuilder();
         foreach (var command in new[]
         {

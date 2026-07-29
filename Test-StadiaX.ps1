@@ -54,6 +54,7 @@ $requiredFiles = @(
     "Test-StadiaX.ps1",
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "stadia_buttons.ini",
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",

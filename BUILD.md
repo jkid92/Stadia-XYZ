@@ -100,20 +100,20 @@ For a source-only packaging dry run, use:
 
 That mode is useful to validate the ZIP layout on a machine without runtime binaries.
 
-## Windows Native experimental package
+## Windows Native package
 
-The Windows Native experiment ships without WSL, usbipd, BlueZ, or `stadia_bridge`. Build the app and installer with:
+The Windows Native edition ships without WSL, usbipd, BlueZ, or `stadia_bridge`. Build the app and installer with:
 
 ```powershell
 .\build\Build-CSharpControlCenter.ps1 -CopyToRoot
 .\build\Download-ViGEmClient.ps1 -OutputDirectory .
-.\build\Package-WindowsNative.ps1 -Version v0.9.0-beta.3
-.\build\Build-WindowsNativeInstaller.ps1 -Version v0.9.0-beta.3
+.\build\Package-WindowsNative.ps1 -Version v0.9.1
+.\build\Build-WindowsNativeInstaller.ps1 -Version v0.9.1
 ```
 
-This writes `Stadia-X-Windows-Native-v0.9.0-beta.3.zip` and `Stadia-X-Windows-Native-v0.9.0-beta.3-Setup.exe` under `dist/`.
+This writes `Stadia-X-Windows-Native-v0.9.1.zip` and `Stadia-X-Windows-Native-v0.9.1-Setup.exe` under `dist/`.
 
-Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a tag like `windows-native-v0.9.0-beta.3` creates a prerelease with the ZIP, setup EXE, and SHA256 files attached.
+Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a stable tag like `windows-native-v0.9.1` creates a release with the ZIP, setup EXE, and SHA256 files attached. Version suffixes such as `-beta.1` remain prereleases.
 
 After extracting a package or installing Stadia X, run:
 

@@ -4,19 +4,19 @@ This package contains the experimental Windows Native edition of Stadia X. It do
 
 Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus. Games therefore receive one clean input stream instead of duplicated presses.
 
-The `v0.9.0-beta.4` line separates HID discovery, controller state and mapping from the virtual-gamepad bus. It also adds automatic Stadia Bluetooth discovery and pairing, precise analog-stick visualization, and persistent per-controller vibration controls. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
+The current native line separates HID discovery, controller state and mapping from the virtual-gamepad bus. It includes automatic Stadia Bluetooth discovery and pairing, precise analog-stick visualization, persistent per-controller vibration controls, stable P1-P4 ordering profiles, native Assistant/Capture macros, automatic multi-controller slot expansion, and Windows-only repair and diagnostics. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
 
 ## First Run
 
 1. Install and launch **Stadia X Windows Native**.
-2. Pair the Stadia controller in Windows Bluetooth settings.
-3. Press **Start**.
+2. Put an unpaired Stadia controller in Bluetooth pairing mode.
+3. Press **Start**. Pairing and receiver startup continue automatically.
 4. Approve the Windows administrator request if a driver needs to be installed or configured.
 5. Open **Mapping + Test** and press controller buttons to verify or customize the virtual pad.
 
 Start checks HidHide and ViGEmBus, installs the bundled official components when needed, protects the physical device, creates up to four virtual Xbox 360 slots, and starts forwarding input. The pinned SHA-256 hashes and Nefarius Authenticode publisher are verified before installation; `winget` is not required. No separate configuration utility is needed.
 
-If the controller is not visible, Stadia X opens Windows Bluetooth settings automatically. Pair or reconnect it, return to the app, and press **Check** or **Start** again.
+If the controller is not visible, keep it in Bluetooth pairing mode and press **Start** again. The **Repair** command can restore HidHide, restart known Stadia PnP devices, rescan Windows hardware, and relaunch the receiver automatically.
 
 ## Main Controls
 
@@ -28,6 +28,11 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - **Mapping profiles**: duplicate, rename, activate, or delete independent layouts. Existing schema-1 mapping files are migrated automatically and invalid files never replace the last valid runtime profile.
 - **Mapping safety**: assigning an input replaces conflicting assignments, incomplete profiles are highlighted before saving, and unsaved changes are offered for saving when the app closes.
 - **Mapping + Test**: combines profiles, button assignments, the live controller image, sticks, triggers, packet rate, and rumble testing. Game rumble from each virtual Xbox pad is routed back to the matching P1-P4 Stadia controller through the native Windows HID output report.
+- **Controller profiles**: save the Bluetooth address and preferred P1-P4 position. Profiles are applied before receiver startup so reconnect order stays predictable.
+- **Macros**: Assistant and Capture provide the same 36 configurable shortcut slots as the Linux edition. Macro dispatch runs outside the HID input loop and configuration changes are reloaded while the receiver is active.
+- **Controller Doctor**: checks Windows Bluetooth, Stadia HID visibility, HidHide isolation, virtual pads, battery, vibration, profiles, macros, and live input.
+- **Repair**: stops the receiver safely, restores physical input, starts the Bluetooth service, restarts known Stadia PnP devices, rescans hardware, and relaunches the receiver.
+- **Multi-controller expansion**: while the app is open, newly visible Stadia controllers automatically expand the receiver up to four virtual slots.
 - **Logs**: displays connection phases, user actions, and application diagnostics.
 - **Support**: creates a troubleshooting bundle.
 
@@ -39,6 +44,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - `dependencies/`: official HidHide and ViGEmBus setups plus third-party notices.
 - `VERSION.txt`: package version.
 - `assets/`: Windows Native icons and controller test image.
+- `stadia_buttons.ini`: editable Assistant/Capture shortcut configuration used directly by the Windows Native receiver.
 
 ## Recovery
 

@@ -168,6 +168,16 @@ internal sealed class WindowsNativeOrchestrator
                 return 2;
             }
         }
+        var controllerProfiles = new NativeControlServices(_paths, _runner).GetProfiles();
+        devices = NativeControlServices
+            .OrderWindowsNativeDevices(devices, controllerProfiles)
+            .ToArray();
+        if (controllerProfiles.Any(profile => profile.AutoConnect))
+        {
+            status.Write(
+                "WINDOWS_NATIVE_PROFILE_ORDER",
+                $"Applied {controllerProfiles.Count(profile => profile.AutoConnect)} preferred controller profile(s) to P1-P4 ordering");
+        }
         status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "OK", $"Detected {devices.Length} Stadia HID candidate(s)");
 
         for (var i = 0; i < devices.Length; i++)
@@ -302,6 +312,107 @@ internal sealed class WindowsNativeOrchestrator
             stopCompleted ? "OK" : "WARN",
             $"Stop signal written={stopSignaled}; receiver stopped={stopped}; physical input restored={inputRestored}");
         return stopCompleted ? 0 : 1;
+    }
+
+    public async Task<int> RepairAsync()
+    {
+        AppDiagnosticsLogger.Record(
+            "WINDOWS_NATIVE_REPAIR_STARTED",
+            ("pid", Environment.ProcessId.ToString()));
+
+        var stopResult = await StopAsync().ConfigureAwait(false);
+        if (stopResult != 0 &&
+            WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeSlots))
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_REPAIR_STOP_FAILED",
+                ("receiverPid", activePid.ToString()),
+                ("activeSlots", activeSlots.ToString()));
+            return 1;
+        }
+
+        var status = new StatusWriter(_paths, "windows-native.log");
+        var service = await _runner.RunAsync(
+            "sc.exe",
+            new[] { "start", "bthserv" },
+            _paths.Root,
+            15000).ConfigureAwait(false);
+        status.Write(
+            "WINDOWS_NATIVE_REPAIR_BLUETOOTH_SERVICE",
+            $"Bluetooth Support Service start exit={service.ExitCode} result={Shorten(FirstNonEmpty(service.Output, service.Error, "already running"), 220)}");
+
+        IReadOnlyList<WindowsNativeHidDevice> devices = Array.Empty<WindowsNativeHidDevice>();
+        try
+        {
+            devices = await new WindowsNativeHidScanner(new HidHideManager(_paths, _runner))
+                .FindStadiaControllerInventoryAsync()
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            status.Write(
+                "WINDOWS_NATIVE_REPAIR_SCAN_WARN",
+                "Could not inspect Stadia PnP devices before repair: " + ex.Message);
+        }
+
+        var restarted = 0;
+        foreach (var instancePath in devices
+                     .Select(device => device.DeviceInstancePath)
+                     .Where(path => !string.IsNullOrWhiteSpace(path))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var result = await _runner.RunAsync(
+                "pnputil.exe",
+                new[] { "/restart-device", instancePath },
+                _paths.Root,
+                30000).ConfigureAwait(false);
+            if (result.ExitCode == 0)
+            {
+                restarted++;
+            }
+            status.Write(
+                result.ExitCode == 0
+                    ? "WINDOWS_NATIVE_REPAIR_DEVICE_OK"
+                    : "WINDOWS_NATIVE_REPAIR_DEVICE_WARN",
+                $"PnP restart exit={result.ExitCode} device={instancePath} result={Shorten(FirstNonEmpty(result.Output, result.Error, "none"), 220)}");
+        }
+
+        var scan = await _runner.RunAsync(
+            "pnputil.exe",
+            new[] { "/scan-devices" },
+            _paths.Root,
+            30000).ConfigureAwait(false);
+        status.Write(
+            "WINDOWS_NATIVE_REPAIR_RESCAN",
+            $"PnP rescan exit={scan.ExitCode} restarted={restarted}/{devices.Count}");
+        AppDiagnosticsLogger.Record(
+            "WINDOWS_NATIVE_REPAIR_RESTARTING",
+            ("devicesFound", devices.Count.ToString()),
+            ("devicesRestarted", restarted.ToString()),
+            ("pnpScanExit", scan.ExitCode.ToString()));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(900)).ConfigureAwait(false);
+        return await StartAsync().ConfigureAwait(false);
+    }
+
+    public async Task<int> RestartAsync()
+    {
+        AppDiagnosticsLogger.Record(
+            "WINDOWS_NATIVE_RESTART_STARTED",
+            ("pid", Environment.ProcessId.ToString()));
+        var stopResult = await StopAsync().ConfigureAwait(false);
+        if (stopResult != 0 &&
+            WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activePid, out var activeSlots))
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_RESTART_STOP_FAILED",
+                ("receiverPid", activePid.ToString()),
+                ("activeSlots", activeSlots.ToString()));
+            return 1;
+        }
+
+        await Task.Delay(TimeSpan.FromMilliseconds(350)).ConfigureAwait(false);
+        return await StartAsync().ConfigureAwait(false);
     }
 
     private static bool ReportStartCancelled(

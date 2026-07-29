@@ -17,7 +17,8 @@ internal sealed record WindowsNativeHidDevice(
     string DeviceInstancePath,
     string HidHideSymbolicLink,
     int? BatteryPercent = null,
-    string BatterySource = "");
+    string BatterySource = "",
+    string BluetoothAddress = "");
 
 internal sealed record WindowsNativeHidScanResult(
     IReadOnlyList<WindowsNativeHidDevice> Devices,
@@ -471,9 +472,13 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
     private static WindowsNativeHidDevice WithWindowsBattery(WindowsNativeHidDevice device)
     {
         var reading = WindowsNativeBatteryReader.Read(device.DeviceInstancePath);
-        return reading is null
+        var withBattery = reading is null
             ? device
             : device with { BatteryPercent = reading.Percent, BatterySource = reading.Source };
+        var address = WindowsBluetoothIdentity.ResolveAddress(device.DeviceInstancePath);
+        return string.IsNullOrWhiteSpace(address)
+            ? withBattery
+            : withBattery with { BluetoothAddress = address };
     }
 
     private static IEnumerable<string> CaptureReports(string fileSystemName, TimeSpan captureTime)

@@ -50,9 +50,24 @@ internal static class Program
             Environment.Exit(RunWindowsNativeCommand(paths, start: false));
             return;
         }
+        if (args.Contains("--repair-windows-native", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeRepair(paths));
+            return;
+        }
+        if (args.Contains("--restart-windows-native", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeRestart(paths));
+            return;
+        }
         if (args.Contains("--windows-native-probe", StringComparer.OrdinalIgnoreCase))
         {
             Environment.Exit(RunWindowsNativeProbe(paths));
+            return;
+        }
+        if (args.Contains("--windows-native-capacity-report", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunWindowsNativeCapacityReport(paths));
             return;
         }
         if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
@@ -73,6 +88,10 @@ internal static class Program
             ControllerStateMapper.RunSelfTest();
             ControllerRumbleSettingsStore.RunSelfTest();
             WindowsNativeRumbleProtocol.RunSelfTest();
+            WindowsNativeMacroEngine.RunSelfTest();
+            WindowsBluetoothIdentity.RunSelfTest();
+            NativeControlServices.RunWindowsNativeProfileOrderingSelfTest();
+            NativeControlServices.RunWindowsNativeCapacitySelfTest();
             WindowsStadiaBluetoothPairingService.RunSelfTest();
             VigemNative.RunSelfTest();
             Environment.Exit(0);
@@ -139,5 +158,42 @@ internal static class Program
             AppDiagnosticsLogger.Record("WINDOWS_NATIVE_PROBE_FAILED", ("error", ex.Message));
             return 1;
         }
+    }
+
+    private static int RunWindowsNativeCapacityReport(AppPaths paths)
+    {
+        try
+        {
+            _ = new NativeControlServices(paths, new ProcessRunner())
+                .CreateWindowsNativeCapacityReportAsync()
+                .GetAwaiter()
+                .GetResult();
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_CAPACITY_REPORT_FAILED",
+                ("error", ex.ToString()));
+            return 1;
+        }
+    }
+
+    private static int RunWindowsNativeRepair(AppPaths paths)
+    {
+        AppDiagnosticsLogger.Initialize(paths);
+        return new WindowsNativeOrchestrator(paths, new ProcessRunner())
+            .RepairAsync()
+            .GetAwaiter()
+            .GetResult();
+    }
+
+    private static int RunWindowsNativeRestart(AppPaths paths)
+    {
+        AppDiagnosticsLogger.Initialize(paths);
+        return new WindowsNativeOrchestrator(paths, new ProcessRunner())
+            .RestartAsync()
+            .GetAwaiter()
+            .GetResult();
     }
 }

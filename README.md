@@ -13,7 +13,7 @@
 
 Stadia X Windows Native reads the physical Stadia controller directly, maps its input, and creates a standard virtual Xbox 360 controller through ViGEmBus. HidHide isolates the original device so games receive one input stream instead of duplicated button presses.
 
-Version `v0.9.0-beta.4` continues the consolidated native-backend line. Windows HID discovery, automatic Stadia Bluetooth pairing, controller state, mapping, physical-device isolation, per-pad vibration, and virtual-controller output now have separate ownership boundaries. ViGEmBus remains the current output implementation, but it is no longer embedded directly in the receiver.
+The current development line continues the consolidated native backend. Windows HID discovery, automatic Stadia Bluetooth pairing, controller state, mapping, physical-device isolation, per-pad vibration, macros, and virtual-controller output have separate ownership boundaries. ViGEmBus remains the current output implementation, but it is no longer embedded directly in the receiver.
 
 ## What It Does
 
@@ -26,6 +26,9 @@ Version `v0.9.0-beta.4` continues the consolidated native-backend line. Windows 
 - Reads the controller battery level from Windows when the Bluetooth driver exposes it, including the P1-P4 dashboard and the same compact pill overlay used by the Linux edition: white text normally and red below 10%.
 - Includes a visual controller test, button highlights, stick and trigger telemetry, and native low-latency rumble tests.
 - Provides an Xbox-first visual mapping editor: click a target on the controller image and press the physical button to associate it. Manual recording, guided **Map all**, named profiles, conflict prevention, and live runtime reload remain available.
+- Supports preferred physical-controller profiles based on the Bluetooth address, keeping P1-P4 ordering predictable across reconnects.
+- Runs the Linux edition's 36 Assistant/Capture shortcuts directly in the Windows receiver, with live configuration reload and game-input suppression while a macro chord is held.
+- Includes a Windows Native Controller Doctor, one-click repair, capacity report, richer support bundle, and automatic virtual-slot expansion when another Stadia controller appears.
 - Offers Italian and English UI, verified layouts from 100% through 200% DPI, and multi-monitor window recovery.
 - Downloads verified updates in-app and keeps a rollback copy in case the new version does not remain healthy.
 - Keeps technical configuration out of the normal user flow.
@@ -43,8 +46,8 @@ Version `v0.9.0-beta.4` continues the consolidated native-backend line. Windows 
 1. Open the [latest releases](https://github.com/jkid92/Stadia-XYZ/releases).
 2. Download `Stadia-X-Windows-Native-<version>-Setup.exe` from a release tagged `windows-native-v...`.
 3. Run the setup and launch **Stadia X Windows Native**.
-4. Pair the Stadia controller in Windows Bluetooth settings if it is not paired yet.
-5. Press **Start**. Stadia X checks drivers, protects physical input, creates the virtual Xbox 360 pad, and starts forwarding input.
+4. Put an unpaired Stadia controller in Bluetooth pairing mode.
+5. Press **Start**. Stadia X searches, pairs, checks drivers, protects physical input, creates the virtual Xbox 360 pad, and starts forwarding input automatically.
 
 Windows may request administrator permission while a driver is installed or while input isolation is configured. No separate configuration tool is required.
 
@@ -54,7 +57,8 @@ Windows may request administrator permission while a driver is installed or whil
 2. Open Stadia X Windows Native.
 3. Press **Start**.
 4. Open **Mapping + Test** to confirm buttons and sticks or customize the mapping.
-5. Press **Stop and restore** before troubleshooting the physical device or uninstalling drivers.
+5. Additional paired controllers are detected and added to the running receiver automatically.
+6. Press **Stop and restore** before troubleshooting the physical device or uninstalling drivers.
 
 ## How It Works
 
@@ -91,7 +95,7 @@ The application package includes its .NET runtime, native client libraries, and 
 - **Logs** shows the native timeline, user actions, and application diagnostics.
 - **Support** creates a bundle with logs and environment details for issue reports.
 
-If Start cannot find a controller, Stadia X opens Windows Bluetooth settings. Pair or reconnect the controller, return to the app, and press **Check** or **Start** again.
+If Start cannot find a controller, put it in Bluetooth pairing mode and press **Start** again. **Repair** restores input isolation, restarts known Stadia devices, rescans Windows hardware, and relaunches the receiver as one operation.
 
 ## Build From Source
 

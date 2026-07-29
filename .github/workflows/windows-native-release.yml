@@ -130,6 +130,9 @@ jobs:
             $ghArgs = @("release", "upload", $tag) + $assets + @("--repo", "${{ github.repository }}", "--clobber")
             & gh @ghArgs
           } else {
-            $ghArgs = @("release", "create", $tag) + $assets + @("--repo", "${{ github.repository }}", "--target", "${{ github.sha }}", "--title", $title, "--generate-notes", "--prerelease")
+            $ghArgs = @("release", "create", $tag) + $assets + @("--repo", "${{ github.repository }}", "--target", "${{ github.sha }}", "--title", $title, "--generate-notes")
+            if ("${{ steps.package_version.outputs.version }}" -match "-") {
+              $ghArgs += "--prerelease"
+            }
             & gh @ghArgs
           }

@@ -39,6 +39,7 @@ internal sealed class MainForm : Form
     private readonly UpdateService _updateService;
     private int _updateCheckInProgress;
     private int _windowsBluetoothPairingInProgress;
+    private int _windowsNativeCapacityMonitorInProgress;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -119,6 +120,7 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _logTimer = new();
     private readonly System.Windows.Forms.Timer _batteryTimer = new();
     private readonly System.Windows.Forms.Timer _mappingCaptureTimer = new();
+    private readonly System.Windows.Forms.Timer _nativeCapacityMonitorTimer = new();
     private readonly ToolTip _controllerToolTip = new();
     private readonly NotifyIcon _trayIcon = new();
     private readonly ImageList _linuxBluetoothRowSizer = new() { ImageSize = new Size(1, 26), ColorDepth = ColorDepth.Depth32Bit };
@@ -133,6 +135,7 @@ internal sealed class MainForm : Form
     private DateTimeOffset _operationStartedAt = DateTimeOffset.MinValue;
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private DateTime _nextWindowsNativeBatteryUnavailableLogUtc = DateTime.MinValue;
+    private DateTime _nextWindowsNativeCapacityRestartUtc = DateTime.MinValue;
     private IReadOnlyList<WindowsNativeHidDevice> _lastWindowsNativeDevices = Array.Empty<WindowsNativeHidDevice>();
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
@@ -197,6 +200,7 @@ internal sealed class MainForm : Form
                 Directory.CreateDirectory(_paths.LogDirectory);
                 await RefreshEverythingAsync();
                 _logTimer.Start();
+                _nativeCapacityMonitorTimer.Start();
                 if (_updateService.CanInstallAutomatically)
                 {
                     _ = CheckForUpdatesAsync(interactive: false);
@@ -249,6 +253,7 @@ internal sealed class MainForm : Form
             _logTimer.Stop();
             _batteryTimer.Stop();
             _mappingCaptureTimer.Stop();
+            _nativeCapacityMonitorTimer.Stop();
             _controllerToolTip.Dispose();
             _trayIcon.Visible = false;
             _trayIcon.Dispose();
@@ -502,7 +507,10 @@ internal sealed class MainForm : Form
 
         _tabs.TabPages.Add(BuildDashboardPage());
         _tabs.TabPages.Add(BuildWindowsNativePage());
+        _tabs.TabPages.Add(BuildControllerDoctorPage());
+        _tabs.TabPages.Add(BuildProfilesPage());
         _tabs.TabPages.Add(BuildButtonMappingPage());
+        _tabs.TabPages.Add(BuildMacrosPage());
         _tabs.TabPages.Add(BuildLogsPage());
         _tabs.TabPages.Add(BuildDiagnosticsPage());
         if (_tabs.TabPages.Count > 0)
@@ -576,18 +584,21 @@ internal sealed class MainForm : Form
     {
         var page = CreatePage("Home", "Dashboard");
         var constrained = IsConstrainedUi();
+        var minimumLayoutHeight = constrained ? 682 : IsCompactUi() ? 498 : 550;
         var layout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.Top,
             ColumnCount = 1,
             RowCount = 3,
             Padding = new Padding(14),
-            MinimumSize = new Size(0, constrained ? 682 : IsCompactUi() ? 498 : 550)
+            Height = minimumLayoutHeight,
+            MinimumSize = new Size(0, minimumLayoutHeight)
         };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 194 : IsCompactUi() ? 168 : 184));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 340 : IsCompactUi() ? 182 : 198));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
+        page.ClientSizeChanged += (_, _) => SizeDashboardLayoutToPage(layout);
 
         var overview = CreateGroup("Control center");
         var overviewLayout = new TableLayoutPanel
@@ -634,6 +645,9 @@ internal sealed class MainForm : Form
         AddFlowButton(actionFlow, "Check controllers", async () => await ProbeWindowsNativeAsync());
         AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Mapping"));
         AddFlowButton(actionFlow, "Logs", () => SelectTabIfExists("Logs"));
+        _batteryOverlayCheck.Checked = true;
+        ConfigureBatteryOverlayToggle();
+        actionFlow.Controls.Add(_batteryOverlayCheck);
         if (IsCompactUi())
         {
             foreach (var button in actionFlow.Controls.OfType<ModernButton>())
@@ -652,21 +666,42 @@ internal sealed class MainForm : Form
             RowCount = constrained ? 2 : 1,
             Margin = new Padding(0, 10, 0, 0)
         };
+        var cardControls = Enumerable.Range(1, 4)
+            .Select(BuildDashboardPadCard)
+            .ToArray();
         for (var row = 0; row < cards.RowCount; row++)
         {
             cards.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / cards.RowCount));
         }
-        for (var slot = 1; slot <= 4; slot++)
+        for (var index = 0; index < cardControls.Length; index++)
         {
-            if (slot <= cards.ColumnCount)
+            if (index < cards.ColumnCount)
             {
                 cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / cards.ColumnCount));
             }
 
-            var column = constrained ? (slot - 1) % 2 : slot - 1;
-            var row = constrained ? (slot - 1) / 2 : 0;
-            cards.Controls.Add(BuildDashboardPadCard(slot), column, row);
+            var column = constrained ? index % 2 : index;
+            var row = constrained ? index / 2 : 0;
+            cards.Controls.Add(cardControls[index], column, row);
         }
+        var reflowPending = false;
+        cards.SizeChanged += (_, _) =>
+        {
+            if (!cards.IsHandleCreated || cards.IsDisposed || reflowPending)
+            {
+                return;
+            }
+
+            reflowPending = true;
+            cards.BeginInvoke(new Action(() =>
+            {
+                reflowPending = false;
+                if (!cards.IsDisposed)
+                {
+                    ReflowDashboardCards(layout, cards, cardControls);
+                }
+            }));
+        };
         layout.Controls.Add(cards, 0, 1);
 
         var activity = CreateGroup("Recent user actions");
@@ -676,6 +711,76 @@ internal sealed class MainForm : Form
         layout.Controls.Add(activity, 0, 2);
 
         return page;
+    }
+
+    private static void ReflowDashboardCards(
+        TableLayoutPanel pageLayout,
+        TableLayoutPanel cards,
+        IReadOnlyList<Control> cardControls)
+    {
+        if (cards.ClientSize.Width <= 0)
+        {
+            return;
+        }
+
+        var compact = IsCompactUi();
+        var hasAuditScale = int.TryParse(
+            Environment.GetEnvironmentVariable("STADIAX_UI_RUNTIME_SCALE_PERCENT"),
+            out var auditPercent);
+        var responsiveScale = hasAuditScale
+            ? Math.Clamp(auditPercent, 100, 200) / 100F
+            : Math.Max(1F, cards.DeviceDpi / (float)DisplayLayout.BaseDpi);
+        var responsiveThreshold = (int)Math.Round((compact ? 800 : 900) * responsiveScale);
+        var columns = cards.ClientSize.Width < responsiveThreshold ? 2 : 4;
+        var rows = columns == 2 ? 2 : 1;
+        if (cards.ColumnCount == columns &&
+            cards.RowCount == rows &&
+            cards.Controls.Count == cardControls.Count)
+        {
+            return;
+        }
+
+        cards.SuspendLayout();
+        cards.Controls.Clear();
+        cards.ColumnStyles.Clear();
+        cards.RowStyles.Clear();
+        cards.ColumnCount = columns;
+        cards.RowCount = rows;
+        for (var column = 0; column < columns; column++)
+        {
+            cards.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / columns));
+        }
+        for (var row = 0; row < rows; row++)
+        {
+            cards.RowStyles.Add(new RowStyle(SizeType.Percent, 100f / rows));
+        }
+        for (var index = 0; index < cardControls.Count; index++)
+        {
+            cards.Controls.Add(cardControls[index], index % columns, index / columns);
+        }
+
+        var stacked = columns == 2;
+        var cardsHeight = stacked
+            ? compact ? 340 : 380
+            : compact ? 182 : 220;
+        var minimumHeight = stacked
+            ? compact ? 682 : 722
+            : compact ? 498 : 572;
+        var auditScale = hasAuditScale
+            ? Math.Clamp(auditPercent, 100, 200) / 100F
+            : 1F;
+        pageLayout.RowStyles[1].Height = (int)Math.Round(cardsHeight * auditScale);
+        pageLayout.MinimumSize = new Size(
+            0,
+            (int)Math.Round(minimumHeight * auditScale));
+        SizeDashboardLayoutToPage(pageLayout);
+        cards.ResumeLayout(performLayout: true);
+    }
+
+    private static void SizeDashboardLayoutToPage(TableLayoutPanel layout)
+    {
+        var availableHeight = layout.Parent?.ClientSize.Height ?? 0;
+        layout.Height = Math.Max(layout.MinimumSize.Height, availableHeight);
     }
 
     private Control BuildDashboardPadCard(int slot)
@@ -808,7 +913,7 @@ internal sealed class MainForm : Form
         summaryLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         summaryGroup.Controls.Add(summaryLayout);
 
-        _doctorStatusLabel.Text = "Run Doctor to check bridge readiness";
+        _doctorStatusLabel.Text = "Run Doctor to check Windows Native readiness";
         _doctorStatusLabel.Dock = DockStyle.Fill;
         _doctorStatusLabel.AutoEllipsis = true;
         _doctorStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -827,7 +932,7 @@ internal sealed class MainForm : Form
         doctorActions.Padding = new Padding(0, 4, 0, 4);
         AddFlowButton(doctorActions, "Run doctor", async () => await RunControllerDoctorAsync());
         AddFlowButton(doctorActions, "Scan", async () => await RunDoctorScanAsync());
-        AddFlowButton(doctorActions, "Repair", async () => await RepairLinuxBluetoothAsync());
+        AddFlowButton(doctorActions, "Repair", RepairWindowsNative);
         AddFlowButton(doctorActions, "Logs", () => SelectTabIfExists("Logs"));
         AddFlowButton(doctorActions, "Bundle", async () => await CreateSupportBundleAsync());
         summaryLayout.Controls.Add(doctorActions, 0, 2);
@@ -840,7 +945,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             BackColor = UiTheme.Canvas,
             Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9),
-            Text = "Doctor checks the path a controller follows: Windows adapter, USB/IP bridge, BlueZ visibility, pairing state, saved profile, and input telemetry."
+            Text = "Doctor checks the complete native path: Windows Bluetooth, Stadia HID, HidHide isolation, virtual Xbox pads, profiles, battery, vibration, macros, and live input."
         };
         summaryLayout.Controls.Add(hint, 0, 3);
 
@@ -1099,7 +1204,7 @@ internal sealed class MainForm : Form
         statusLayout.Controls.Add(_windowsNativePhaseLabel, 0, 2);
 
         var actionColumns = constrained ? 2 : 3;
-        var actionRows = constrained ? 3 : 2;
+        var actionRows = constrained ? 4 : 3;
         var actions = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -1121,8 +1226,10 @@ internal sealed class MainForm : Form
             AddActionGridButton(actions, "Pair", 1, 0, 1, async () => await PairStadiaBluetoothAsync());
             AddActionGridButton(actions, "Start", 0, 1, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
             AddActionGridButton(actions, "Stop", 1, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-            AddActionGridButton(actions, "Test input", 0, 2, 1, () => SelectTabIfExists("Controller Mapping"));
-            AddActionGridButton(actions, "Details", 1, 2, 1, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Repair", 0, 2, 1, RepairWindowsNative);
+            AddActionGridButton(actions, "Test input", 1, 2, 1, () => SelectTabIfExists("Controller Mapping"));
+            AddActionGridButton(actions, "Profiles", 0, 3, 1, () => SelectTabIfExists("Profiles"));
+            AddActionGridButton(actions, "Macros", 1, 3, 1, () => SelectTabIfExists("Macros"));
         }
         else
         {
@@ -1130,14 +1237,17 @@ internal sealed class MainForm : Form
             AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
             AddActionGridButton(actions, "Stop", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
             AddActionGridButton(actions, "Pair", 0, 1, 1, async () => await PairStadiaBluetoothAsync());
-            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Mapping"));
-            AddActionGridButton(actions, "Details", 2, 1, 1, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Repair", 1, 1, 1, RepairWindowsNative);
+            AddActionGridButton(actions, "Test input", 2, 1, 1, () => SelectTabIfExists("Controller Mapping"));
+            AddActionGridButton(actions, "Profiles", 0, 2, 1, () => SelectTabIfExists("Profiles"));
+            AddActionGridButton(actions, "Macros", 1, 2, 1, () => SelectTabIfExists("Macros"));
+            AddActionGridButton(actions, "Details", 2, 2, 1, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         statusLayout.Controls.Add(actions, 0, 3);
         layout.Controls.Add(statusGroup, 0, 0);
 
         var deviceGroup = CreateGroup("Detected Stadia controllers");
-        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 220), ("Hardware", 88), ("Input", 62), ("Protected", 92), ("Battery", 72));
+        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 210), ("Bluetooth", 132), ("Input", 62), ("Protected", 92), ("Battery", 72));
         _windowsNativeDeviceList.ShowItemToolTips = true;
         _windowsNativeDeviceList.Resize += (_, _) => ResizeWindowsNativeColumns();
         _windowsNativeDeviceList.SelectedIndexChanged += (_, _) =>
@@ -1288,7 +1398,7 @@ internal sealed class MainForm : Form
 
     private TabPage BuildProfilesPage()
     {
-        var page = CreatePage("Profiles");
+        var page = CreatePage("Controller profiles", "Profiles");
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(14) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
@@ -1305,7 +1415,7 @@ internal sealed class MainForm : Form
             LoadSelectedProfileIntoEditor();
         };
         listGroup.Controls.Add(_profilesList);
-        listGroup.Controls.Add(BuildTopPanel("", ("Refresh", RefreshProfiles), ("Apply auto", ApplyAutoProfiles), ("Delete", DeleteSelectedProfile)));
+        listGroup.Controls.Add(BuildTopPanel("", ("Refresh", RefreshProfiles), ("Apply order", ApplyAutoProfiles), ("Delete", DeleteSelectedProfile)));
         layout.Controls.Add(listGroup, 0, 0);
 
         var editor = CreateGroup("Profile editor");
@@ -1322,7 +1432,7 @@ internal sealed class MainForm : Form
         _profileAutoConnectCheck.Text = "Use at startup";
         panel.Controls.Add(_profileAutoConnectCheck, 1, 3);
         AddButton(panel, "Save profile", 0, 4, SaveProfile, columnSpan: 2);
-        AddButton(panel, "Use Linux selected", 0, 5, UseLinuxSelectedAsProfile, columnSpan: 2);
+        AddButton(panel, "Use selected controller", 0, 5, UseWindowsSelectedAsProfile, columnSpan: 2);
         layout.Controls.Add(editor, 1, 0);
         return page;
     }
@@ -1579,6 +1689,7 @@ internal sealed class MainForm : Form
         var topPanel = BuildTopPanel("Diagnostics",
             ("Self-test", async () => await RunSelfTestAsync()),
             ("Probe", async () => await ProbeWindowsNativeAsync()),
+            ("Capacity", async () => await CreateWindowsNativeCapacityReportAsync()),
             ("Check updates", async () => await CheckUpdatesAsync()),
             ("Support bundle", async () => await CreateSupportBundleAsync()),
             ("Rollback", async () => await RollbackUpdateAsync()));
@@ -1620,7 +1731,7 @@ internal sealed class MainForm : Form
 
         profileLayout.Controls.Add(CreateMappingFieldLabel("Profile"), 0, 0);
         _mappingProfileCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _mappingProfileCombo.Dock = DockStyle.Fill;
+        ConfigureMappingFieldControl(_mappingProfileCombo);
         _mappingProfileCombo.SelectedIndexChanged += (_, _) =>
         {
             if (_mappingUiUpdating || _mappingProfileCombo.SelectedItem is not ControllerMappingProfile profile)
@@ -1633,7 +1744,7 @@ internal sealed class MainForm : Form
         profileLayout.Controls.Add(_mappingProfileCombo, 1, 0);
 
         profileLayout.Controls.Add(CreateMappingFieldLabel("Name"), 2, 0);
-        _mappingProfileNameText.Dock = DockStyle.Fill;
+        ConfigureMappingFieldControl(_mappingProfileNameText);
         _mappingProfileNameText.MaxLength = 64;
         _mappingProfileNameText.TextChanged += (_, _) => StageMappingProfileName();
         profileLayout.Controls.Add(_mappingProfileNameText, 3, 0);
@@ -1744,7 +1855,7 @@ internal sealed class MainForm : Form
 
         editor.Controls.Add(CreateMappingFieldLabel("Xbox output"), 0, 0);
         _mappingOutputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _mappingOutputCombo.Dock = DockStyle.Fill;
+        ConfigureMappingFieldControl(_mappingOutputCombo);
         _mappingOutputCombo.Items.AddRange(
             ControllerButtonCatalog.Outputs
                 .Where(output => output.Id != XboxOutputButton.None)
@@ -1761,7 +1872,7 @@ internal sealed class MainForm : Form
 
         editor.Controls.Add(CreateMappingFieldLabel("Stadia input"), 2, 0);
         _mappingInputCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _mappingInputCombo.Dock = DockStyle.Fill;
+        ConfigureMappingFieldControl(_mappingInputCombo);
         _mappingInputCombo.Items.Add(new MappingInputOption(null, "Not assigned"));
         _mappingInputCombo.Items.AddRange(
             ControllerButtonCatalog.Inputs
@@ -2462,6 +2573,13 @@ internal sealed class MainForm : Form
         };
     }
 
+    private static void ConfigureMappingFieldControl(Control control)
+    {
+        control.Dock = DockStyle.None;
+        control.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        control.Margin = new Padding(4, 0, 4, 0);
+    }
+
     private void ConfigureMappingActionButton(
         ModernButton button,
         string text,
@@ -2569,6 +2687,15 @@ internal sealed class MainForm : Form
 
         _mappingCaptureTimer.Interval = 75;
         _mappingCaptureTimer.Tick += (_, _) => RefreshButtonMappingCapture();
+
+        _nativeCapacityMonitorTimer.Interval = 8000;
+        _nativeCapacityMonitorTimer.Tick += (_, _) =>
+        {
+            _ = RunActionWithDialogAsync(
+                "Windows Native capacity monitor",
+                MonitorWindowsNativeCapacityAsync,
+                showDialog: false);
+        };
     }
 
     private void ConfigureTray()
@@ -2835,16 +2962,18 @@ internal sealed class MainForm : Form
             {
                 WarnOperationProgress(
                     "Stadia Bluetooth pairing",
-                    "Pairing completed; turn on the controller and press Start",
+                    "Pairing completed; starting Windows Native while waiting for controller input",
                     100);
-                SetWindowsNativeStatus("Paired - waiting for the controller HID", 100, warn: true);
+                SetWindowsNativeStatus("Paired - starting controller input", 100, warn: false);
+                StartWindowsNative();
             }
             else
             {
                 CompleteOperationProgress(
                     "Stadia Bluetooth pairing",
-                    $"{hidDevices.Count} Stadia controller(s) ready - press Start");
-                SetWindowsNativeStatus($"{hidDevices.Count} Stadia controller(s) ready", 100, warn: false);
+                    $"{hidDevices.Count} Stadia controller(s) ready - starting automatically");
+                SetWindowsNativeStatus($"{hidDevices.Count} Stadia controller(s) ready - starting", 100, warn: false);
+                StartWindowsNative();
             }
             RefreshLogs();
         }
@@ -2876,7 +3005,8 @@ internal sealed class MainForm : Form
         }
 
         scanner ??= new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
-        var devices = await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true);
+        var devices = _native.OrderWindowsNativeDevices(
+            await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true));
         _lastWindowsNativeDevices = devices;
         PopulateWindowsNativeDevices(devices);
         ResizeWindowsNativeColumns();
@@ -2897,7 +3027,7 @@ internal sealed class MainForm : Form
             if (capacityMismatch)
             {
                 SetWindowsNativeStatus(
-                    $"{devices.Count} controller(s) detected - press Start to activate every slot",
+                    $"{devices.Count} controller(s) detected - additional slots will activate automatically",
                     100,
                     warn: true);
                 AppDiagnosticsLogger.Record(
@@ -2932,6 +3062,62 @@ internal sealed class MainForm : Form
         return devices;
     }
 
+    private async Task MonitorWindowsNativeCapacityAsync()
+    {
+        if (Interlocked.CompareExchange(ref _windowsNativeCapacityMonitorInProgress, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!WindowsNativeRuntime.TryGetActiveReceiver(
+                    _paths,
+                    out var receiverPid,
+                    out var activeSlots))
+            {
+                return;
+            }
+
+            var scanner = new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
+            var devices = _native.OrderWindowsNativeDevices(
+                await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true));
+            _lastWindowsNativeDevices = devices;
+            PopulateWindowsNativeDevices(devices);
+            ResizeWindowsNativeColumns();
+            RefreshDashboardUi();
+
+            if (devices.Count <= activeSlots ||
+                DateTime.UtcNow < _nextWindowsNativeCapacityRestartUtc)
+            {
+                return;
+            }
+
+            _nextWindowsNativeCapacityRestartUtc = DateTime.UtcNow.AddSeconds(45);
+            LogUserAction(
+                "Automatic multi-controller expansion requested",
+                ("receiverPid", receiverPid.ToString()),
+                ("activeSlots", activeSlots.ToString()),
+                ("detectedControllers", devices.Count.ToString()));
+            new StatusWriter(_paths, "windows-native.log").Write(
+                "WINDOWS_NATIVE_CAPACITY_AUTO_EXPAND",
+                $"Additional Stadia controller detected; requesting automatic slot expansion {activeSlots}->{devices.Count}");
+            BeginOperationProgress(
+                "Adding Stadia controller",
+                $"Expanding virtual pads from {activeSlots} to {devices.Count}",
+                22);
+            LaunchSelfCommand(
+                "--start-windows-native",
+                elevateWhenNeeded: true,
+                "Additional Stadia controller detected. Expanding Windows Native automatically.");
+            _ = RefreshWindowsNativeAfterStartAsync();
+        }
+        finally
+        {
+            Volatile.Write(ref _windowsNativeCapacityMonitorInProgress, 0);
+        }
+    }
+
     private void PopulateWindowsNativeDevices(IReadOnlyList<WindowsNativeHidDevice> devices)
     {
         _windowsNativeDeviceList.Items.Clear();
@@ -2943,10 +3129,19 @@ internal sealed class MainForm : Form
             {
                 Tag = device,
                 ForeColor = hidHideState == "matched" ? Color.FromArgb(34, 120, 72) : Color.FromArgb(180, 45, 45),
-                ToolTipText = device.FileSystemName
+                ToolTipText = string.Join(
+                    Environment.NewLine,
+                    new[]
+                    {
+                        string.IsNullOrWhiteSpace(device.BluetoothAddress) ? null : "Bluetooth: " + device.BluetoothAddress,
+                        $"VID/PID: {device.VendorId:X4}:{device.ProductId:X4}",
+                        device.FileSystemName
+                    }.Where(value => !string.IsNullOrWhiteSpace(value)))
             };
             item.SubItems.Add(string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName);
-            item.SubItems.Add($"{device.VendorId:X4}:{device.ProductId:X4}");
+            item.SubItems.Add(string.IsNullOrWhiteSpace(device.BluetoothAddress)
+                ? $"{device.VendorId:X4}:{device.ProductId:X4}"
+                : device.BluetoothAddress);
             item.SubItems.Add(device.MaxInputReportLength > 0 ? device.MaxInputReportLength.ToString() : "hidden");
             item.SubItems.Add(hidHideState);
             item.SubItems.Add(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "-");
@@ -3264,14 +3459,14 @@ internal sealed class MainForm : Form
 
         var available = Math.Max(420, _windowsNativeDeviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
         var padWidth = 42;
-        var vidWidth = 70;
+        var addressWidth = Math.Clamp((int)Math.Round(available * 0.22), 104, 140);
         var inputWidth = 52;
         var hideWidth = 74;
         var batteryWidth = 64;
-        var nameWidth = Math.Max(130, available - padWidth - vidWidth - inputWidth - hideWidth - batteryWidth);
+        var nameWidth = Math.Max(130, available - padWidth - addressWidth - inputWidth - hideWidth - batteryWidth);
         _windowsNativeDeviceList.Columns[0].Width = padWidth;
         _windowsNativeDeviceList.Columns[1].Width = nameWidth;
-        _windowsNativeDeviceList.Columns[2].Width = vidWidth;
+        _windowsNativeDeviceList.Columns[2].Width = addressWidth;
         _windowsNativeDeviceList.Columns[3].Width = inputWidth;
         _windowsNativeDeviceList.Columns[4].Width = hideWidth;
         _windowsNativeDeviceList.Columns[5].Width = batteryWidth;
@@ -3424,12 +3619,24 @@ internal sealed class MainForm : Form
             out var nativeReceiverPid,
             out var nativeControllerCount);
 
-        if (knownDevices is null && (nativeReceiverActive || _lastWindowsNativeDevices.Count > 0))
+        if (knownDevices is null)
         {
-            var scanner = new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
-            _lastWindowsNativeDevices = await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true);
-            PopulateWindowsNativeDevices(_lastWindowsNativeDevices);
-            ResizeWindowsNativeColumns();
+            try
+            {
+                var scanner = new WindowsNativeHidScanner(new HidHideManager(_paths, new ProcessRunner()));
+                _lastWindowsNativeDevices = _native.OrderWindowsNativeDevices(
+                    await scanner.FindStadiaControllerInventoryAsync().ConfigureAwait(true));
+                PopulateWindowsNativeDevices(_lastWindowsNativeDevices);
+                ResizeWindowsNativeColumns();
+            }
+            catch (Exception ex)
+            {
+                _lastWindowsNativeDevices = Array.Empty<WindowsNativeHidDevice>();
+                AppDiagnosticsLogger.Record(
+                    "WINDOWS_NATIVE_BATTERY_SCAN_WARN",
+                    ("error", ex.ToString()));
+            }
+
             knownDevices = _lastWindowsNativeDevices.Select(device => new LinuxBluetoothDevice(
                 device.DeviceInstancePath,
                 string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName,
@@ -3440,22 +3647,6 @@ internal sealed class MainForm : Form
                 true,
                 string.IsNullOrWhiteSpace(device.BatterySource) ? "Windows PnP" : device.BatterySource)).ToArray();
             usedKnownDevices = true;
-        }
-
-        if (knownDevices is null && IsLinuxBluetoothCacheFresh())
-        {
-            knownDevices = _lastLinuxBluetoothDevices;
-            usedKnownDevices = true;
-            usedCache = true;
-        }
-
-        if (knownDevices is null)
-        {
-            var devices = (await _native.GetLinuxBluetoothDevicesAsync(0)).ToList();
-            AddReceiverFallbackDevices(devices);
-            knownDevices = devices;
-            _lastLinuxBluetoothDevices = knownDevices;
-            _lastLinuxBluetoothRefreshUtc = DateTime.UtcNow;
         }
 
         var stadia = knownDevices.Where(d => d.IsStadia || d.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -3491,7 +3682,7 @@ internal sealed class MainForm : Form
                 return;
             }
 
-            _batteryLabel.Text = "Battery: not available yet. Start the bridge and connect a controller.";
+            _batteryLabel.Text = "Battery: not available yet. Connect a controller and start Windows Native.";
             HideBatteryOverlay();
             AppDiagnosticsLogger.Record("BATTERY_REFRESH_EMPTY", ("visibleCount", knownDevices.Count.ToString()));
             RefreshDashboardUi();
@@ -3630,11 +3821,17 @@ internal sealed class MainForm : Form
 
         if (selected is null)
         {
-            var stateText = File.Exists(_paths.ControllerState) && !NativeControlServices.IsControllerTelemetryFileFresh(_paths.ControllerState)
+            var stale = File.Exists(_paths.ControllerState) &&
+                        !NativeControlServices.IsControllerTelemetryFileFresh(_paths.ControllerState);
+            var detailText = stale
                 ? $"{_localization.Translate("Controller telemetry is stale. Last update")} {snapshot.ReadAt.ToLocalTime():HH:mm:ss}."
                 : _localization.Translate("No controller telemetry yet. Start Windows Native and press a button.");
-            _controllerVisualizer.SetTelemetry(null, stateText);
-            _controllerVisualStatusLabel.Text = stateText;
+            var statusText = stale
+                ? $"{_localization.Translate("Data not updated")} - {snapshot.ReadAt.ToLocalTime():HH:mm:ss}"
+                : _localization.Translate("No active controller. Press a button.");
+            _controllerVisualizer.SetTelemetry(null, detailText);
+            _controllerVisualStatusLabel.Text = statusText;
+            _controllerToolTip.SetToolTip(_controllerVisualStatusLabel, detailText);
             return;
         }
 
@@ -3643,6 +3840,7 @@ internal sealed class MainForm : Form
                      $"{_localization.Translate("Pressed")}: {(pressed.Length == 0 ? "-" : string.Join(", ", pressed))}";
         _controllerVisualizer.SetTelemetry(selected, status);
         _controllerVisualStatusLabel.Text = status;
+        _controllerToolTip.SetToolTip(_controllerVisualStatusLabel, status);
     }
 
     private void RefreshDashboardUi()
@@ -3679,7 +3877,12 @@ internal sealed class MainForm : Form
                         ? "Detected"
                         : "Waiting";
 
-            _dashboardPadNameLabels[slot - 1].Text = ShortPadName(WindowsNativeDisplayName(device) ?? "Pad P" + slot);
+            var profile = device is null || string.IsNullOrWhiteSpace(device.BluetoothAddress)
+                ? null
+                : _lastProfiles.FirstOrDefault(item =>
+                    item.Mac.Equals(device.BluetoothAddress, StringComparison.OrdinalIgnoreCase));
+            _dashboardPadNameLabels[slot - 1].Text = ShortPadName(
+                profile?.Name ?? WindowsNativeDisplayName(device) ?? "Pad P" + slot);
             _dashboardPadStatusLabels[slot - 1].Text = state;
             _dashboardPadStatusLabels[slot - 1].ForeColor = DashboardStateColor(state);
             _dashboardPadBatteryLabels[slot - 1].Text = device?.BatteryPercent is int batteryPercent
@@ -3705,7 +3908,13 @@ internal sealed class MainForm : Form
                 _ => UiTheme.Accent
             };
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
-            _dashboardPadMacLabels[slot - 1].Text = "Automatic mapping";
+            _dashboardPadMacLabels[slot - 1].Text = device is null
+                ? "Automatic mapping"
+                : string.IsNullOrWhiteSpace(device.BluetoothAddress)
+                    ? "Bluetooth identity pending"
+                    : profile is null
+                        ? device.BluetoothAddress
+                        : $"P{profile.Slot} - {device.BluetoothAddress}";
             UpdateDashboardRumbleButton(slot);
         }
     }
@@ -3835,7 +4044,7 @@ internal sealed class MainForm : Form
     private async Task RunDoctorScanAsync()
     {
         SelectTabIfExists("Doctor");
-        await RefreshLinuxBluetoothDevicesAsync(8);
+        await RefreshWindowsNativeDevicesAsync();
         await RunControllerDoctorAsync();
     }
 
@@ -3843,7 +4052,7 @@ internal sealed class MainForm : Form
     {
         LogUserAction("Controller Doctor requested");
         SelectTabIfExists("Doctor");
-        BeginOperationProgress("Controller Doctor", "Checking requirements", 5);
+        BeginOperationProgress("Controller Doctor", "Checking Windows Native requirements", 5);
         _doctorList.Items.Clear();
         _doctorDetailsBox.Text = "Running Controller Doctor..." + Environment.NewLine;
         SetDoctorStatus("Checking requirements", 5, Color.FromArgb(45, 91, 150));
@@ -3868,69 +4077,115 @@ internal sealed class MainForm : Form
                 missing > 0 ? $"{missing} missing, {warnings} warning(s)" : warnings > 0 ? $"{warnings} warning(s)" : "All required pieces found");
             details.Add($"Requirements: missing={missing}, warnings={warnings}");
 
-            SetDoctorStatus("Checking WSL", 18, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Reading WSL distros", 18);
-            await RefreshWslDistrosAsync().ConfigureAwait(true);
-            var savedWsl = _native.GetSelectedWslDistro();
-            var wslReady = _wslCombo.Items.Count > 1 || !string.IsNullOrWhiteSpace(savedWsl);
-            AddDoctorRow(
-                "WSL distro",
-                wslReady ? CheckState.Ok : CheckState.Warn,
-                wslReady ? (string.IsNullOrWhiteSpace(savedWsl) ? "Automatic distro available" : "Saved distro: " + savedWsl) : "No WSL distro resolved yet");
-            details.Add($"WSL: saved={EmptyAsNone(savedWsl)}, items={Math.Max(0, _wslCombo.Items.Count - 1)}");
-
-            SetDoctorStatus("Checking Bluetooth adapter", 32, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Reading USB/IP devices", 32);
-            await RefreshUsbipdDevicesAsync().ConfigureAwait(true);
-            var adapter = SelectedUsbipdDevice();
-            AddDoctorRow(
-                "Bluetooth adapter",
-                adapter is null ? CheckState.Missing : CheckState.Ok,
-                adapter is null ? "No Bluetooth adapter selected or auto-detected" : adapter.Display);
-            details.Add("Adapter: " + (adapter is null ? "none" : adapter.Display));
-
-            SetDoctorStatus("Checking Windows Bluetooth", 46, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Reading Windows Bluetooth devices", 46);
-            await RefreshWindowsBluetoothAsync().ConfigureAwait(true);
-            var windowsCount = _windowsBluetoothList.Items.Count;
-            var windowsOk = _windowsBluetoothList.Items.Cast<ListViewItem>()
-                .Count(item => SubItemText(item, 1).Equals("OK", StringComparison.OrdinalIgnoreCase));
+            SetDoctorStatus("Checking Windows Bluetooth", 22, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Reading the Windows Bluetooth stack", 22);
+            var windowsBluetooth = await _native.GetWindowsBluetoothDevicesAsync().ConfigureAwait(true);
+            var windowsCount = windowsBluetooth.Count;
+            var windowsOk = windowsBluetooth.Count(device =>
+                device.Status.Equals("OK", StringComparison.OrdinalIgnoreCase));
+            var capacity = NativeControlServices.EstimateWindowsNativeCapacity(
+                windowsBluetooth,
+                _lastWindowsNativeDevices.Count);
             AddDoctorRow(
                 "Windows Bluetooth",
                 windowsCount == 0 ? CheckState.Warn : windowsOk > 0 ? CheckState.Ok : CheckState.Warn,
-                windowsCount == 0 ? "No Windows Bluetooth devices listed" : $"{windowsOk}/{windowsCount} device(s) OK");
-            details.Add($"Windows Bluetooth: ok={windowsOk}, total={windowsCount}");
+                windowsCount == 0
+                    ? "No Windows Bluetooth devices listed"
+                    : $"{windowsOk}/{windowsCount} device(s) OK; estimated Stadia capacity {capacity.Controllers}/4");
+            details.Add($"Windows Bluetooth: adapter={capacity.AdapterName}, ok={windowsOk}, total={windowsCount}, otherActive={capacity.OtherActiveBluetoothDevices}, capacity={capacity.Controllers}/4");
 
-            SetDoctorStatus("Checking Linux visibility", 62, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Reading Linux Bluetooth devices", 62);
-            var linuxDevices = await RefreshLinuxBluetoothDevicesAsync(0, updateProgress: false).ConfigureAwait(true);
-            var stadia = linuxDevices.Count(device => device.IsStadia || device.Name.Contains("stadia", StringComparison.OrdinalIgnoreCase));
-            var connected = linuxDevices.Count(IsLiveBluetoothConnected);
-            var paired = linuxDevices.Count(device => NativeControlServices.IsBluetoothMac(device.Mac) && device.Paired.Equals("yes", StringComparison.OrdinalIgnoreCase));
-            var lowBattery = linuxDevices.Count(device => device.BatteryPercent is < 10);
+            SetDoctorStatus("Checking Stadia HID", 38, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Scanning native Stadia controller input", 38);
+            var nativeDevices = await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false).ConfigureAwait(true);
             AddDoctorRow(
-                "BlueZ devices",
-                linuxDevices.Count == 0 ? CheckState.Warn : CheckState.Ok,
-                linuxDevices.Count == 0 ? "No Linux Bluetooth devices visible" : $"{linuxDevices.Count} visible, {connected} connected, {paired} paired, {stadia} Stadia");
+                "Stadia HID",
+                nativeDevices.Count == 0 ? CheckState.Info : CheckState.Ok,
+                nativeDevices.Count == 0
+                    ? "No powered Stadia controller is visible right now"
+                    : $"{nativeDevices.Count} Stadia HID controller(s) visible");
+            details.Add($"Stadia HID: visible={nativeDevices.Count}");
+
+            SetDoctorStatus("Checking input isolation", 52, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Matching Stadia devices in HidHide", 52);
+            var protectedDevices = nativeDevices.Count(device =>
+                !string.IsNullOrWhiteSpace(device.DeviceInstancePath));
+            AddDoctorRow(
+                "HidHide isolation",
+                nativeDevices.Count == 0
+                    ? CheckState.Info
+                    : protectedDevices == nativeDevices.Count
+                        ? CheckState.Ok
+                        : CheckState.Warn,
+                nativeDevices.Count == 0
+                    ? "Isolation will be checked when a controller is connected"
+                    : $"{protectedDevices}/{nativeDevices.Count} controller(s) matched for duplicate-input protection");
+            details.Add($"HidHide: matched={protectedDevices}/{nativeDevices.Count}");
+
+            var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(
+                _paths,
+                out var receiverPid,
+                out var activeSlots);
+            AddDoctorRow(
+                "Virtual Xbox pads",
+                receiverActive ? CheckState.Ok : CheckState.Info,
+                receiverActive
+                    ? $"{activeSlots} virtual pad(s) active in receiver PID {receiverPid}"
+                    : "Receiver is stopped; press Start when ready");
+            var rumbleCapable = nativeDevices.Count(device =>
+                device.MaxOutputReportLength >= WindowsNativeRumbleReport.MinimumLength);
+            AddDoctorRow(
+                "Vibration",
+                nativeDevices.Count == 0
+                    ? CheckState.Info
+                    : rumbleCapable == nativeDevices.Count
+                        ? CheckState.Ok
+                        : CheckState.Warn,
+                nativeDevices.Count == 0
+                    ? "Vibration capability will be checked after connection"
+                    : $"{rumbleCapable}/{nativeDevices.Count} controller(s) expose a compatible HID output report");
+            details.Add($"Receiver: active={receiverActive}, pid={(receiverActive ? receiverPid : 0)}, slots={(receiverActive ? activeSlots : 0)}, rumbleCapable={rumbleCapable}");
+
+            SetDoctorStatus("Checking battery and profiles", 70, Color.FromArgb(45, 91, 150));
+            SetOperationProgress("Controller Doctor", "Loading battery, profiles, and macros", 70);
+            var batteryAvailable = nativeDevices.Count(device => device.BatteryPercent.HasValue);
+            var lowBattery = nativeDevices.Count(device => device.BatteryPercent is < 10);
             AddDoctorRow(
                 "Battery",
-                lowBattery > 0 ? CheckState.Warn : linuxDevices.Any(device => device.BatteryPercent.HasValue) ? CheckState.Ok : CheckState.Info,
-                lowBattery > 0 ? $"{lowBattery} controller(s) below 10%" : linuxDevices.Any(device => device.BatteryPercent.HasValue) ? "Battery data available" : "No battery data yet");
-            details.Add($"Linux devices: visible={linuxDevices.Count}, connected={connected}, paired={paired}, stadia={stadia}, lowBattery={lowBattery}");
-
-            SetDoctorStatus("Checking saved profiles", 76, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Loading profiles and macros", 76);
+                lowBattery > 0
+                    ? CheckState.Warn
+                    : batteryAvailable > 0
+                        ? CheckState.Ok
+                        : CheckState.Info,
+                lowBattery > 0
+                    ? $"{lowBattery} controller(s) below 10%"
+                    : batteryAvailable > 0
+                        ? $"Windows exposes battery for {batteryAvailable}/{nativeDevices.Count} controller(s)"
+                        : "Windows has not exposed controller battery data");
             RefreshProfiles();
             LoadMacroConfig();
             var autoProfiles = _lastProfiles.Count(profile => profile.AutoConnect);
+            var matchedProfiles = nativeDevices.Count(device =>
+                !string.IsNullOrWhiteSpace(device.BluetoothAddress) &&
+                _lastProfiles.Any(profile =>
+                    profile.Mac.Equals(device.BluetoothAddress, StringComparison.OrdinalIgnoreCase)));
             AddDoctorRow(
                 "Profiles",
                 _lastProfiles.Count == 0 ? CheckState.Info : CheckState.Ok,
-                _lastProfiles.Count == 0 ? "No saved controller profiles yet" : $"{_lastProfiles.Count} profile(s), {autoProfiles} auto-connect");
-            details.Add($"Profiles: total={_lastProfiles.Count}, auto={autoProfiles}");
+                _lastProfiles.Count == 0
+                    ? "No preferred controller order configured"
+                    : $"{_lastProfiles.Count} profile(s), {autoProfiles} active at startup, {matchedProfiles} currently matched");
+            var configuredMacros = _native.LoadMacroMappings()
+                .Count(mapping => !string.IsNullOrWhiteSpace(mapping.Shortcut));
+            AddDoctorRow(
+                "Macros",
+                configuredMacros > 0 ? CheckState.Ok : CheckState.Info,
+                configuredMacros > 0
+                    ? $"{configuredMacros} native shortcut(s) configured"
+                    : "No Assistant/Capture shortcuts configured");
+            details.Add($"Battery: available={batteryAvailable}, low={lowBattery}; profiles: total={_lastProfiles.Count}, auto={autoProfiles}, matched={matchedProfiles}; macros={configuredMacros}");
 
             SetDoctorStatus("Checking input telemetry", 88, Color.FromArgb(45, 91, 150));
-            SetOperationProgress("Controller Doctor", "Reading controller telemetry", 88);
+            SetOperationProgress("Controller Doctor", "Reading live controller telemetry", 88);
             RefreshControllerTelemetry();
             var activeInput = _lastTelemetrySnapshot?.Controllers.Count(controller => controller.Active || controller.PacketsPerSecond > 0) ?? 0;
             AddDoctorRow(
@@ -4184,6 +4439,7 @@ internal sealed class MainForm : Form
             LinuxBluetoothDevice device => $"{device.Name} {device.Mac}",
             UsbipdDevice device => device.Display,
             WindowsBluetoothDevice device => $"{device.Name} {device.Status}",
+            WindowsNativeHidDevice device => $"{WindowsNativeDisplayName(device)} {device.BluetoothAddress}".Trim(),
             ControllerProfile profile => $"{profile.Name} {profile.Mac}",
             MacroMapping mapping => $"{mapping.Code}={mapping.Shortcut}",
             _ => FirstMeaningfulSubItem(item)
@@ -4567,6 +4823,16 @@ internal sealed class MainForm : Form
         _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
     }
 
+    private async Task CreateWindowsNativeCapacityReportAsync()
+    {
+        LogUserAction("Windows Native capacity report requested");
+        BeginOperationProgress("Controller capacity", "Inspecting the Windows Bluetooth adapter", 15);
+        var path = await _native.CreateWindowsNativeCapacityReportAsync();
+        CompleteOperationProgress("Controller capacity", "Capacity report created");
+        _diagnosticsBox.Text = await File.ReadAllTextAsync(path);
+        _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+    }
+
     private void StartBridge()
     {
         LogUserAction("Start bridge requested");
@@ -4680,6 +4946,20 @@ internal sealed class MainForm : Form
         SetWindowsNativeStatus("Stop requested - restoring physical input", 100, warn: false);
         CompleteOperationProgress("Stopping Windows Native", "Stop requested; physical input restore requested");
         RefreshLogs();
+        _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
+    }
+
+    private void RepairWindowsNative()
+    {
+        LogUserAction("Repair Windows Native requested");
+        BeginOperationProgress("Repairing Windows Native", "Stopping receiver and restoring physical input", 10);
+        SetWindowsNativeStatus("Repairing controller connection", 12, warn: false);
+        LaunchSelfCommand(
+            "--repair-windows-native",
+            elevateWhenNeeded: true,
+            "Windows Native repair requested. Stadia devices will reconnect automatically.");
+        SetOperationProgress("Repairing Windows Native", "Restarting Stadia PnP devices and Bluetooth discovery", 28);
+        _ = RefreshWindowsNativeAfterStartAsync();
         _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
     }
 
@@ -5170,30 +5450,43 @@ internal sealed class MainForm : Form
 
     private void ApplyAutoProfiles()
     {
-        LogUserAction("Apply auto profiles requested");
+        LogUserAction("Apply preferred controller order requested");
         _native.ApplyAutoConnectProfiles();
         RefreshSelectionLabels();
-        _statusLabel.Text = "Auto-connect profiles applied to startup";
+        if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _))
+        {
+            BeginOperationProgress("Applying controller order", "Restarting the native receiver safely", 18);
+            LaunchSelfCommand(
+                "--restart-windows-native",
+                elevateWhenNeeded: true,
+                "Controller order saved. Restarting Windows Native automatically.");
+            _ = RefreshWindowsNativeAfterStartAsync();
+            return;
+        }
+
+        _statusLabel.Text = "Controller order saved for the next start";
     }
 
-    private void UseLinuxSelectedAsProfile()
+    private void UseWindowsSelectedAsProfile()
     {
-        LogUserAction("Use Linux selected as profile requested");
-        var device = SelectedLinuxBluetoothDevices().FirstOrDefault();
+        LogUserAction("Use Windows Native selected controller as profile requested");
+        var device = _windowsNativeDeviceList.SelectedItems.Count > 0
+            ? _windowsNativeDeviceList.SelectedItems[0].Tag as WindowsNativeHidDevice
+            : _lastWindowsNativeDevices.FirstOrDefault();
         if (device is null)
         {
-            ShowLocalizedMessage("Select a Linux Bluetooth device first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Select a Stadia controller first.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        if (!NativeControlServices.IsBluetoothMac(device.Mac))
+        if (!NativeControlServices.IsBluetoothMac(device.BluetoothAddress))
         {
-            ShowLocalizedMessage("This receiver row does not expose a Bluetooth MAC yet. Use Refresh or Scan until the BlueZ row appears, then save the profile.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            ShowLocalizedMessage("Windows has not exposed this controller Bluetooth address yet. Keep it connected and press Check, then try again.", "Controller profile", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        _profileNameText.Text = device.IsStadia ? "Stadia Controller" : device.Name;
-        _profileMacText.Text = device.Mac;
+        _profileNameText.Text = WindowsNativeDisplayName(device) ?? "Stadia Controller";
+        _profileMacText.Text = device.BluetoothAddress;
         _profileAutoConnectCheck.Checked = true;
     }
 
