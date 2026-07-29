@@ -1298,42 +1298,59 @@ internal sealed class MainForm : Form
 
         var toolbar = new TableLayoutPanel
         {
+            Name = "ControllerLiveToolbar",
             Dock = DockStyle.Fill,
-            ColumnCount = 5,
+            ColumnCount = 4,
             RowCount = 1,
             Margin = new Padding(0)
         };
-        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 42 : 48));
-        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 78 : 96));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 158 : 180));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 82 : 96));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 48 : 56));
-        toolbar.Controls.Add(new Label
+        toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var padSelector = new TableLayoutPanel
         {
-            Text = "Pad",
+            Name = "ControllerPadSelector",
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        padSelector.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 66 : 76));
+        padSelector.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        padSelector.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        padSelector.Controls.Add(new Label
+        {
+            Name = "ControllerPadLabel",
+            Text = "Controller",
             Dock = DockStyle.Fill,
             AutoSize = false,
             AutoEllipsis = false,
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
 
+        _controllerPadCombo.AccessibleName = "Controller";
         _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _controllerPadCombo.Dock = DockStyle.None;
         _controllerPadCombo.Anchor = AnchorStyles.Left | AnchorStyles.Right;
-        _controllerPadCombo.Margin = new Padding(0);
-        _controllerPadCombo.Items.AddRange(new object[] { "Auto", "P1", "P2", "P3", "P4" });
+        _controllerPadCombo.Margin = new Padding(4, 0, 0, 0);
+        _controllerPadCombo.Items.AddRange(new object[] { "Automatic", "P1", "P2", "P3", "P4" });
         _controllerPadCombo.SelectedIndex = 0;
         _controllerPadCombo.SelectedIndexChanged += (_, _) =>
         {
             LogUserSelection("Controller test pad selected", ("pad", _controllerPadCombo.SelectedItem?.ToString()));
             RefreshControllerTelemetry();
         };
-        toolbar.Controls.Add(_controllerPadCombo, 1, 0);
-        AddControllerLiveButton(toolbar, "Vibrate", 3, TestSelectedRumbleAsync);
+        padSelector.Controls.Add(_controllerPadCombo, 1, 0);
+        toolbar.Controls.Add(padSelector, 0, 0);
+        AddControllerLiveButton(toolbar, "Vibrate", 2, TestSelectedRumbleAsync);
         AddControllerLiveButton(
             toolbar,
             "Refresh",
-            4,
+            3,
             () =>
             {
                 RefreshControllerTelemetry();
@@ -1357,6 +1374,7 @@ internal sealed class MainForm : Form
         };
         statusRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         statusRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 74 : 90));
+        statusRow.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _controllerVisualStatusLabel.AutoSize = false;
         _controllerVisualStatusLabel.Dock = DockStyle.Fill;
         _controllerVisualStatusLabel.AutoEllipsis = true;
@@ -1396,8 +1414,11 @@ internal sealed class MainForm : Form
     {
         var button = new ModernButton
         {
+            Name = $"ControllerLive{text}Button",
             Text = glyph ?? text,
-            Dock = DockStyle.Fill,
+            Dock = DockStyle.None,
+            Anchor = AnchorStyles.Left | AnchorStyles.Right,
+            Height = IsCompactUi() ? 26 : 30,
             MinimumSize = new Size(0, IsCompactUi() ? 26 : 30),
             Margin = new Padding(2, 1, 2, 1),
             Padding = new Padding(3, 0, 3, 0),
@@ -2457,6 +2478,10 @@ internal sealed class MainForm : Form
     {
         _localization.Apply(this);
         _localization.Apply(_trayIcon.ContextMenuStrip);
+        if (_controllerPadCombo.Items.Count > 0)
+        {
+            _controllerPadCombo.Items[0] = _localization.Translate("Automatic");
+        }
         if (_buttonMappingList.Columns.Count > 0)
         {
             RefreshButtonMappingList();

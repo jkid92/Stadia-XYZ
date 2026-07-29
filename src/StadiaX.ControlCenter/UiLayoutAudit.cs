@@ -42,6 +42,9 @@ internal static class UiLayoutAudit
         }
 
         var auditSurface = CreateAuditSurface(form);
+        LayoutTree(auditSurface);
+        Application.DoEvents();
+        ValidateControllerLiveToolbar(auditSurface, issues);
         var tabs = Descendants(auditSurface).OfType<TabControl>().FirstOrDefault(control => control.TabPages.Count > 0);
         if (tabs is null)
         {
@@ -108,6 +111,58 @@ internal static class UiLayoutAudit
             ("issues", issues.Count.ToString()),
             ("report", reportPath));
         return issues.Count == 0 ? 0 : 1;
+    }
+
+    private static void ValidateControllerLiveToolbar(Control root, ISet<string> issues)
+    {
+        var toolbar = Descendants(root)
+            .OfType<TableLayoutPanel>()
+            .FirstOrDefault(control => control.Name == "ControllerLiveToolbar");
+        var selector = Descendants(root)
+            .OfType<TableLayoutPanel>()
+            .FirstOrDefault(control => control.Name == "ControllerPadSelector");
+        if (toolbar is null || selector is null)
+        {
+            issues.Add("Controller live toolbar or pad selector was not created.");
+            return;
+        }
+
+        ValidateSingleRow(toolbar, issues);
+        ValidateSingleRow(selector, issues);
+        ValidateChildrenFit(toolbar, issues);
+        ValidateChildrenFit(selector, issues);
+
+        var label = selector.Controls.Find("ControllerPadLabel", false).OfType<Label>().FirstOrDefault();
+        if (label is null || string.IsNullOrWhiteSpace(label.Text))
+        {
+            issues.Add("Controller pad selector label is missing.");
+        }
+
+        var combo = selector.Controls.OfType<ComboBox>().FirstOrDefault();
+        if (combo is null || combo.SelectedIndex < 0 || string.IsNullOrWhiteSpace(combo.Text))
+        {
+            issues.Add("Controller pad selector value is missing.");
+        }
+    }
+
+    private static void ValidateSingleRow(TableLayoutPanel panel, ISet<string> issues)
+    {
+        if (panel.RowStyles.Count != 1 || panel.RowStyles[0].SizeType != SizeType.Percent)
+        {
+            issues.Add($"{panel.Name} must use one percentage row to remain aligned at high DPI.");
+        }
+    }
+
+    private static void ValidateChildrenFit(Control parent, ISet<string> issues)
+    {
+        const int tolerance = 2;
+        foreach (Control child in parent.Controls)
+        {
+            if (child.Top < -tolerance || child.Bottom > parent.ClientSize.Height + tolerance)
+            {
+                issues.Add($"{Describe(child)} exceeds {parent.Name} vertically ({child.Bounds} in {parent.ClientSize}).");
+            }
+        }
     }
 
     private static string SaveSnapshot(
