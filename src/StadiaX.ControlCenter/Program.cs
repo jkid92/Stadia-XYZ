@@ -66,6 +66,7 @@ internal static class Program
         {
             UpdateService.RunSelfTest();
             WindowsNativeBatteryReader.RunSelfTest();
+            MainForm.RunBatteryOverlaySelfTest();
             ControllerButtonMappingStore.RunSelfTest();
             ControllerVisualizer.RunSelfTest();
             WindowsNativeHidMapper.RunSelfTest();

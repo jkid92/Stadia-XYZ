@@ -3349,7 +3349,7 @@ internal sealed class MainForm : Form
         var low = batteryKnown.Where(d => d.BatteryPercent is <= 30).ToArray();
         if (_batteryOverlayCheck.Checked && batteryKnown.Length > 0)
         {
-            ShowBatteryOverlay(batteryKnown, warning: low.Length > 0);
+            ShowBatteryOverlay(stadia, warning: low.Length > 0);
         }
         else if (low.Length > 0)
         {
@@ -5149,16 +5149,7 @@ internal sealed class MainForm : Form
         var critical = devices.Any(device => device.BatteryPercent is < 10);
         _batteryOverlay.Opacity = critical ? 0.58 : 0.44;
         _batteryOverlay.BackColor = Color.FromArgb(8, 18, 30);
-        var rows = devices.Take(4).Select((device, index) =>
-        {
-            var battery = BatteryPercentWithRuntime(device.BatteryPercent);
-            return $"P{index + 1} {battery}";
-        }).ToArray();
-        var firstLine = string.Join("  ", rows.Take(2));
-        var secondLine = rows.Length > 2 ? string.Join("  ", rows.Skip(2)) : "";
-        _batteryOverlayLabel!.Text = string.IsNullOrWhiteSpace(secondLine)
-            ? firstLine
-            : firstLine + Environment.NewLine + secondLine;
+        _batteryOverlayLabel!.Text = BatteryOverlayText(devices);
         _batteryOverlayLabel.ForeColor = critical ? Color.FromArgb(255, 78, 78) : Color.White;
         _batteryOverlay.Size = MeasureBatteryOverlaySize(_batteryOverlayLabel);
         ApplyPillRegion(_batteryOverlay);
@@ -5229,12 +5220,44 @@ internal sealed class MainForm : Form
             .Select(line => TextRenderer.MeasureText(line, label.Font, Size.Empty, flags).Width)
             .DefaultIfEmpty(48)
             .Max();
-        var lineHeight = TextRenderer.MeasureText("P1 100% 8h", label.Font, Size.Empty, flags).Height;
-        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 6, 54, 144);
+        var lineHeight = TextRenderer.MeasureText("P1 100%", label.Font, Size.Empty, flags).Height;
+        var width = Math.Clamp(maxWidth + label.Padding.Horizontal + 6, 54, 118);
         var height = lines.Length > 1
             ? Math.Clamp((lineHeight * lines.Length) + label.Padding.Vertical + 4, 32, 40)
             : Math.Clamp(lineHeight + label.Padding.Vertical + 4, 22, 26);
         return new Size(width, height);
+    }
+
+    private static string BatteryOverlayText(IReadOnlyList<LinuxBluetoothDevice> devices)
+    {
+        var rows = devices.Take(4).Select((device, index) =>
+        {
+            var battery = device.BatteryPercent is null ? "?" : device.BatteryPercent + "%";
+            return $"P{index + 1} {battery}";
+        }).ToArray();
+        var firstLine = string.Join("  ", rows.Take(2));
+        var secondLine = rows.Length > 2 ? string.Join("  ", rows.Skip(2)) : "";
+        return string.IsNullOrWhiteSpace(secondLine)
+            ? firstLine
+            : firstLine + Environment.NewLine + secondLine;
+    }
+
+    internal static void RunBatteryOverlaySelfTest()
+    {
+        var devices = new[]
+        {
+            new LinuxBluetoothDevice("P1", "Stadia P1", "yes", "yes", "yes", 84, true),
+            new LinuxBluetoothDevice("P2", "Stadia P2", "yes", "yes", "yes", null, true),
+            new LinuxBluetoothDevice("P3", "Stadia P3", "yes", "yes", "yes", 9, true),
+            new LinuxBluetoothDevice("P4", "Stadia P4", "yes", "yes", "yes", 100, true)
+        };
+        var expected = "P1 84%  P2 ?" + Environment.NewLine + "P3 9%  P4 100%";
+        if (!BatteryOverlayText(devices).Equals(expected, StringComparison.Ordinal) ||
+            !devices.Any(device => device.BatteryPercent is < 10) ||
+            new[] { devices[0], devices[1], devices[3] }.Any(device => device.BatteryPercent is < 10))
+        {
+            throw new InvalidOperationException("Linux-style battery overlay self-test failed.");
+        }
     }
 
     private static string BatteryPercentWithRuntime(int? percent)
