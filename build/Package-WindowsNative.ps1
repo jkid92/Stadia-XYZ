@@ -44,7 +44,7 @@ $requiredFiles = @(
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",
-    "assets\StadiaControllerPhoto.png",
+    "assets\StadiaControllerCutout.png",
     "assets\ATTRIBUTION.md",
     "dependencies\HidHide_1.5.230_x64.exe",
     "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",

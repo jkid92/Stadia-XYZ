@@ -1299,19 +1299,21 @@ internal sealed class MainForm : Form
         var toolbar = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 4,
+            ColumnCount = 5,
             RowCount = 1,
             Margin = new Padding(0)
         };
-        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 26 : 34));
-        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 70 : 104));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 42 : 48));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 78 : 96));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 82 : 96));
         toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, IsCompactUi() ? 48 : 56));
         toolbar.Controls.Add(new Label
         {
             Text = "Pad",
             Dock = DockStyle.Fill,
-            AutoEllipsis = true,
+            AutoSize = false,
+            AutoEllipsis = false,
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
 
@@ -1325,11 +1327,11 @@ internal sealed class MainForm : Form
             RefreshControllerTelemetry();
         };
         toolbar.Controls.Add(_controllerPadCombo, 1, 0);
-        AddControllerLiveButton(toolbar, "Vibrate", 2, TestSelectedRumbleAsync);
+        AddControllerLiveButton(toolbar, "Vibrate", 3, TestSelectedRumbleAsync);
         AddControllerLiveButton(
             toolbar,
             "Refresh",
-            3,
+            4,
             () =>
             {
                 RefreshControllerTelemetry();
@@ -1340,7 +1342,7 @@ internal sealed class MainForm : Form
 
         _controllerVisualizer.Dock = DockStyle.Fill;
         _controllerVisualizer.MinimumSize = new Size(IsCompactUi() ? 300 : 360, IsCompactUi() ? 170 : 200);
-        _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerPhoto.png").ToArray());
+        _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerCutout.png").ToArray());
         _controllerVisualizer.InputSelected += SelectMappingInputFromVisualizer;
         liveLayout.Controls.Add(_controllerVisualizer, 0, 1);
 

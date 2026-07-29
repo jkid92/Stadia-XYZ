@@ -6,6 +6,12 @@
 - Local changes: resized to 2048x1024 for the Stadia X controller test view and used as the source for the application icon.
 - Note: replace this file with an owned/redistributable photo before broad public distribution if required by your release policy.
 
+## StadiaControllerCutout.png
+
+- Source: derived from `StadiaControllerPhoto.png`.
+- Local changes: the original controller pixels and geometry are preserved; an AI-assisted silhouette mask removes the photographic background and watermark for the interactive mapping view.
+- Note: the same redistribution consideration as the source photo applies.
+
 ## Bundled Windows Native dependencies
 
 - HidHide 1.5.230: official signed installer, MIT license, https://github.com/nefarius/HidHide/releases/tag/v1.5.230.0

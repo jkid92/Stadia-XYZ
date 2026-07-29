@@ -167,10 +167,10 @@ internal sealed class ControllerVisualizer : Control
         DrawVirtualTrigger(g, bounds, "R2", _controller?.TriggerRight ?? 0, 0.62f);
 
         DrawDpad(g, bounds);
-        DrawCircleButton(g, bounds, "y", 1487, 162, 50, "Y", FaceGlow);
-        DrawCircleButton(g, bounds, "b", 1605, 269, 50, "B", FaceGlow);
-        DrawCircleButton(g, bounds, "x", 1384, 270, 50, "X", FaceGlow);
-        DrawCircleButton(g, bounds, "a", 1485, 373, 50, "A", FaceGlow);
+        DrawCircleButton(g, bounds, "y", 1487, 162, 50, "", FaceGlow);
+        DrawCircleButton(g, bounds, "b", 1605, 269, 50, "", FaceGlow);
+        DrawCircleButton(g, bounds, "x", 1384, 270, 50, "", FaceGlow);
+        DrawCircleButton(g, bounds, "a", 1485, 373, 50, "", FaceGlow);
 
         DrawPillButton(g, bounds, "select", 839, 157, 94, 48, "SEL", SystemGlow);
         DrawPillButton(g, bounds, "start", 1214, 157, 94, 48, "MENU", SystemGlow);

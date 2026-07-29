@@ -13,7 +13,7 @@
   </PropertyGroup>
   <ItemGroup>
     <None Include="..\..\ViGEmClient.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\ViGEmClient.dll')" />
-    <Content Include="..\..\assets\StadiaControllerPhoto.png" Link="assets\StadiaControllerPhoto.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <Content Include="..\..\assets\StadiaControllerCutout.png" Link="assets\StadiaControllerCutout.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\assets\StadiaX-WindowsNative.ico" Link="assets\StadiaX-WindowsNative.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\assets\StadiaX-WindowsNative-icon.png" Link="assets\StadiaX-WindowsNative-icon.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
