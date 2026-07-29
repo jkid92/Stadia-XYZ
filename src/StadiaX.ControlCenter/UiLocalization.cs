@@ -92,7 +92,7 @@ internal sealed class UiLocalization
         ["Connect"] = "Connetti",
         ["Disconnect"] = "Disconnetti",
         ["Use selected"] = "Usa selezionati",
-        ["Use selected controller"] = "Usa controller selezionato",
+        ["Use selected controller"] = "Usa questo controller",
         ["Automatic"] = "Automatico",
         ["Enable"] = "Abilita",
         ["Disable"] = "Disabilita",
