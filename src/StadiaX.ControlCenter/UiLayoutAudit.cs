@@ -33,9 +33,10 @@ internal static class UiLayoutAudit
             Math.Max(0, (int)Math.Round((form.Height - form.ClientSize.Height) * simulationScale)));
         if (Math.Abs(simulationScale - 1F) > 0.01F)
         {
+            var fonts = CaptureControlFonts(form);
             form.SuspendLayout();
-            ScaleControlFonts(form, simulationScale);
             form.Scale(new SizeF(simulationScale, simulationScale));
+            ApplyControlFonts(fonts, simulationScale);
             form.ResumeLayout(performLayout: true);
             Application.DoEvents();
         }
@@ -354,18 +355,35 @@ internal static class UiLayoutAudit
         }
     }
 
-    private static void ScaleControlFonts(Control root, float scale)
+    private static IReadOnlyList<ControlFont> CaptureControlFonts(Control root)
     {
-        foreach (var control in Descendants(root))
+        return Descendants(root)
+            .Select(control =>
+            {
+                var font = control.Font;
+                return new ControlFont(
+                    control,
+                    font.FontFamily,
+                    font.Size,
+                    font.Style,
+                    font.Unit,
+                    font.GdiCharSet,
+                    font.GdiVerticalFont);
+            })
+            .ToArray();
+    }
+
+    private static void ApplyControlFonts(IEnumerable<ControlFont> fonts, float scale)
+    {
+        foreach (var item in fonts)
         {
-            var font = control.Font;
-            control.Font = new Font(
-                font.FontFamily,
-                Math.Max(4F, font.Size * scale),
-                font.Style,
-                font.Unit,
-                font.GdiCharSet,
-                font.GdiVerticalFont);
+            item.Control.Font = new Font(
+                item.FontFamily,
+                Math.Max(4F, item.Size * scale),
+                item.Style,
+                item.Unit,
+                item.GdiCharSet,
+                item.GdiVerticalFont);
         }
     }
 
@@ -404,5 +422,14 @@ internal static class UiLayoutAudit
         value = value.ReplaceLineEndings(" ").Trim();
         return value.Length <= 48 ? value : value[..48] + "...";
     }
+
+    private sealed record ControlFont(
+        Control Control,
+        FontFamily FontFamily,
+        float Size,
+        FontStyle Style,
+        GraphicsUnit Unit,
+        byte GdiCharSet,
+        bool GdiVerticalFont);
 
 }
