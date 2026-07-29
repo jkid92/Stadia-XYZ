@@ -15,7 +15,8 @@ internal sealed class ControllerVisualizer : Control
 
     private Image? _controllerImage;
     private ControllerTelemetryRow? _controller;
-    private ControllerInputButton? _selectedInput;
+    private XboxOutputButton? _selectedOutput;
+    private bool _awaitingMappingInput;
     private string _status = "Waiting for controller telemetry.";
     private string _missingImageDetail = "Controller image not found";
 
@@ -25,24 +26,39 @@ internal sealed class ControllerVisualizer : Control
         ResizeRedraw = true;
         TabStop = true;
         AccessibleRole = AccessibleRole.Diagram;
-        AccessibleName = "Stadia controller input map";
+        AccessibleName = "Virtual Xbox controller mapping targets";
         BackColor = SurfaceBottom;
         Font = new Font("Segoe UI", 9, FontStyle.Bold);
     }
 
-    public event Action<ControllerInputButton>? InputSelected;
+    public event Action<XboxOutputButton>? MappingTargetSelected;
 
-    public ControllerInputButton? SelectedInput
+    public XboxOutputButton? SelectedOutput
     {
-        get => _selectedInput;
+        get => _selectedOutput;
         set
         {
-            if (_selectedInput == value)
+            if (_selectedOutput == value)
             {
                 return;
             }
 
-            _selectedInput = value;
+            _selectedOutput = value;
+            Invalidate();
+        }
+    }
+
+    public bool AwaitingMappingInput
+    {
+        get => _awaitingMappingInput;
+        set
+        {
+            if (_awaitingMappingInput == value)
+            {
+                return;
+            }
+
+            _awaitingMappingInput = value;
             Invalidate();
         }
     }
@@ -126,7 +142,7 @@ internal sealed class ControllerVisualizer : Control
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        Cursor = HitTestInput(e.Location) is null ? Cursors.Default : Cursors.Hand;
+        Cursor = HitTestMappingTarget(e.Location) is null ? Cursors.Default : Cursors.Hand;
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -138,15 +154,20 @@ internal sealed class ControllerVisualizer : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
-        Focus();
-        var input = HitTestInput(e.Location);
-        if (input is null)
+        if (e.Button != MouseButtons.Left)
         {
             return;
         }
 
-        SelectedInput = input;
-        InputSelected?.Invoke(input.Value);
+        Focus();
+        var output = HitTestMappingTarget(e.Location);
+        if (output is null)
+        {
+            return;
+        }
+
+        SelectedOutput = output;
+        MappingTargetSelected?.Invoke(output.Value);
     }
 
     private RectangleF GetImageBounds()
@@ -310,8 +331,9 @@ internal sealed class ControllerVisualizer : Control
         }
         else if (selected)
         {
-            using var selectedFill = new SolidBrush(Color.FromArgb(58, SystemGlow));
-            using var selectedBorder = new Pen(Color.FromArgb(245, 35, 116, 146), Math.Max(2.2f, Width / 620f))
+            var selectionColor = _awaitingMappingInput ? TriggerGlow : SystemGlow;
+            using var selectedFill = new SolidBrush(Color.FromArgb(_awaitingMappingInput ? 88 : 58, selectionColor));
+            using var selectedBorder = new Pen(Color.FromArgb(245, selectionColor), Math.Max(2.2f, Width / 620f))
             {
                 LineJoin = LineJoin.Round
             };
@@ -359,8 +381,82 @@ internal sealed class ControllerVisualizer : Control
 
     private bool IsSelected(string telemetryKey)
     {
-        return _selectedInput is not null &&
-               ControllerButtonCatalog.FindInput(telemetryKey)?.Id == _selectedInput;
+        var input = ControllerButtonCatalog.FindInput(telemetryKey);
+        return _selectedOutput is not null &&
+               input is not null &&
+               MappingOutputFor(input.Id) == _selectedOutput;
+    }
+
+    private XboxOutputButton? HitTestMappingTarget(Point location)
+    {
+        var input = HitTestInput(location);
+        return input is null ? null : MappingOutputFor(input.Value);
+    }
+
+    internal static XboxOutputButton? MappingOutputFor(ControllerInputButton input)
+    {
+        return input switch
+        {
+            ControllerInputButton.A => XboxOutputButton.A,
+            ControllerInputButton.B => XboxOutputButton.B,
+            ControllerInputButton.X => XboxOutputButton.X,
+            ControllerInputButton.Y => XboxOutputButton.Y,
+            ControllerInputButton.Lb => XboxOutputButton.LeftShoulder,
+            ControllerInputButton.Rb => XboxOutputButton.RightShoulder,
+            ControllerInputButton.Select => XboxOutputButton.Back,
+            ControllerInputButton.Start => XboxOutputButton.Start,
+            ControllerInputButton.Stadia => XboxOutputButton.Guide,
+            ControllerInputButton.L3 => XboxOutputButton.LeftStick,
+            ControllerInputButton.R3 => XboxOutputButton.RightStick,
+            ControllerInputButton.DpadUp => XboxOutputButton.DpadUp,
+            ControllerInputButton.DpadDown => XboxOutputButton.DpadDown,
+            ControllerInputButton.DpadLeft => XboxOutputButton.DpadLeft,
+            ControllerInputButton.DpadRight => XboxOutputButton.DpadRight,
+            ControllerInputButton.Assistant or ControllerInputButton.Capture => null,
+            _ => null
+        };
+    }
+
+    internal static void RunSelfTest()
+    {
+        using var visualizer = new ControllerVisualizer
+        {
+            Size = new Size(SourceWidth, SourceHeight)
+        };
+        XboxOutputButton? selected = null;
+        visualizer.MappingTargetSelected += output => selected = output;
+
+        void Click(float sourceX, float sourceY, MouseButtons button = MouseButtons.Left)
+        {
+            var point = Point.Round(PointOnImage(visualizer.GetImageBounds(), sourceX, sourceY));
+            visualizer.OnMouseDown(new MouseEventArgs(button, 1, point.X, point.Y, 0));
+        }
+
+        Click(1485, 373);
+        if (selected != XboxOutputButton.A || visualizer.SelectedOutput != XboxOutputButton.A)
+        {
+            throw new InvalidOperationException("Controller image A target self-test failed.");
+        }
+
+        selected = null;
+        Click(839, 157);
+        if (selected != XboxOutputButton.Back)
+        {
+            throw new InvalidOperationException("Controller image Back target self-test failed.");
+        }
+
+        selected = null;
+        Click(1485, 373, MouseButtons.Right);
+        if (selected is not null)
+        {
+            throw new InvalidOperationException("Controller image right-click guard self-test failed.");
+        }
+
+        Click(1146, 272);
+        if (selected is not null || MappingOutputFor(ControllerInputButton.Capture) is not null)
+        {
+            throw new InvalidOperationException("Controller image unsupported target self-test failed.");
+        }
     }
 
     private ControllerInputButton? HitTestInput(Point location)

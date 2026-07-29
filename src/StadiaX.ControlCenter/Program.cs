@@ -67,6 +67,7 @@ internal static class Program
             UpdateService.RunSelfTest();
             WindowsNativeBatteryReader.RunSelfTest();
             ControllerButtonMappingStore.RunSelfTest();
+            ControllerVisualizer.RunSelfTest();
             WindowsNativeHidMapper.RunSelfTest();
             ControllerStateMapper.RunSelfTest();
             VigemNative.RunSelfTest();

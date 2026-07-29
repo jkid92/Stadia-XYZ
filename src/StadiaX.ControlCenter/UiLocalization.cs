@@ -125,6 +125,8 @@ internal sealed class UiLocalization
         ["Ready"] = "Pronto",
         ["Press one Stadia button"] = "Premi un pulsante Stadia",
         ["Press one Stadia button for"] = "Premi un pulsante Stadia per",
+        ["Press the physical controller button for"] = "Premi sul controller il pulsante da associare a",
+        ["Click a button on the controller image, then press the physical button to assign it"] = "Clicca un pulsante sul disegno, poi premi il pulsante corrispondente sul controller",
         ["press the Stadia input for"] = "premi l'input Stadia per",
         ["Input detection cancelled"] = "Rilevamento input annullato",
         ["Default mapping restored"] = "Mappatura predefinita ripristinata",

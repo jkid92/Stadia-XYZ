@@ -510,6 +510,11 @@ internal sealed class MainForm : Form
         BuildTabNavigation();
         _tabs.SelectedIndexChanged += (_, _) =>
         {
+            if (_mappingCaptureArmed && _tabs.SelectedTab?.Name != "Controller Mapping")
+            {
+                StopButtonMappingCapture(
+                    _mappingGuideIndex >= 0 ? "Guided mapping cancelled" : "Input detection cancelled");
+            }
             UpdateTabNavigation();
             LogUserSelection("Tab selected", ("name", _tabs.SelectedTab?.Text));
         };
@@ -1362,7 +1367,10 @@ internal sealed class MainForm : Form
         _controllerVisualizer.Dock = DockStyle.Fill;
         _controllerVisualizer.MinimumSize = new Size(IsCompactUi() ? 300 : 360, IsCompactUi() ? 170 : 200);
         _controllerVisualizer.LoadControllerImage(_paths.ResolveAssetCandidates("StadiaControllerCutout.png").ToArray());
-        _controllerVisualizer.InputSelected += SelectMappingInputFromVisualizer;
+        _controllerVisualizer.MappingTargetSelected += StartMappingCaptureFromVisualizer;
+        _controllerToolTip.SetToolTip(
+            _controllerVisualizer,
+            _localization.Translate("Click a button on the controller image, then press the physical button to assign it"));
         liveLayout.Controls.Add(_controllerVisualizer, 0, 1);
 
         var statusRow = new TableLayoutPanel
@@ -1734,7 +1742,7 @@ internal sealed class MainForm : Form
         editor.Controls.Add(_mappingCompletenessLabel, 0, 1);
         editor.SetColumnSpan(_mappingCompletenessLabel, 2);
 
-        _mappingStatusLabel.Text = "Ready";
+        _mappingStatusLabel.Text = "Click a button on the controller image, then press the physical button to assign it";
         _mappingStatusLabel.Dock = DockStyle.Fill;
         _mappingStatusLabel.AutoEllipsis = true;
         _mappingStatusLabel.TextAlign = ContentAlignment.MiddleLeft;
@@ -1839,7 +1847,7 @@ internal sealed class MainForm : Form
                 .ToList()
                 .FindIndex(input => input.Id == (hasAssignedInput ? assignedInput : null));
             _mappingInputCombo.SelectedIndex = Math.Max(0, inputIndex);
-            _controllerVisualizer.SelectedInput = hasAssignedInput ? assignedInput : null;
+            _controllerVisualizer.SelectedOutput = outputId;
         }
         finally
         {
@@ -1861,34 +1869,24 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void SelectMappingInputFromVisualizer(ControllerInputButton input)
+    private void StartMappingCaptureFromVisualizer(XboxOutputButton output)
     {
         if (_mappingCaptureArmed)
         {
-            StopButtonMappingCapture("Input detection cancelled");
+            StopButtonMappingCapture(
+                _mappingGuideIndex >= 0 ? "Guided mapping cancelled" : "Input detection cancelled");
         }
 
-        var inputIndex = _mappingInputCombo.Items
-            .Cast<MappingInputOption>()
-            .ToList()
-            .FindIndex(option => option.Id == input);
-        if (inputIndex < 0)
-        {
-            return;
-        }
-
-        var output = _selectedMappingOutput;
-        if (_mappingInputCombo.SelectedIndex == inputIndex)
-        {
-            _controllerVisualizer.SelectedInput = input;
-            return;
-        }
-
-        _mappingInputCombo.SelectedIndex = inputIndex;
+        _mappingGuideIndex = -1;
+        ArmButtonMappingCapture(output);
         LogUserSelection(
-            "Controller image input selected",
-            ("input", input.ToString()),
-            ("output", output.ToString()));
+            "Controller image mapping target selected",
+            ("output", output.ToString()),
+            ("profile", _mappingConfiguration.ActiveProfile.Name));
+        AppDiagnosticsLogger.Record(
+            "BUTTON_MAPPING_IMAGE_TARGET_SELECTED",
+            ("output", output.ToString()),
+            ("profileId", _mappingConfiguration.ActiveProfileId));
     }
 
     private void StageMappingAssignment(
@@ -2283,6 +2281,7 @@ internal sealed class MainForm : Form
 
         _mappingCaptureTarget = output;
         _mappingCaptureArmed = true;
+        _controllerVisualizer.AwaitingMappingInput = true;
         _mappingDetectButton.Text = _localization.Translate(
             _mappingGuideIndex >= 0 ? "Recording guided mapping" : "Cancel detection");
         _mappingDetectButton.Enabled = _mappingGuideIndex < 0;
@@ -2290,7 +2289,8 @@ internal sealed class MainForm : Form
         if (_mappingGuideIndex < 0)
         {
             var outputName = _localization.Translate(ControllerButtonCatalog.Output(output).DisplayName);
-            _mappingStatusLabel.Text = $"{_localization.Translate("Press one Stadia button for")} {outputName}";
+            _mappingStatusLabel.Text =
+                $"{_localization.Translate("Press the physical controller button for")} {outputName}";
         }
         _mappingCaptureTimer.Start();
         AppDiagnosticsLogger.Record(
@@ -2356,7 +2356,8 @@ internal sealed class MainForm : Form
             StopButtonMappingCapture(
                 $"{_localization.Translate("Recorded")}: " +
                 $"{_localization.Translate(ControllerButtonCatalog.Output(target).DisplayName)} <- " +
-                _localization.Translate(input.DisplayName));
+                $"{_localization.Translate(input.DisplayName)}  ·  " +
+                _localization.Translate("Save all changes"));
             return;
         }
 
@@ -2383,6 +2384,7 @@ internal sealed class MainForm : Form
         _mappingCaptureBaseline.Clear();
         _mappingCaptureTarget = null;
         _mappingGuideIndex = -1;
+        _controllerVisualizer.AwaitingMappingInput = false;
         _mappingDetectButton.Enabled = true;
         _mappingDetectButton.Text = _localization.Translate("Record");
         _mappingMapAllButton.Text = _localization.Translate("Map all");
@@ -2482,6 +2484,9 @@ internal sealed class MainForm : Form
         {
             _controllerPadCombo.Items[0] = _localization.Translate("Automatic");
         }
+        _controllerToolTip.SetToolTip(
+            _controllerVisualizer,
+            _localization.Translate("Click a button on the controller image, then press the physical button to assign it"));
         if (_buttonMappingList.Columns.Count > 0)
         {
             RefreshButtonMappingList();

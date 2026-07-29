@@ -23,7 +23,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 - **Start**: prepares dependencies and starts the complete virtual controller route.
 - **Stop and restore**: stops the receiver and restores physical controller input.
 - **Check**: refreshes the detected Stadia controller inventory without starting.
-- **Mapping**: uses an x360ce-style Xbox-first editor. Select an Xbox output from the table or controller diagram, choose a Stadia input or press **Record**, then use **Save all** to activate the profile while the receiver is running.
+- **Mapping**: uses an x360ce-style Xbox-first editor. Click the desired output directly on the controller image, then press the physical Stadia button to associate it. The table, selectors, **Record**, and guided **Map all** remain available; use **Save all** to activate the profile while the receiver is running.
 - **Map all**: walks through every Xbox button in sequence and records the Stadia input you press for each one.
 - **Mapping profiles**: duplicate, rename, activate, or delete independent layouts. Existing schema-1 mapping files are migrated automatically and invalid files never replace the last valid runtime profile.
 - **Mapping safety**: assigning an input replaces conflicting assignments, incomplete profiles are highlighted before saving, and unsaved changes are offered for saving when the app closes.
