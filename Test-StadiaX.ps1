@@ -29,11 +29,6 @@ function Add-Result {
     })
 }
 
-function Test-CommandAvailable {
-    param([string]$Name)
-    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
-}
-
 function Test-ViGEmBusInstalled {
     try {
         $service = Get-Service -Name "ViGEmBus" -ErrorAction SilentlyContinue
@@ -50,34 +45,21 @@ function Test-ViGEmBusInstalled {
     }
 }
 
-function Resolve-StadiaDistroForTest {
-    $resolver = Join-Path $root "Resolve-WslDistro.ps1"
-    if (-not (Test-Path $resolver) -or -not (Test-CommandAvailable "powershell.exe")) {
-        return ""
-    }
-
-    try {
-        $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $resolver 2>$null
-        return [string]($output | Select-Object -First 1)
-    } catch {
-        return ""
-    }
+function Test-HidHideInstalled {
+    $path = Join-Path ${env:ProgramFiles} "Nefarius Software Solutions\HidHide\x64\HidHideCLI.exe"
+    return Test-Path -LiteralPath $path
 }
 
 $requiredFiles = @(
-    "Start-GUI.bat",
-    "Install-StadiaX.bat",
-    "Install-StadiaX.ps1",
-    "StadiaX-GUI.ps1",
-    "Start-Stadia.bat",
-    "Stop-Stadia.bat",
-    "Check-Battery.bat",
-    "Resolve-WslDistro.ps1",
     "Test-StadiaX.ps1",
-    "start.sh",
-    "stadia_buttons.ini",
-    "README.md",
-    "LICENSE.txt"
+    "VERSION.txt",
+    "README-WINDOWS-NATIVE.md",
+    "LICENSE.txt",
+    "assets\StadiaX-WindowsNative.ico",
+    "assets\StadiaX-WindowsNative-icon.png",
+    "assets\StadiaControllerPhoto.png",
+    "assets\ATTRIBUTION.md",
+    "dependencies\THIRD-PARTY-NOTICES.txt"
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -85,7 +67,7 @@ foreach ($relativePath in $requiredFiles) {
     Add-Result "File: $relativePath" ($(if (Test-Path $path) { "OK" } else { "MISSING" })) ($(if (Test-Path $path) { $path } else { "Required file is missing" }))
 }
 
-foreach ($relativePath in @("StadiaX.exe", "ViGEmClient.dll", "stadia_bridge")) {
+foreach ($relativePath in @("StadiaX.exe", "ViGEmClient.dll")) {
     $path = Join-Path $root $relativePath
     if (Test-Path $path) {
         Add-Result "Runtime: $relativePath" "OK" $path
@@ -96,21 +78,46 @@ foreach ($relativePath in @("StadiaX.exe", "ViGEmClient.dll", "stadia_bridge")) 
     }
 }
 
-Add-Result "Command: usbipd" ($(if (Test-CommandAvailable "usbipd") { "OK" } else { "MISSING" })) "Required for Bluetooth USB/IP handoff"
-Add-Result "Command: wsl" ($(if (Test-CommandAvailable "wsl") { "OK" } else { "MISSING" })) "Required for the Linux Bluetooth bridge"
-Add-Result "ViGEmBus driver" ($(if (Test-ViGEmBusInstalled) { "OK" } else { "MISSING" })) "Required for virtual Xbox 360 pads"
+$dependencies = @(
+    @{
+        Path = "dependencies\HidHide_1.5.230_x64.exe"
+        Sha256 = "F4BBBCB82E6258641B887C74BC81C4C5F66E4AA811808DFC304347687B7605F6"
+    },
+    @{
+        Path = "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe"
+        Sha256 = "89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A"
+    }
+)
+foreach ($dependency in $dependencies) {
+    $path = Join-Path $root $dependency.Path
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Result "Dependency: $($dependency.Path)" "MISSING" "Bundled signed installer is missing"
+        continue
+    }
 
-$distro = Resolve-StadiaDistroForTest
-if ([string]::IsNullOrWhiteSpace($distro)) {
-    Add-Result "WSL distro" "WARN" "No usable distro resolved yet; first start can install Ubuntu"
-} else {
-    Add-Result "WSL distro" "OK" $distro
+    $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    Add-Result "Dependency: $($dependency.Path)" ($(if ($actualHash -eq $dependency.Sha256) { "OK" } else { "MISSING" })) ($(if ($actualHash -eq $dependency.Sha256) { "Pinned SHA-256 verified" } else { "SHA-256 mismatch" }))
 }
 
-$macroPath = Join-Path $root "stadia_buttons.ini"
-if (Test-Path $macroPath) {
-    $macroText = Get-Content -Raw -Path $macroPath -ErrorAction SilentlyContinue
-    Add-Result "Macro config" ($(if ($macroText -match "(?im)^\s*\[Buttons\]\s*$") { "OK" } else { "WARN" })) "stadia_buttons.ini should contain a [Buttons] section"
+Add-Result "ViGEmBus driver" ($(if (Test-ViGEmBusInstalled) { "OK" } else { "WARN" })) "Start installs the bundled driver automatically when needed"
+Add-Result "HidHide driver" ($(if (Test-HidHideInstalled) { "OK" } else { "WARN" })) "Start installs the bundled driver automatically when needed"
+
+$runtimePath = Join-Path $root "StadiaX.exe"
+if (Test-Path -LiteralPath $runtimePath) {
+    try {
+        $process = Start-Process -FilePath $runtimePath -ArgumentList "--internal-self-test" -WindowStyle Hidden -PassThru
+        if (-not $process.WaitForExit(60000)) {
+            try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+            Add-Result "Internal runtime self-test" "MISSING" "Timed out after 60 seconds"
+        } else {
+            Add-Result "Internal runtime self-test" ($(if ($process.ExitCode -eq 0) { "OK" } else { "MISSING" })) "Exit code $($process.ExitCode)"
+        }
+        $process.Dispose()
+    } catch {
+        Add-Result "Internal runtime self-test" "MISSING" $_.Exception.Message
+    }
+} elseif ($AllowMissingBinaries) {
+    Add-Result "Internal runtime self-test" "WARN" "Skipped because StadiaX.exe is absent in a source-only check"
 }
 
 $missing = @($results | Where-Object { $_.State -eq "MISSING" })
@@ -118,7 +125,7 @@ $warn = @($results | Where-Object { $_.State -eq "WARN" })
 $overall = if ($missing.Count -gt 0) { "FAIL" } elseif ($warn.Count -gt 0) { "WARN" } else { "OK" }
 
 $lines = New-Object System.Collections.Generic.List[string]
-[void]$lines.Add("Stadia X self-test")
+[void]$lines.Add("Stadia X Windows Native self-test")
 [void]$lines.Add("Created: $(Get-Date -Format o)")
 [void]$lines.Add("Root: $root")
 [void]$lines.Add("Overall: $overall")

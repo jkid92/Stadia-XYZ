@@ -86,21 +86,21 @@ internal static class ControllerButtonCatalog
     public static readonly IReadOnlyList<XboxOutputDescriptor> Outputs =
     [
         new(XboxOutputButton.None, "Disabled", 0),
-        new(XboxOutputButton.A, "A", VigemNative.XusbGamepadA),
-        new(XboxOutputButton.B, "B", VigemNative.XusbGamepadB),
-        new(XboxOutputButton.X, "X", VigemNative.XusbGamepadX),
-        new(XboxOutputButton.Y, "Y", VigemNative.XusbGamepadY),
-        new(XboxOutputButton.LeftShoulder, "LB", VigemNative.XusbGamepadLeftShoulder),
-        new(XboxOutputButton.RightShoulder, "RB", VigemNative.XusbGamepadRightShoulder),
-        new(XboxOutputButton.Back, "Back", VigemNative.XusbGamepadBack),
-        new(XboxOutputButton.Start, "Start", VigemNative.XusbGamepadStart),
-        new(XboxOutputButton.Guide, "Xbox Guide", VigemNative.XusbGamepadGuide),
-        new(XboxOutputButton.LeftStick, "L3", VigemNative.XusbGamepadLeftThumb),
-        new(XboxOutputButton.RightStick, "R3", VigemNative.XusbGamepadRightThumb),
-        new(XboxOutputButton.DpadUp, "D-pad Up", VigemNative.XusbGamepadDpadUp),
-        new(XboxOutputButton.DpadDown, "D-pad Down", VigemNative.XusbGamepadDpadDown),
-        new(XboxOutputButton.DpadLeft, "D-pad Left", VigemNative.XusbGamepadDpadLeft),
-        new(XboxOutputButton.DpadRight, "D-pad Right", VigemNative.XusbGamepadDpadRight)
+        new(XboxOutputButton.A, "A", XboxButtonBits.A),
+        new(XboxOutputButton.B, "B", XboxButtonBits.B),
+        new(XboxOutputButton.X, "X", XboxButtonBits.X),
+        new(XboxOutputButton.Y, "Y", XboxButtonBits.Y),
+        new(XboxOutputButton.LeftShoulder, "LB", XboxButtonBits.LeftShoulder),
+        new(XboxOutputButton.RightShoulder, "RB", XboxButtonBits.RightShoulder),
+        new(XboxOutputButton.Back, "Back", XboxButtonBits.Back),
+        new(XboxOutputButton.Start, "Start", XboxButtonBits.Start),
+        new(XboxOutputButton.Guide, "Xbox Guide", XboxButtonBits.Guide),
+        new(XboxOutputButton.LeftStick, "L3", XboxButtonBits.LeftThumb),
+        new(XboxOutputButton.RightStick, "R3", XboxButtonBits.RightThumb),
+        new(XboxOutputButton.DpadUp, "D-pad Up", XboxButtonBits.DpadUp),
+        new(XboxOutputButton.DpadDown, "D-pad Down", XboxButtonBits.DpadDown),
+        new(XboxOutputButton.DpadLeft, "D-pad Left", XboxButtonBits.DpadLeft),
+        new(XboxOutputButton.DpadRight, "D-pad Right", XboxButtonBits.DpadRight)
     ];
 
     public static ControllerInputDescriptor? FindInput(string telemetryKey)
@@ -549,7 +549,7 @@ internal static class ControllerButtonMappingStore
     {
         var defaults = ControllerButtonMapping.CreateDefault();
         var state = new ControllerState(ButtonBits.A | ButtonBits.Capture, 0, 0, 0, 0, 0, 0);
-        if (defaults.MapButtons(state) != VigemNative.XusbGamepadA)
+        if (defaults.MapButtons(state) != XboxButtonBits.A)
         {
             throw new InvalidOperationException("Default button mapping self-test failed.");
         }
@@ -557,7 +557,7 @@ internal static class ControllerButtonMappingStore
         var customized = defaults
             .With(ControllerInputButton.A, XboxOutputButton.B)
             .With(ControllerInputButton.Capture, XboxOutputButton.A);
-        var expected = (ushort)(VigemNative.XusbGamepadA | VigemNative.XusbGamepadB);
+        var expected = (ushort)(XboxButtonBits.A | XboxButtonBits.B);
         if (customized.MapButtons(state) != expected)
         {
             throw new InvalidOperationException("Custom button mapping self-test failed.");

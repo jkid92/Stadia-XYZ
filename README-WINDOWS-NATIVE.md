@@ -4,6 +4,8 @@ This package contains the experimental Windows Native edition of Stadia X. It do
 
 Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus. Games therefore receive one clean input stream instead of duplicated presses.
 
+The `v0.9.0-beta.1` line separates HID discovery, controller state and mapping from the virtual-gamepad bus. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
+
 ## First Run
 
 1. Install and launch **Stadia X Windows Native**.
@@ -33,6 +35,7 @@ If the controller is not visible, Stadia X opens Windows Bluetooth settings auto
 
 - `StadiaX.exe`: self-contained Windows Native control center and receiver.
 - `ViGEmClient.dll`: native ViGEm client library.
+- `Test-StadiaX.ps1`: package, dependency-hash, driver, and internal runtime verification.
 - `dependencies/`: official HidHide and ViGEmBus setups plus third-party notices.
 - `VERSION.txt`: package version.
 - `assets/`: Windows Native icons and controller test image.

@@ -107,13 +107,13 @@ The Windows Native experiment ships without WSL, usbipd, BlueZ, or `stadia_bridg
 ```powershell
 .\build\Build-CSharpControlCenter.ps1 -CopyToRoot
 .\build\Download-ViGEmClient.ps1 -OutputDirectory .
-.\build\Package-WindowsNative.ps1 -Version v0.5.20.15
-.\build\Build-WindowsNativeInstaller.ps1 -Version v0.5.20.15
+.\build\Package-WindowsNative.ps1 -Version v0.9.0-beta.1
+.\build\Build-WindowsNativeInstaller.ps1 -Version v0.9.0-beta.1
 ```
 
-This writes `Stadia-X-Windows-Native-v0.5.20.15.zip` and `Stadia-X-Windows-Native-v0.5.20.15-Setup.exe` under `dist/`.
+This writes `Stadia-X-Windows-Native-v0.9.0-beta.1.zip` and `Stadia-X-Windows-Native-v0.9.0-beta.1-Setup.exe` under `dist/`.
 
-Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a tag like `windows-native-v0.5.20.15` creates a prerelease with the ZIP, setup EXE, and SHA256 files attached.
+Pushing to `windows-native-experiment` also builds the Windows Native setup as a GitHub Actions artifact. Pushing a tag like `windows-native-v0.9.0-beta.1` creates a prerelease with the ZIP, setup EXE, and SHA256 files attached.
 
 After extracting a package or installing Stadia X, run:
 
@@ -121,4 +121,4 @@ After extracting a package or installing Stadia X, run:
 .\Test-StadiaX.ps1
 ```
 
-The script writes `logs/self-test.txt` and exits non-zero only when required files, runtime binaries, or core dependencies are missing. The same check is also available from the native GUI. For source-only dry runs, use `-AllowMissingBinaries`.
+The Windows Native script writes `logs/self-test.txt` and exits non-zero only when package files, runtime binaries, pinned dependency hashes, or internal runtime tests fail. Missing installed drivers are warnings because **Start** installs the bundled signed setup automatically. For source-only dry runs, use `-AllowMissingBinaries`.

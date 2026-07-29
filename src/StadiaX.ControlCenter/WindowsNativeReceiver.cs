@@ -13,38 +13,41 @@ internal sealed class WindowsNativeReceiver
 
     private readonly AppPaths _paths;
     private readonly StatusWriter _status;
-    private readonly WindowsNativeHidScanner _scanner;
+    private readonly IWindowsNativeControllerScanner _scanner;
+    private readonly IVirtualGamepadBusFactory _virtualGamepadFactory;
     private readonly IReadOnlyList<WindowsNativeHidDevice>? _initialDevices;
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly ControllerButtonMappingProvider _mappingProvider;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
     private readonly object _controllerInputStateLock = new();
+    private readonly object _virtualUpdateStateLock = new();
     private readonly bool[] _controllerInputsOpen = new bool[MaxControllers];
+    private readonly bool[] _virtualUpdateFailed = new bool[MaxControllers];
+    private readonly DateTimeOffset[] _nextVirtualUpdateErrorLog = new DateTimeOffset[MaxControllers];
     private readonly WindowsNativeRumbleWriter?[] _rumbleWriters = new WindowsNativeRumbleWriter?[MaxControllers];
-    private readonly VigemNative.X360Notification _rumbleCallback;
-    private readonly IntPtr[] _targets = new IntPtr[MaxControllers];
 
-    private IntPtr _client;
+    private IVirtualGamepadBus? _virtualGamepads;
     private int _expectedControllerCount;
     private DateTimeOffset _nextTelemetryErrorLog = DateTimeOffset.MinValue;
 
     public WindowsNativeReceiver(
         AppPaths paths,
         StatusWriter status,
-        WindowsNativeHidScanner scanner,
-        IReadOnlyList<WindowsNativeHidDevice>? initialDevices = null)
+        IWindowsNativeControllerScanner scanner,
+        IReadOnlyList<WindowsNativeHidDevice>? initialDevices = null,
+        IVirtualGamepadBusFactory? virtualGamepadFactory = null)
     {
         _paths = paths;
         _status = status;
         _scanner = scanner;
         _initialDevices = initialDevices;
+        _virtualGamepadFactory = virtualGamepadFactory ?? new VigemVirtualGamepadBusFactory();
         _telemetryWriter = new ControllerTelemetryWriter(paths);
         _mappingProvider = new ControllerButtonMappingProvider(
             paths.ControllerMapping,
             message => LogInfo("{0}", message),
             message => LogError("{0}", message));
-        _rumbleCallback = OnRumble;
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -73,7 +76,7 @@ internal sealed class WindowsNativeReceiver
                     "WINDOWS_NATIVE_CONTROLLER_CAPABILITIES",
                     $"P{i + 1} battery=unavailable batteryOverlay=unavailable rumble=experimental device={devices[i].FriendlyName}");
             }
-            InitializeVigem(devices.Length);
+            InitializeVirtualGamepads(devices.Length);
             _status.WritePhase(
                 "Windows Native",
                 4,
@@ -171,7 +174,7 @@ internal sealed class WindowsNativeReceiver
         {
             DeleteReadyMarker();
             ClearControllerTelemetry();
-            CleanupVigem();
+            CleanupVirtualGamepads();
             LogInfo("Windows Native receiver stopped");
         }
     }
@@ -271,13 +274,19 @@ internal sealed class WindowsNativeReceiver
                             continue;
                         }
 
-                        var update = VigemNative.vigem_target_x360_update(
-                            _client,
-                            _targets[controllerIndex],
-                            ControllerStateMapper.ToXusb(state, _mappingProvider.GetCurrent()));
-                        if (!VigemNative.Success(update))
+                        var virtualGamepads = _virtualGamepads;
+                        var updateError = "bus unavailable";
+                        if (virtualGamepads is null ||
+                            !virtualGamepads.TryUpdate(
+                                controllerIndex,
+                                ControllerStateMapper.ToXusb(state, _mappingProvider.GetCurrent()),
+                                out updateError))
                         {
-                            LogError("P{0} ViGEm update failed: 0x{1:X8}", controllerIndex + 1, update);
+                            ReportVirtualUpdateFailure(controllerIndex, updateError);
+                        }
+                        else
+                        {
+                            ReportVirtualUpdateRecovered(controllerIndex);
                         }
 
                         WriteTelemetrySafely(controllerIndex, state);
@@ -413,23 +422,15 @@ internal sealed class WindowsNativeReceiver
 
     private void NeutralizeVirtualPad(int controllerIndex)
     {
-        var target = _targets[controllerIndex];
-        if (_client == IntPtr.Zero || target == IntPtr.Zero)
+        var virtualGamepads = _virtualGamepads;
+        if (virtualGamepads is null)
         {
             return;
         }
 
-        try
+        if (!virtualGamepads.TryNeutralize(controllerIndex, out var error))
         {
-            var update = VigemNative.vigem_target_x360_update(_client, target, default);
-            if (!VigemNative.Success(update))
-            {
-                LogError("P{0} ViGEm neutral reset failed: 0x{1:X8}", controllerIndex + 1, update);
-            }
-        }
-        catch (Exception ex)
-        {
-            LogError("P{0} ViGEm neutral reset failed: {1}", controllerIndex + 1, ex.Message);
+            LogError("P{0} virtual controller neutral reset failed: {1}", controllerIndex + 1, error);
         }
 
         DeactivateTelemetrySafely(controllerIndex);
@@ -478,48 +479,68 @@ internal sealed class WindowsNativeReceiver
         }
     }
 
-    private void InitializeVigem(int targetCount)
+    private void InitializeVirtualGamepads(int targetCount)
     {
-        _client = VigemNative.vigem_alloc();
-        if (_client == IntPtr.Zero)
+        _virtualGamepads = _virtualGamepadFactory.Create(targetCount);
+        _virtualGamepads.RumbleRequested += OnRumble;
+        foreach (var warning in _virtualGamepads.InitializationWarnings)
         {
-            throw new InvalidOperationException("ViGEm client allocation failed.");
+            LogError("Virtual controller initialization warning: {0}", warning);
         }
 
-        var connect = VigemNative.vigem_connect(_client);
-        if (!VigemNative.Success(connect))
+        for (var i = 0; i < _virtualGamepads.ControllerCount; i++)
         {
-            throw new InvalidOperationException($"ViGEmBus init failed: 0x{connect:X8}. Is the driver installed?");
-        }
-
-        for (var i = 0; i < Math.Clamp(targetCount, 1, MaxControllers); i++)
-        {
-            var target = VigemNative.vigem_target_x360_alloc();
-            if (target == IntPtr.Zero)
-            {
-                throw new InvalidOperationException($"ViGEm virtual pad {i + 1} allocation failed.");
-            }
-
-            _targets[i] = target;
-            var add = VigemNative.vigem_target_add(_client, target);
-            if (!VigemNative.Success(add))
-            {
-                throw new InvalidOperationException($"ViGEm virtual pad {i + 1} init failed: 0x{add:X8}.");
-            }
-
-            var notify = VigemNative.vigem_target_x360_register_notification(_client, target, _rumbleCallback, new IntPtr(i));
-            if (!VigemNative.Success(notify))
-            {
-                LogError("P{0} ViGEm rumble notification registration failed: 0x{1:X8}", i + 1, notify);
-            }
-
             LogInfo("P{0} Windows Native virtual Xbox 360 pad ready", i + 1);
         }
     }
 
-    private void OnRumble(IntPtr client, IntPtr target, byte largeMotor, byte smallMotor, byte ledNumber, IntPtr userData)
+    private void ReportVirtualUpdateFailure(int controllerIndex, string error)
     {
-        var controllerIndex = userData.ToInt32();
+        var now = DateTimeOffset.UtcNow;
+        var shouldLog = false;
+        lock (_virtualUpdateStateLock)
+        {
+            _virtualUpdateFailed[controllerIndex] = true;
+            if (now >= _nextVirtualUpdateErrorLog[controllerIndex])
+            {
+                _nextVirtualUpdateErrorLog[controllerIndex] = now.AddSeconds(5);
+                shouldLog = true;
+            }
+        }
+
+        if (!shouldLog)
+        {
+            return;
+        }
+
+        var detail = string.IsNullOrWhiteSpace(error) ? "bus unavailable" : error;
+        _status.Write(
+            "WINDOWS_NATIVE_VIRTUAL_UPDATE_FAILED",
+            $"P{controllerIndex + 1}: {detail}; repeated failures are suppressed for 5 seconds");
+        LogError("P{0} virtual controller update failed: {1}", controllerIndex + 1, detail);
+    }
+
+    private void ReportVirtualUpdateRecovered(int controllerIndex)
+    {
+        lock (_virtualUpdateStateLock)
+        {
+            if (!_virtualUpdateFailed[controllerIndex])
+            {
+                return;
+            }
+
+            _virtualUpdateFailed[controllerIndex] = false;
+            _nextVirtualUpdateErrorLog[controllerIndex] = DateTimeOffset.MinValue;
+        }
+
+        _status.Write(
+            "WINDOWS_NATIVE_VIRTUAL_UPDATE_RECOVERED",
+            $"P{controllerIndex + 1}: virtual controller updates resumed");
+        LogInfo("P{0} virtual controller updates resumed", controllerIndex + 1);
+    }
+
+    private void OnRumble(int controllerIndex, byte largeMotor, byte smallMotor)
+    {
         if (controllerIndex < 0 || controllerIndex >= _rumbleWriters.Length)
         {
             return;
@@ -534,28 +555,17 @@ internal sealed class WindowsNativeReceiver
         writer.Send(largeMotor, smallMotor);
     }
 
-    private void CleanupVigem()
+    private void CleanupVirtualGamepads()
     {
-        for (var i = 0; i < _targets.Length; i++)
+        var virtualGamepads = _virtualGamepads;
+        _virtualGamepads = null;
+        if (virtualGamepads is null)
         {
-            var target = _targets[i];
-            if (target == IntPtr.Zero)
-            {
-                continue;
-            }
-
-            try { VigemNative.vigem_target_x360_unregister_notification(target); } catch { }
-            try { VigemNative.vigem_target_remove(_client, target); } catch { }
-            try { VigemNative.vigem_target_free(target); } catch { }
-            _targets[i] = IntPtr.Zero;
+            return;
         }
 
-        if (_client != IntPtr.Zero)
-        {
-            try { VigemNative.vigem_disconnect(_client); } catch { }
-            try { VigemNative.vigem_free(_client); } catch { }
-            _client = IntPtr.Zero;
-        }
+        virtualGamepads.RumbleRequested -= OnRumble;
+        virtualGamepads.Dispose();
     }
 
     private void WriteReadyMarker(int controllerCount)

@@ -25,6 +25,11 @@ internal sealed record WindowsNativeHidScanResult(
     int DuplicateCandidateCount,
     IReadOnlyList<WindowsNativeHidDevice> InventoryDevices);
 
+internal interface IWindowsNativeControllerScanner
+{
+    Task<IReadOnlyList<WindowsNativeHidDevice>> FindStadiaControllersAsync();
+}
+
 internal sealed record HidHideDeviceEntry(
     string FriendlyName,
     string DeviceInstancePath,
@@ -235,7 +240,7 @@ internal sealed class HidHideManager
     }
 }
 
-internal sealed class WindowsNativeHidScanner
+internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
 {
     public const int StadiaVendorId = 0x18D1;
     public const int StadiaProductId = 0x9400;

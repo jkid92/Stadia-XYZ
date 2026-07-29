@@ -78,6 +78,17 @@ jobs:
         shell: pwsh
         run: ./build/Package-WindowsNative.ps1 -Version "${{ steps.package_version.outputs.version }}"
 
+      - name: Test packaged Windows Native runtime
+        shell: pwsh
+        run: |
+          $package = Get-ChildItem -Path dist -Directory -Filter "Stadia-X-Windows-Native-*" |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+          if (-not $package) {
+            throw "Windows Native package directory was not created."
+          }
+          & (Join-Path $package.FullName "Test-StadiaX.ps1")
+
       - name: Install Inno Setup
         shell: pwsh
         run: choco install innosetup --no-progress -y

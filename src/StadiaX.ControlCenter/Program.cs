@@ -31,14 +31,13 @@ internal static class Program
         var paths = AppPaths.Discover();
         AppDiagnosticsLogger.Initialize(paths);
 
-        if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase))
+        if (args.Contains("--start-bridge", StringComparer.OrdinalIgnoreCase) ||
+            args.Contains("--stop-bridge", StringComparer.OrdinalIgnoreCase))
         {
-            Environment.Exit(RunBridgeCommand(start: true));
-            return;
-        }
-        if (args.Contains("--stop-bridge", StringComparer.OrdinalIgnoreCase))
-        {
-            Environment.Exit(RunBridgeCommand(start: false));
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_LEGACY_COMMAND_BLOCKED",
+                ("command", string.Join(" ", args)));
+            Environment.Exit(64);
             return;
         }
         if (args.Contains("--start-windows-native", StringComparer.OrdinalIgnoreCase))
@@ -69,6 +68,8 @@ internal static class Program
             WindowsNativeBatteryReader.RunSelfTest();
             ControllerButtonMappingStore.RunSelfTest();
             WindowsNativeHidMapper.RunSelfTest();
+            ControllerStateMapper.RunSelfTest();
+            VigemNative.RunSelfTest();
             Environment.Exit(0);
             return;
         }
@@ -105,15 +106,6 @@ internal static class Program
 
         var language = value[prefix.Length..].Equals("it", StringComparison.OrdinalIgnoreCase) ? "it" : "en";
         Environment.SetEnvironmentVariable("STADIAX_UI_LANGUAGE", language);
-    }
-
-    private static int RunBridgeCommand(bool start)
-    {
-        var paths = AppPaths.Discover();
-        AppDiagnosticsLogger.Initialize(paths);
-        var runner = new ProcessRunner();
-        var orchestrator = new BridgeOrchestrator(paths, runner);
-        return (start ? orchestrator.StartAsync() : orchestrator.StopAsync()).GetAwaiter().GetResult();
     }
 
     private static int RunWindowsNativeCommand(AppPaths paths, bool start)

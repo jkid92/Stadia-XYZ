@@ -23,6 +23,7 @@ internal static class UiLayoutAudit
             Location = Screen.PrimaryScreen?.WorkingArea.Location ?? Point.Empty,
             Opacity = 1
         };
+        _ = form.Handle;
         MainFormRuntimeTuner.ApplyForAudit(form);
         form.Show();
         Application.DoEvents();
@@ -33,6 +34,7 @@ internal static class UiLayoutAudit
         if (Math.Abs(simulationScale - 1F) > 0.01F)
         {
             form.SuspendLayout();
+            ScaleControlFonts(form, simulationScale);
             form.Scale(new SizeF(simulationScale, simulationScale));
             form.ResumeLayout(performLayout: true);
             Application.DoEvents();
@@ -320,6 +322,21 @@ internal static class UiLayoutAudit
         foreach (Control child in control.Controls)
         {
             LayoutTree(child);
+        }
+    }
+
+    private static void ScaleControlFonts(Control root, float scale)
+    {
+        foreach (var control in Descendants(root))
+        {
+            var font = control.Font;
+            control.Font = new Font(
+                font.FontFamily,
+                Math.Max(4F, font.Size * scale),
+                font.Style,
+                font.Unit,
+                font.GdiCharSet,
+                font.GdiVerticalFont);
         }
     }
 

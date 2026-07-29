@@ -40,6 +40,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 $requiredFiles = @(
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "Test-StadiaX.ps1",
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",

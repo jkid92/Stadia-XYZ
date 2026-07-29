@@ -68,6 +68,7 @@ $requiredFiles = @(
     "ViGEmClient.dll",
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "Test-StadiaX.ps1",
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
     "assets\StadiaX-WindowsNative-icon.png",
