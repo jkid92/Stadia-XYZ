@@ -1318,7 +1318,9 @@ internal sealed class MainForm : Form
         }, 0, 0);
 
         _controllerPadCombo.DropDownStyle = ComboBoxStyle.DropDownList;
-        _controllerPadCombo.Dock = DockStyle.Fill;
+        _controllerPadCombo.Dock = DockStyle.None;
+        _controllerPadCombo.Anchor = AnchorStyles.Left | AnchorStyles.Right;
+        _controllerPadCombo.Margin = new Padding(0);
         _controllerPadCombo.Items.AddRange(new object[] { "Auto", "P1", "P2", "P3", "P4" });
         _controllerPadCombo.SelectedIndex = 0;
         _controllerPadCombo.SelectedIndexChanged += (_, _) =>
