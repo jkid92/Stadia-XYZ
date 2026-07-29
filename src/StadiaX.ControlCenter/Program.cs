@@ -71,7 +71,9 @@ internal static class Program
             ControllerVisualizer.RunSelfTest();
             WindowsNativeHidMapper.RunSelfTest();
             ControllerStateMapper.RunSelfTest();
+            ControllerRumbleSettingsStore.RunSelfTest();
             WindowsNativeRumbleProtocol.RunSelfTest();
+            WindowsStadiaBluetoothPairingService.RunSelfTest();
             VigemNative.RunSelfTest();
             Environment.Exit(0);
             return;

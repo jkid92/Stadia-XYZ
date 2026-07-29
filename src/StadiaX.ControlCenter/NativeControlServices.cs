@@ -315,6 +315,11 @@ internal sealed class NativeControlServices
             return;
         }
 
+        if (!ControllerRumbleSettingsStore.IsEnabled(_paths.RumbleSettings, controllerIndex))
+        {
+            throw new InvalidOperationException($"Vibration is disabled for P{controllerIndex}.");
+        }
+
         if (IsWindowsNativeReceiverActive())
         {
             await SendWindowsNativeRumbleTestAsync(controllerIndex, largeMotor, smallMotor, durationMs).ConfigureAwait(false);
@@ -322,6 +327,24 @@ internal sealed class NativeControlServices
         }
 
         throw new InvalidOperationException("Start Windows Native before testing rumble.");
+    }
+
+    public bool IsControllerRumbleEnabled(int controllerIndex)
+    {
+        return ControllerRumbleSettingsStore.IsEnabled(_paths.RumbleSettings, controllerIndex);
+    }
+
+    public async Task SetControllerRumbleEnabledAsync(int controllerIndex, bool enabled)
+    {
+        _ = ControllerRumbleSettingsStore.SetEnabled(_paths.RumbleSettings, controllerIndex, enabled);
+        if (!enabled && IsWindowsNativeReceiverActive())
+        {
+            using var udp = new UdpClient(AddressFamily.InterNetwork);
+            udp.Connect(new IPEndPoint(IPAddress.Loopback, WindowsNativeRuntime.RumblePort));
+            await udp.SendAsync(
+                WindowsNativeRumbleProtocol.BuildPacket(controllerIndex - 1, 0, 0),
+                6).ConfigureAwait(false);
+        }
     }
 
     private async Task SendWindowsNativeRumbleTestAsync(int controllerIndex, byte largeMotor, byte smallMotor, int durationMs)
@@ -1036,6 +1059,7 @@ bluetoothctl devices 2>&1 || true
             Path.Combine(_paths.LogDirectory, "self-test.txt"),
             Path.Combine(_paths.LogDirectory, "self-test.json"),
             _paths.ControllerMapping,
+            _paths.RumbleSettings,
             WindowsNativeRuntime.ReadyPath(_paths),
             _paths.VersionFile
         })

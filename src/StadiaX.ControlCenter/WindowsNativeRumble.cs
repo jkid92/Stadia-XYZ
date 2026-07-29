@@ -317,6 +317,13 @@ internal static class WindowsNativeRumbleProtocol
             throw new InvalidOperationException("Windows Native rumble packet validation self-test failed.");
         }
 
+        var disabled = ApplyEnabled(enabled: false, largeMotor: 220, smallMotor: 180);
+        var enabled = ApplyEnabled(enabled: true, largeMotor: 220, smallMotor: 180);
+        if (disabled != (0, 0) || enabled != (220, 180))
+        {
+            throw new InvalidOperationException("Windows Native rumble enable/disable self-test failed.");
+        }
+
         var outputReport = WindowsNativeRumbleReport.Build(8, 220, 180);
         byte[] expected = [0x05, 220, 220, 180, 180, 0, 0, 0];
         if (!outputReport.SequenceEqual(expected))
@@ -339,6 +346,14 @@ internal static class WindowsNativeRumbleProtocol
         catch (ArgumentOutOfRangeException)
         {
         }
+    }
+
+    internal static (byte LargeMotor, byte SmallMotor) ApplyEnabled(
+        bool enabled,
+        byte largeMotor,
+        byte smallMotor)
+    {
+        return enabled ? (largeMotor, smallMotor) : ((byte)0, (byte)0);
     }
 }
 
@@ -377,6 +392,7 @@ internal sealed class WindowsNativeRumbleWriter : IDisposable
     private readonly int _controllerNumber;
     private readonly HidStream _stream;
     private readonly StatusWriter _status;
+    private readonly Func<bool> _isEnabled;
     private readonly Action<string, object[]> _logInfo;
     private readonly Action<string, object[]> _logError;
     private readonly int _outputReportLength;
@@ -401,12 +417,14 @@ internal sealed class WindowsNativeRumbleWriter : IDisposable
         HidDevice device,
         HidStream stream,
         StatusWriter status,
+        Func<bool> isEnabled,
         Action<string, object[]> logInfo,
         Action<string, object[]> logError)
     {
         _controllerNumber = controllerNumber;
         _stream = stream;
         _status = status;
+        _isEnabled = isEnabled;
         _logInfo = logInfo;
         _logError = logError;
         _outputReportLength = ReadOutputReportLength(device);
@@ -430,6 +448,11 @@ internal sealed class WindowsNativeRumbleWriter : IDisposable
         {
             return;
         }
+
+        (largeMotor, smallMotor) = WindowsNativeRumbleProtocol.ApplyEnabled(
+            _isEnabled(),
+            largeMotor,
+            smallMotor);
 
         lock (_queueLock)
         {

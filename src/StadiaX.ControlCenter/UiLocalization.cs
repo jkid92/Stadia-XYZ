@@ -191,6 +191,8 @@ internal sealed class UiLocalization
         ["Pad"] = "Pad",
         ["Pads"] = "Pad",
         ["Rumble"] = "Vibrazione",
+        ["Rumble ON"] = "Vibra ON",
+        ["Rumble OFF"] = "Vibra OFF",
         ["Hardware"] = "Hardware",
         ["Input"] = "Input",
         ["Pressed"] = "Premuti",

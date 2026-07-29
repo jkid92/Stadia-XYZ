@@ -138,11 +138,35 @@ internal sealed class WindowsNativeOrchestrator
         }
         if (devices.Length == 0)
         {
-            status.Write("WINDOWS_NATIVE_NOT_READY", "No Stadia HID controller is visible to Windows");
-            status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "WAIT", "No Stadia controller visible; opening Windows Bluetooth settings");
-            TryOpenBluetoothSettings(status);
-            await WriteProbeAsync(scanner).ConfigureAwait(false);
-            return 2;
+            try
+            {
+                scan = await TryAutomaticBluetoothPairingAsync(scanner, status, cancellation.Token).ConfigureAwait(false);
+                devices = scan.Devices.Take(MaxControllers).ToArray();
+            }
+            catch (OperationCanceledException)
+            {
+                ReportStartCancelled(cancellation.Token, status, 2, "Bluetooth pairing");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                status.Write("WINDOWS_NATIVE_BLUETOOTH_PAIRING_FAILED", "Automatic Bluetooth pairing failed unexpectedly: " + ex.Message);
+                AppDiagnosticsLogger.Record("WINDOWS_NATIVE_BLUETOOTH_PAIRING_EXCEPTION", ("error", ex.ToString()));
+            }
+
+            if (devices.Length == 0)
+            {
+                status.Write("WINDOWS_NATIVE_NOT_READY", "No Stadia HID controller became visible after automatic Bluetooth discovery and pairing");
+                status.WritePhase(
+                    "Windows Native",
+                    2,
+                    StartPhaseCount,
+                    "Bluetooth pairing",
+                    "WAIT",
+                    "No Stadia controller found; put it in Bluetooth pairing mode and press Start again");
+                await WriteProbeAsync(scanner).ConfigureAwait(false);
+                return 2;
+            }
         }
         status.WritePhase("Windows Native", 2, StartPhaseCount, "Device discovery", "OK", $"Detected {devices.Length} Stadia HID candidate(s)");
 
@@ -547,17 +571,132 @@ internal sealed class WindowsNativeOrchestrator
         }
     }
 
-    private static void TryOpenBluetoothSettings(StatusWriter status)
+    private static async Task<WindowsNativeHidScanResult> TryAutomaticBluetoothPairingAsync(
+        WindowsNativeHidScanner scanner,
+        StatusWriter status,
+        CancellationToken cancellationToken)
     {
-        try
+        status.Write("WINDOWS_NATIVE_BLUETOOTH_SEARCH_START", "No Stadia HID is visible; starting automatic Windows Bluetooth discovery");
+        status.WritePhase(
+            "Windows Native",
+            2,
+            StartPhaseCount,
+            "Bluetooth discovery",
+            "START",
+            "Searching for devices whose name starts with Stadia");
+
+        var pairingService = new WindowsStadiaBluetoothPairingService();
+        var pairing = await pairingService.DiscoverAndPairAsync(
+            MaxControllers,
+            progress =>
+            {
+                status.Write(
+                    "WINDOWS_NATIVE_BLUETOOTH_SEARCH_PROGRESS",
+                    $"stage={progress.Stage} percent={progress.Percent} detail={progress.Detail}");
+                var state = progress.Stage.Equals("Pairing", StringComparison.OrdinalIgnoreCase)
+                    ? "INSTALL"
+                    : progress.Stage.Equals("Complete", StringComparison.OrdinalIgnoreCase)
+                        ? "WAIT"
+                        : "START";
+                status.WritePhase(
+                    "Windows Native",
+                    2,
+                    StartPhaseCount,
+                    progress.Stage.Equals("Pairing", StringComparison.OrdinalIgnoreCase)
+                        ? "Bluetooth pairing"
+                        : "Bluetooth discovery",
+                    state,
+                    progress.Detail);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (!pairing.BluetoothAvailable)
         {
-            Process.Start(new ProcessStartInfo("ms-settings:bluetooth") { UseShellExecute = true });
-            status.Write("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_OPENED", "Opened Windows Bluetooth settings for pairing");
+            status.Write(
+                "WINDOWS_NATIVE_BLUETOOTH_RADIO_MISSING",
+                $"Windows did not expose an available Bluetooth radio; error={pairing.DiscoveryError}");
+            return await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
         }
-        catch (Exception ex)
+
+        if (pairing.Devices.Count == 0)
         {
-            status.Write("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_FAILED", "Could not open Windows Bluetooth settings: " + ex.Message);
+            status.Write(
+                "WINDOWS_NATIVE_BLUETOOTH_NOT_FOUND",
+                $"Bluetooth discovery completed without a Stadia-prefixed device; error={pairing.DiscoveryError}");
+            return await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
         }
+
+        status.Write(
+            "WINDOWS_NATIVE_BLUETOOTH_FOUND",
+            $"Found {pairing.Devices.Count} Stadia Bluetooth candidate(s): " +
+            string.Join(", ", pairing.Devices.Select(device => $"{device.Name} {device.Address}")));
+
+        foreach (var attempt in pairing.Attempts)
+        {
+            var code = attempt.Outcome switch
+            {
+                StadiaBluetoothPairingOutcome.Paired => "WINDOWS_NATIVE_BLUETOOTH_PAIRING_OK",
+                StadiaBluetoothPairingOutcome.AlreadyPaired => "WINDOWS_NATIVE_BLUETOOTH_ALREADY_PAIRED",
+                StadiaBluetoothPairingOutcome.Cancelled => "WINDOWS_NATIVE_BLUETOOTH_PAIRING_CANCELLED",
+                _ => "WINDOWS_NATIVE_BLUETOOTH_PAIRING_FAILED"
+            };
+            status.Write(
+                code,
+                $"{attempt.Device.Name} {attempt.Device.Address}: {attempt.Detail}; error={attempt.ErrorCode}");
+        }
+
+        if (!pairing.HasUsableDevice)
+        {
+            return await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+        }
+
+        status.Write(
+            "WINDOWS_NATIVE_BLUETOOTH_HID_WAIT",
+            $"Bluetooth pairing is ready; waiting for Windows to expose up to {pairing.Devices.Count} Stadia HID device(s)");
+        status.WritePhase(
+            "Windows Native",
+            2,
+            StartPhaseCount,
+            "HID activation",
+            "WAIT",
+            "Waiting for the paired controller to appear as a Windows HID device");
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        var bestScan = await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+        var unchangedPasses = 0;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (bestScan.Devices.Count >= pairing.Devices.Count)
+            {
+                break;
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(1500), cancellationToken).ConfigureAwait(false);
+            var current = await scanner.ScanStadiaControllersAsync().ConfigureAwait(false);
+            if (current.Devices.Count > bestScan.Devices.Count)
+            {
+                bestScan = current;
+                unchangedPasses = 0;
+            }
+            else if (bestScan.Devices.Count > 0)
+            {
+                unchangedPasses++;
+                if (unchangedPasses >= 2)
+                {
+                    break;
+                }
+            }
+        }
+
+        status.Write(
+            bestScan.Devices.Count > 0
+                ? "WINDOWS_NATIVE_BLUETOOTH_HID_READY"
+                : "WINDOWS_NATIVE_BLUETOOTH_HID_TIMEOUT",
+            bestScan.Devices.Count > 0
+                ? $"Windows exposed {bestScan.Devices.Count} Stadia HID device(s) after Bluetooth pairing"
+                : "Bluetooth pairing finished, but no Stadia HID device appeared within 15 seconds");
+        return bestScan;
     }
 
     private System.Threading.Timer StartStopWatcher(CancellationTokenSource cancellation)

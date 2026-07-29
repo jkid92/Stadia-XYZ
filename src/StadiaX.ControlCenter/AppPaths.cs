@@ -19,6 +19,7 @@ internal sealed class AppPaths
         SelectedWslDistro = Path.Combine(root, "selected_wsl_distro.txt");
         ControllerProfiles = Path.Combine(root, "controller_profiles.json");
         ControllerMapping = Path.Combine(root, "controller_mapping.json");
+        RumbleSettings = Path.Combine(root, "rumble_settings.json");
         SupportBundleDirectory = Path.Combine(root, "support-bundles");
         MacroConfig = Path.Combine(root, "stadia_buttons.ini");
         VersionFile = Path.Combine(root, "VERSION.txt");
@@ -45,6 +46,7 @@ internal sealed class AppPaths
     public string SelectedWslDistro { get; }
     public string ControllerProfiles { get; }
     public string ControllerMapping { get; }
+    public string RumbleSettings { get; }
     public string SupportBundleDirectory { get; }
     public string MacroConfig { get; }
     public string VersionFile { get; }

@@ -38,6 +38,7 @@ internal sealed class MainForm : Form
     private readonly UiLocalization _localization = UiLocalization.Current;
     private readonly UpdateService _updateService;
     private int _updateCheckInProgress;
+    private int _windowsBluetoothPairingInProgress;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -100,6 +101,7 @@ internal sealed class MainForm : Form
     private readonly Label[] _dashboardPadPacketsLabels = new Label[4];
     private readonly Label[] _dashboardPadMacLabels = new Label[4];
     private readonly ModernProgressBar[] _dashboardPadBatteryBars = new ModernProgressBar[4];
+    private readonly ModernButton[] _dashboardPadRumbleButtons = new ModernButton[4];
     private readonly Label _wizardStatusLabel = new();
     private readonly Label _wizardSelectionLabel = new();
     private readonly ModernProgressBar _wizardProgress = new();
@@ -687,12 +689,12 @@ internal sealed class MainForm : Form
             RowCount = 6,
             Padding = IsCompactUi() ? new Padding(10, 9, 10, 7) : new Padding(12, 11, 12, 8)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 20));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 16));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 15));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 18));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 16));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 15));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 30));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 23));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 23));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 20 : 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 24));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, IsCompactUi() ? 24 : 28));
         group.Controls.Add(layout);
 
         var nameLabel = CreateDashboardValueLabel("No profile", IsCompactUi() ? 9.5F : 11, FontStyle.Bold);
@@ -709,6 +711,18 @@ internal sealed class MainForm : Form
         };
         var packetsLabel = CreateDashboardValueLabel("Input 0.0/s", IsCompactUi() ? 8.25F : 9);
         var macLabel = CreateDashboardValueLabel("Automatic mapping", 8, FontStyle.Regular, Color.FromArgb(92, 106, 126));
+        var rumbleButton = CreateDashboardRumbleButton(slot);
+        var footer = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0)
+        };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
+        footer.Controls.Add(macLabel, 0, 0);
+        footer.Controls.Add(rumbleButton, 1, 0);
 
         _dashboardPadNameLabels[slot - 1] = nameLabel;
         _dashboardPadStatusLabels[slot - 1] = statusLabel;
@@ -716,14 +730,40 @@ internal sealed class MainForm : Form
         _dashboardPadBatteryBars[slot - 1] = batteryBar;
         _dashboardPadPacketsLabels[slot - 1] = packetsLabel;
         _dashboardPadMacLabels[slot - 1] = macLabel;
+        _dashboardPadRumbleButtons[slot - 1] = rumbleButton;
+        UpdateDashboardRumbleButton(slot);
 
         layout.Controls.Add(nameLabel, 0, 0);
         layout.Controls.Add(statusLabel, 0, 1);
         layout.Controls.Add(batteryLabel, 0, 2);
         layout.Controls.Add(batteryBar, 0, 3);
         layout.Controls.Add(packetsLabel, 0, 4);
-        layout.Controls.Add(macLabel, 0, 5);
+        layout.Controls.Add(footer, 0, 5);
         return group;
+    }
+
+    private ModernButton CreateDashboardRumbleButton(int slot)
+    {
+        var button = new ModernButton
+        {
+            Name = $"DashboardP{slot}RumbleButton",
+            Dock = DockStyle.Fill,
+            Margin = new Padding(4, 1, 0, 1),
+            Padding = new Padding(2, 0, 2, 0),
+            FlatStyle = FlatStyle.Flat,
+            UseVisualStyleBackColor = false,
+            Font = new Font("Segoe UI", IsCompactUi() ? 7F : 7.5F, FontStyle.Bold),
+            AccessibleRole = AccessibleRole.PushButton
+        };
+        button.Click += (_, _) =>
+        {
+            LogUserAction("Dashboard rumble toggle clicked", ("pad", $"P{slot}"));
+            _ = RunActionWithDialogAsync(
+                $"P{slot} rumble",
+                () => ToggleDashboardRumbleAsync(slot),
+                showDialog: true);
+        };
+        return button;
     }
 
     private static Label CreateDashboardValueLabel(string text, float size, FontStyle style = FontStyle.Regular, Color? foreColor = null)
@@ -1078,18 +1118,20 @@ internal sealed class MainForm : Form
         if (constrained)
         {
             AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
-            AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
-            AddActionGridButton(actions, "Stop", 0, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Mapping"));
-            AddActionGridButton(actions, "Connection details", 0, 2, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Pair", 1, 0, 1, async () => await PairStadiaBluetoothAsync());
+            AddActionGridButton(actions, "Start", 0, 1, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
+            AddActionGridButton(actions, "Stop", 1, 1, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
+            AddActionGridButton(actions, "Test input", 0, 2, 1, () => SelectTabIfExists("Controller Mapping"));
+            AddActionGridButton(actions, "Details", 1, 2, 1, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         else
         {
             AddActionGridButton(actions, "Check", 0, 0, 1, async () => await ProbeWindowsNativeAsync());
             AddActionGridButton(actions, "Start", 1, 0, 1, StartWindowsNative, Color.FromArgb(45, 125, 90), Color.White);
             AddActionGridButton(actions, "Stop", 2, 0, 1, StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
-            AddActionGridButton(actions, "Test input", 0, 1, 1, () => SelectTabIfExists("Controller Mapping"));
-            AddActionGridButton(actions, "Connection details", 1, 1, 2, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
+            AddActionGridButton(actions, "Pair", 0, 1, 1, async () => await PairStadiaBluetoothAsync());
+            AddActionGridButton(actions, "Test input", 1, 1, 1, () => SelectTabIfExists("Controller Mapping"));
+            AddActionGridButton(actions, "Details", 2, 1, 1, () => OpenFileIfExists(Path.Combine(_paths.LogDirectory, "windows-native-probe.txt")));
         }
         statusLayout.Controls.Add(actions, 0, 3);
         layout.Controls.Add(statusGroup, 0, 0);
@@ -2707,6 +2749,123 @@ internal sealed class MainForm : Form
         SetWindowsNativeStatus($"{devices.Count} Stadia controller(s) detected", 100, warn: false);
     }
 
+    private async Task PairStadiaBluetoothAsync()
+    {
+        if (Interlocked.CompareExchange(ref _windowsBluetoothPairingInProgress, 1, 0) != 0)
+        {
+            WarnOperationProgress(
+                "Stadia Bluetooth pairing",
+                "A Stadia Bluetooth search is already running",
+                _operationProgress.Value);
+            return;
+        }
+
+        LogUserAction("Automatic Stadia Bluetooth pairing requested");
+        BeginOperationProgress("Stadia Bluetooth pairing", "Checking the Windows Bluetooth radio", 8);
+        SetWindowsNativeStatus("Searching for Stadia Bluetooth controllers", 10, warn: false);
+        var status = new StatusWriter(_paths, "windows-native.log");
+        status.Write("WINDOWS_NATIVE_BLUETOOTH_MANUAL_START", "Automatic Stadia Bluetooth discovery requested from the app");
+
+        try
+        {
+            var pairing = await new WindowsStadiaBluetoothPairingService().DiscoverAndPairAsync(
+                4,
+                progress =>
+                {
+                    status.Write(
+                        "WINDOWS_NATIVE_BLUETOOTH_MANUAL_PROGRESS",
+                        $"stage={progress.Stage} percent={progress.Percent} detail={progress.Detail}");
+                    if (!IsDisposed && IsHandleCreated)
+                    {
+                        try
+                        {
+                            BeginInvoke(new Action(() =>
+                            {
+                                SetOperationProgress("Stadia Bluetooth pairing", progress.Detail, progress.Percent);
+                                SetWindowsNativeStatus(progress.Detail, progress.Percent, warn: false);
+                            }));
+                        }
+                        catch (InvalidOperationException)
+                        {
+                            // The form closed while the native inquiry was finishing.
+                        }
+                    }
+                },
+                parentWindow: Handle).ConfigureAwait(true);
+
+            foreach (var attempt in pairing.Attempts)
+            {
+                status.Write(
+                    attempt.Outcome is StadiaBluetoothPairingOutcome.Paired or StadiaBluetoothPairingOutcome.AlreadyPaired
+                        ? "WINDOWS_NATIVE_BLUETOOTH_MANUAL_OK"
+                        : "WINDOWS_NATIVE_BLUETOOTH_MANUAL_FAILED",
+                    $"{attempt.Device.Name} {attempt.Device.Address}: {attempt.Outcome} - {attempt.Detail}");
+            }
+
+            if (!pairing.BluetoothAvailable)
+            {
+                FailOperationProgress("Stadia Bluetooth pairing", "Windows Bluetooth is unavailable or disabled");
+                SetWindowsNativeStatus("Bluetooth unavailable - check the Windows radio", 100, warn: true);
+                RefreshLogs();
+                return;
+            }
+
+            if (pairing.Devices.Count == 0)
+            {
+                FailOperationProgress(
+                    "Stadia Bluetooth pairing",
+                    "No Stadia controller found - put it in Bluetooth pairing mode and try again");
+                SetWindowsNativeStatus("No Stadia controller found in pairing mode", 100, warn: true);
+                RefreshLogs();
+                return;
+            }
+
+            SetOperationProgress("Stadia Bluetooth pairing", "Waiting for Windows to expose the controller input", 94);
+            IReadOnlyList<WindowsNativeHidDevice> hidDevices = Array.Empty<WindowsNativeHidDevice>();
+            for (var attempt = 0; attempt < 6 && hidDevices.Count == 0; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    await Task.Delay(1500).ConfigureAwait(true);
+                }
+                hidDevices = await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false).ConfigureAwait(true);
+            }
+
+            if (hidDevices.Count == 0)
+            {
+                WarnOperationProgress(
+                    "Stadia Bluetooth pairing",
+                    "Pairing completed; turn on the controller and press Start",
+                    100);
+                SetWindowsNativeStatus("Paired - waiting for the controller HID", 100, warn: true);
+            }
+            else
+            {
+                CompleteOperationProgress(
+                    "Stadia Bluetooth pairing",
+                    $"{hidDevices.Count} Stadia controller(s) ready - press Start");
+                SetWindowsNativeStatus($"{hidDevices.Count} Stadia controller(s) ready", 100, warn: false);
+            }
+            RefreshLogs();
+        }
+        catch (OperationCanceledException)
+        {
+            FailOperationProgress("Stadia Bluetooth pairing", "Bluetooth pairing cancelled");
+            SetWindowsNativeStatus("Bluetooth pairing cancelled", 100, warn: true);
+        }
+        catch (Exception ex)
+        {
+            var reason = RecordUiFailure("Automatic Stadia Bluetooth pairing", ex);
+            status.Write("WINDOWS_NATIVE_BLUETOOTH_MANUAL_FAILED", reason);
+            FailOperationProgress("Stadia Bluetooth pairing", "Bluetooth pairing failed - check the log");
+            SetWindowsNativeStatus("Bluetooth pairing failed", 100, warn: true);
+        }
+        finally
+        {
+            Volatile.Write(ref _windowsBluetoothPairingInProgress, 0);
+        }
+    }
+
     private async Task<IReadOnlyList<WindowsNativeHidDevice>> RefreshWindowsNativeDevicesAsync(
         WindowsNativeHidScanner? scanner = null,
         bool updateOperationProgress = true)
@@ -3460,12 +3619,13 @@ internal sealed class MainForm : Form
         ControllerTelemetryRow? selected = null;
         if (_controllerPadCombo.SelectedIndex > 0)
         {
-            selected = snapshot.Controllers.FirstOrDefault(controller => controller.Index == _controllerPadCombo.SelectedIndex);
+            selected = snapshot.Controllers.FirstOrDefault(controller =>
+                controller.Index == _controllerPadCombo.SelectedIndex &&
+                controller.Active);
         }
         else
         {
-            selected = snapshot.Controllers.FirstOrDefault(controller => controller.Active) ??
-                       snapshot.Controllers.FirstOrDefault(controller => controller.Packets > 0);
+            selected = snapshot.Controllers.FirstOrDefault(controller => controller.Active);
         }
 
         if (selected is null)
@@ -3546,7 +3706,60 @@ internal sealed class MainForm : Form
             };
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
             _dashboardPadMacLabels[slot - 1].Text = "Automatic mapping";
+            UpdateDashboardRumbleButton(slot);
         }
+    }
+
+    private async Task ToggleDashboardRumbleAsync(int slot)
+    {
+        var button = _dashboardPadRumbleButtons[slot - 1];
+        button.Enabled = false;
+        try
+        {
+            var enabled = !_native.IsControllerRumbleEnabled(slot);
+            await _native.SetControllerRumbleEnabledAsync(slot, enabled).ConfigureAwait(true);
+            LogUserAction(
+                "Controller vibration changed",
+                ("pad", $"P{slot}"),
+                ("enabled", enabled.ToString()));
+            AppDiagnosticsLogger.Record(
+                "CONTROLLER_RUMBLE_SETTING_CHANGED",
+                ("pad", $"P{slot}"),
+                ("enabled", enabled.ToString()),
+                ("receiverActive", WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _).ToString()));
+            _statusLabel.Text = enabled
+                ? $"P{slot} vibration enabled"
+                : $"P{slot} vibration disabled";
+        }
+        finally
+        {
+            button.Enabled = true;
+            UpdateDashboardRumbleButton(slot);
+        }
+    }
+
+    private void UpdateDashboardRumbleButton(int slot)
+    {
+        var button = _dashboardPadRumbleButtons[slot - 1];
+        if (button is null)
+        {
+            return;
+        }
+
+        var enabled = _native.IsControllerRumbleEnabled(slot);
+        button.Text = enabled ? "Rumble ON" : "Rumble OFF";
+        button.AccessibleName = _localization.Translate(
+            enabled ? $"Disable vibration for P{slot}" : $"Enable vibration for P{slot}");
+        button.BackColor = enabled ? UiTheme.AccentSoft : UiTheme.SurfaceMuted;
+        button.ForeColor = enabled ? UiTheme.AccentDark : UiTheme.TextMuted;
+        button.FlatAppearance.BorderSize = 1;
+        button.FlatAppearance.BorderColor = enabled ? UiTheme.Accent : UiTheme.BorderStrong;
+        button.FlatAppearance.MouseOverBackColor = enabled
+            ? Color.FromArgb(208, 239, 238)
+            : Color.FromArgb(238, 242, 246);
+        button.FlatAppearance.MouseDownBackColor = enabled
+            ? Color.FromArgb(190, 229, 228)
+            : Color.FromArgb(226, 232, 238);
     }
 
     private void RefreshPairingWizardStatus()
@@ -4385,8 +4598,9 @@ internal sealed class MainForm : Form
         var waits = new[]
         {
             (Wait: TimeSpan.FromSeconds(2), Before: 24, After: 45),
-            (Wait: TimeSpan.FromSeconds(4), Before: 50, After: 72),
-            (Wait: TimeSpan.FromSeconds(6), Before: 76, After: 92)
+            (Wait: TimeSpan.FromSeconds(5), Before: 48, After: 62),
+            (Wait: TimeSpan.FromSeconds(8), Before: 64, After: 78),
+            (Wait: TimeSpan.FromSeconds(12), Before: 80, After: 94)
         };
 
         for (var attempt = 0; attempt < waits.Length; attempt++)
@@ -4415,11 +4629,40 @@ internal sealed class MainForm : Form
                 SetWindowsNativeStatus("Virtual pads ready - opening controller input", 90, warn: false);
             }
 
+            if (latest.Contains("WINDOWS_NATIVE_BLUETOOTH_HID_WAIT", StringComparison.OrdinalIgnoreCase))
+            {
+                SetOperationProgress("Starting Windows Native", "Bluetooth paired; waiting for controller input", 74);
+                SetWindowsNativeStatus("Bluetooth paired - activating controller input", 74, warn: false);
+            }
+            else if (latest.Contains("WINDOWS_NATIVE_BLUETOOTH_PAIRING_OK", StringComparison.OrdinalIgnoreCase) ||
+                     latest.Contains("WINDOWS_NATIVE_BLUETOOTH_ALREADY_PAIRED", StringComparison.OrdinalIgnoreCase))
+            {
+                SetOperationProgress("Starting Windows Native", "Stadia controller paired through Windows Bluetooth", 68);
+                SetWindowsNativeStatus("Controller paired - preparing input", 68, warn: false);
+            }
+            else if (latest.Contains("WINDOWS_NATIVE_BLUETOOTH_FOUND", StringComparison.OrdinalIgnoreCase))
+            {
+                SetOperationProgress("Starting Windows Native", "Stadia controller found; pairing", 58);
+                SetWindowsNativeStatus("Stadia controller found - pairing", 58, warn: false);
+            }
+            else if (latest.Contains("WINDOWS_NATIVE_BLUETOOTH_SEARCH_START", StringComparison.OrdinalIgnoreCase))
+            {
+                SetOperationProgress("Starting Windows Native", "Searching automatically for Stadia Bluetooth controllers", 44);
+                SetWindowsNativeStatus("Searching for Stadia Bluetooth controllers", 44, warn: false);
+            }
+
             if (latest.Contains("WINDOWS_NATIVE_NOT_READY", StringComparison.OrdinalIgnoreCase))
             {
-                var openedBluetoothSettings = latest.Contains("WINDOWS_NATIVE_BLUETOOTH_SETTINGS_OPENED", StringComparison.OrdinalIgnoreCase);
-                FailOperationProgress("Starting Windows Native", openedBluetoothSettings ? "Pair the controller in Windows Bluetooth settings" : "Not ready - check the Windows Native log");
-                SetWindowsNativeStatus(openedBluetoothSettings ? "Waiting for Windows Bluetooth pairing" : "Not ready - check log", 100, warn: true);
+                var pairingFailed = latest.Contains("WINDOWS_NATIVE_BLUETOOTH_PAIRING_FAILED", StringComparison.OrdinalIgnoreCase);
+                FailOperationProgress(
+                    "Starting Windows Native",
+                    pairingFailed
+                        ? "Automatic Bluetooth pairing failed - check the Windows Native log"
+                        : "No Stadia controller found - put it in pairing mode and press Start again");
+                SetWindowsNativeStatus(
+                    pairingFailed ? "Automatic pairing failed - check log" : "No Stadia controller found in pairing mode",
+                    100,
+                    warn: true);
                 await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false);
                 return;
             }

@@ -18,6 +18,7 @@ internal sealed class WindowsNativeReceiver
     private readonly IReadOnlyList<WindowsNativeHidDevice>? _initialDevices;
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly ControllerButtonMappingProvider _mappingProvider;
+    private readonly ControllerRumbleSettingsProvider _rumbleSettings;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
     private readonly object _controllerInputStateLock = new();
@@ -50,6 +51,7 @@ internal sealed class WindowsNativeReceiver
             paths.ControllerMapping,
             message => LogInfo("{0}", message),
             message => LogError("{0}", message));
+        _rumbleSettings = new ControllerRumbleSettingsProvider(paths.RumbleSettings);
     }
 
     public async Task<int> RunAsync(CancellationToken cancellationToken)
@@ -226,6 +228,7 @@ internal sealed class WindowsNativeReceiver
                     hidDevice,
                     stream,
                     _status,
+                    () => _rumbleSettings.IsEnabled(controllerIndex),
                     LogInfo,
                     LogError);
                 var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
