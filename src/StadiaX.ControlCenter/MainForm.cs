@@ -7,7 +7,6 @@ namespace StadiaX.ControlCenter;
 
 internal sealed class MainForm : Form
 {
-    private const int WmGetMinMaxInfo = 0x0024;
     private const double DefaultControllerFullBatteryHours = 8d;
     private static readonly XboxOutputButton[] GuidedMappingSequence =
     [
@@ -254,19 +253,6 @@ internal sealed class MainForm : Form
             _linuxBluetoothRowSizer.Dispose();
             HideBatteryOverlay();
         };
-    }
-
-    protected override void WndProc(ref Message message)
-    {
-        base.WndProc(ref message);
-        if (!_auditMode || message.Msg != WmGetMinMaxInfo || message.LParam == IntPtr.Zero)
-        {
-            return;
-        }
-
-        var limits = Marshal.PtrToStructure<MinMaxInfo>(message.LParam);
-        limits.MaxTrackSize = new NativePoint(16384, 16384);
-        Marshal.StructureToPtr(limits, message.LParam, fDeleteOld: false);
     }
 
     private void BuildUi()
@@ -5621,29 +5607,6 @@ internal sealed class MainForm : Form
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyIcon(IntPtr hIcon);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public NativePoint(int x, int y)
-        {
-            X = x;
-            Y = y;
-        }
-
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MinMaxInfo
-    {
-        public NativePoint Reserved;
-        public NativePoint MaxSize;
-        public NativePoint MaxPosition;
-        public NativePoint MinTrackSize;
-        public NativePoint MaxTrackSize;
-    }
 
     private static bool IsAdministrator()
     {

@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-
 namespace StadiaX.ControlCenter;
 
 internal static class UiLayoutAudit
@@ -30,6 +28,9 @@ internal static class UiLayoutAudit
         Environment.SetEnvironmentVariable("STADIAX_UI_RUNTIME_SCALE_PERCENT", scalePercent.ToString());
         var targetDpi = DisplayLayout.BaseDpi * scalePercent / 100F;
         var simulationScale = targetDpi / Math.Max(DisplayLayout.BaseDpi, form.DeviceDpi);
+        var scaledFrameSize = new Size(
+            Math.Max(0, (int)Math.Round((form.Width - form.ClientSize.Width) * simulationScale)),
+            Math.Max(0, (int)Math.Round((form.Height - form.ClientSize.Height) * simulationScale)));
         if (Math.Abs(simulationScale - 1F) > 0.01F)
         {
             form.SuspendLayout();
@@ -39,7 +40,8 @@ internal static class UiLayoutAudit
             Application.DoEvents();
         }
 
-        var tabs = Descendants(form).OfType<TabControl>().FirstOrDefault(control => control.TabPages.Count > 0);
+        var auditSurface = CreateAuditSurface(form);
+        var tabs = Descendants(auditSurface).OfType<TabControl>().FirstOrDefault(control => control.TabPages.Count > 0);
         if (tabs is null)
         {
             issues.Add("Main tab control was not created.");
@@ -48,12 +50,12 @@ internal static class UiLayoutAudit
         {
             try
             {
-                var snapshotPath = SaveSnapshot(form, tabs, paths, density, reportKey);
+                var snapshotPath = SaveSnapshot(form, auditSurface, tabs, paths, density, reportKey, scaledFrameSize);
                 observations.Add($"snapshot={snapshotPath}");
                 var hostScalePercent = (int)Math.Round(form.DeviceDpi * 100d / DisplayLayout.BaseDpi);
                 if (density == "comfortable" && (scalePercent == 100 || scalePercent == hostScalePercent))
                 {
-                    observations.AddRange(SaveFeatureSnapshots(form, tabs, paths).Select(path => $"feature-snapshot={path}"));
+                    observations.AddRange(SaveFeatureSnapshots(auditSurface, tabs, paths).Select(path => $"feature-snapshot={path}"));
                 }
             }
             catch (Exception ex)
@@ -68,16 +70,15 @@ internal static class UiLayoutAudit
             foreach (var logicalSize in AuditSizes(density))
             {
                 var requestedSize = AtScale(logicalSize, scalePercent);
-                form.Size = requestedSize;
-                LayoutTree(form);
-                observations.Add($"requested-logical={logicalSize.Width}x{logicalSize.Height} target={requestedSize.Width}x{requestedSize.Height} actual={form.Width}x{form.Height} client={form.ClientSize.Width}x{form.ClientSize.Height}");
+                SetAuditSize(form, auditSurface, requestedSize, scaledFrameSize);
+                observations.Add($"requested-logical={logicalSize.Width}x{logicalSize.Height} target={requestedSize.Width}x{requestedSize.Height} host-window={form.Width}x{form.Height} virtual-client={auditSurface.ClientSize.Width}x{auditSurface.ClientSize.Height}");
 
                 foreach (TabPage page in tabs.TabPages)
                 {
                     tabs.SelectedTab = page;
-                    LayoutTree(form);
+                    LayoutTree(auditSurface);
                     Application.DoEvents();
-                    ValidateTree(form, $"{logicalSize.Width}x{logicalSize.Height}@{scalePercent}%/{page.Text}", issues);
+                    ValidateTree(auditSurface, $"{logicalSize.Width}x{logicalSize.Height}@{scalePercent}%/{page.Text}", issues);
                 }
             }
         }
@@ -108,11 +109,18 @@ internal static class UiLayoutAudit
         return issues.Count == 0 ? 0 : 1;
     }
 
-    private static string SaveSnapshot(Form form, TabControl tabs, AppPaths paths, string density, string reportKey)
+    private static string SaveSnapshot(
+        Form form,
+        Control auditSurface,
+        TabControl tabs,
+        AppPaths paths,
+        string density,
+        string reportKey,
+        Size frameSize)
     {
-        form.Size = AtScale(SnapshotSize(density), DisplayLayout.AuditScalePercent);
+        SetAuditSize(form, auditSurface, AtScale(SnapshotSize(density), DisplayLayout.AuditScalePercent), frameSize);
         tabs.SelectedIndex = 0;
-        return CaptureSnapshot(form, paths, $"ui-layout-audit-{reportKey}.png");
+        return CaptureSnapshot(auditSurface, paths, $"ui-layout-audit-{reportKey}.png");
     }
 
     private static void ValidateDisplayFitScenarios(ISet<string> issues, ICollection<string> observations)
@@ -140,7 +148,7 @@ internal static class UiLayoutAudit
         }
     }
 
-    private static IReadOnlyList<string> SaveFeatureSnapshots(Form form, TabControl tabs, AppPaths paths)
+    private static IReadOnlyList<string> SaveFeatureSnapshots(Control auditSurface, TabControl tabs, AppPaths paths)
     {
         var targets = new[]
         {
@@ -160,42 +168,64 @@ internal static class UiLayoutAudit
             }
 
             tabs.SelectedTab = page;
-            pathsWritten.Add(CaptureSnapshot(form, paths, target.File));
+            pathsWritten.Add(CaptureSnapshot(auditSurface, paths, target.File));
         }
 
         tabs.SelectedIndex = 0;
         return pathsWritten;
     }
 
-    private static string CaptureSnapshot(Form form, AppPaths paths, string fileName)
+    private static string CaptureSnapshot(Control control, AppPaths paths, string fileName)
     {
-        LayoutTree(form);
+        LayoutTree(control);
         Application.DoEvents();
 
         var snapshotPath = Path.Combine(paths.LogDirectory, fileName);
         Directory.CreateDirectory(paths.LogDirectory);
-        form.Refresh();
+        control.Refresh();
         Application.DoEvents();
-        using var bitmap = new Bitmap(Math.Max(1, form.Width), Math.Max(1, form.Height));
-        var captured = false;
-        using (var graphics = Graphics.FromImage(bitmap))
-        {
-            var hdc = graphics.GetHdc();
-            try
-            {
-                captured = PrintWindow(form.Handle, hdc, PrintWindowRenderFullContent);
-            }
-            finally
-            {
-                graphics.ReleaseHdc(hdc);
-            }
-        }
-        if (!captured)
-        {
-            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
-        }
+        using var bitmap = new Bitmap(Math.Max(1, control.Width), Math.Max(1, control.Height));
+        control.DrawToBitmap(bitmap, new Rectangle(Point.Empty, control.Size));
         bitmap.Save(snapshotPath, System.Drawing.Imaging.ImageFormat.Png);
         return snapshotPath;
+    }
+
+    private static Panel CreateAuditSurface(Form form)
+    {
+        var hostedControls = form.Controls.Cast<Control>()
+            .Select(control => (Control: control, Index: form.Controls.GetChildIndex(control)))
+            .OrderBy(item => item.Index)
+            .ToArray();
+        var surface = new Panel
+        {
+            Name = "UiLayoutAuditSurface",
+            Location = Point.Empty,
+            Size = form.ClientSize,
+            BackColor = form.BackColor
+        };
+
+        form.SuspendLayout();
+        form.Controls.Add(surface);
+        foreach (var item in hostedControls)
+        {
+            surface.Controls.Add(item.Control);
+        }
+        foreach (var item in hostedControls)
+        {
+            surface.Controls.SetChildIndex(item.Control, item.Index);
+        }
+        form.ResumeLayout(performLayout: true);
+        return surface;
+    }
+
+    private static void SetAuditSize(Form form, Control auditSurface, Size outerSize, Size frameSize)
+    {
+        form.Size = outerSize;
+        auditSurface.Size = new Size(
+            Math.Max(1, outerSize.Width - frameSize.Width),
+            Math.Max(1, outerSize.Height - frameSize.Height));
+        LayoutTree(auditSurface);
+        Application.DoEvents();
     }
 
     private static Size SnapshotSize(string density)
@@ -375,10 +405,4 @@ internal static class UiLayoutAudit
         return value.Length <= 48 ? value : value[..48] + "...";
     }
 
-    private const uint PrintWindowRenderFullContent = 0x00000002;
-
-    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool PrintWindow(IntPtr windowHandle, IntPtr deviceContext, uint flags);
 }
