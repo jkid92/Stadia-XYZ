@@ -3,9 +3,7 @@ param(
     [string]$Version = $env:GITHUB_REF_NAME,
     [string]$PackageDirectory,
     [string]$OutputDirectory,
-    [string]$InnoSetupCompiler,
-    [ValidateSet("Standard", "HidLab")]
-    [string]$Edition = "Standard"
+    [string]$InnoSetupCompiler
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,10 +18,9 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $safeVersion = $Version -replace '[^\w\.\-]+', '-'
-$isHidLab = $Edition -eq "HidLab"
-$outputPrefix = if ($isHidLab) { "Stadia-X-Windows-Native-HID-Lab" } else { "Stadia-X-Windows-Native" }
-$appName = if ($isHidLab) { "Stadia X Windows Native HID Lab" } else { "Stadia X Windows Native" }
-$appId = if ($isHidLab) { "{{1F8D0B86-4228-490B-9F35-D971E74CDFC0}" } else { "{{BB64BA63-E156-47D9-B4FC-F79E384419C3}" }
+$outputPrefix = "Stadia-X-Windows-Native"
+$appName = "Stadia X Windows Native"
+$appId = "{{BB64BA63-E156-47D9-B4FC-F79E384419C3}"
 $distRoot = New-Item -ItemType Directory -Force -Path $OutputDirectory
 
 if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
@@ -71,9 +68,9 @@ $iscc = Find-InnoSetupCompiler $InnoSetupCompiler
 
 $requiredFiles = @(
     "StadiaX.exe",
-    "ViGEmClient.dll",
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "Install-Prerequisites.ps1",
     "Test-StadiaX.ps1",
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
@@ -81,13 +78,11 @@ $requiredFiles = @(
     "assets\StadiaControllerCutout.png",
     "assets\ATTRIBUTION.md",
     "dependencies\HidHide_1.5.230_x64.exe",
-    "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",
+    "dependencies\USBip-0.9.7.8-x64.exe",
+    "dependencies\VIIPER\viiper.exe",
+    "dependencies\VIIPER\licenses.txt",
     "dependencies\THIRD-PARTY-NOTICES.txt"
 )
-if ($isHidLab) {
-    $requiredFiles += "EDITION.txt"
-}
-
 foreach ($relativePath in $requiredFiles) {
     $path = Join-Path $sourceDir $relativePath
     if (-not (Test-Path $path)) {

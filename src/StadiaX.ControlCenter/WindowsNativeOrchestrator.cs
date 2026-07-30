@@ -26,7 +26,7 @@ internal sealed class WindowsNativeOrchestrator
         var startRequestedAt = DateTimeOffset.UtcNow;
         var status = new StatusWriter(_paths, "windows-native.log");
         status.Reset("WINDOWS_NATIVE_START_REQUESTED", $"Windows Native start requested pid={Environment.ProcessId}");
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide and ViGEmBus");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "START", "Checking HidHide, VIIPER, and usbip-win2");
         var hidHide = new HidHideManager(_paths, _runner);
         var activePid = 0;
         var activeControllers = 0;
@@ -101,10 +101,10 @@ internal sealed class WindowsNativeOrchestrator
         }
         if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
 
-        if (!await EnsureVigemBusAsync(status, cancellation.Token).ConfigureAwait(false))
+        if (!await EnsureViiperAsync(status, cancellation.Token).ConfigureAwait(false))
         {
             if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
-            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "ViGEmBus is not ready");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "Prerequisites", "FAIL", "VIIPER is not ready");
             return 2;
         }
         if (ReportStartCancelled(cancellation.Token, status, 1, "Prerequisites")) return 0;
@@ -563,60 +563,81 @@ internal sealed class WindowsNativeOrchestrator
         return false;
     }
 
-    private async Task<bool> EnsureVigemBusAsync(
+    private async Task<bool> EnsureViiperAsync(
         StatusWriter status,
         CancellationToken cancellationToken)
     {
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "START", "Checking virtual controller driver");
-        if (await IsVigemBusInstalledAsync(cancellationToken).ConfigureAwait(false))
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "VIIPER", "START", "Checking VIIPER runtime and usbip-win2 driver");
+        var binaryPath = ViiperRuntime.ResolveBinaryPath(_paths);
+        if (!File.Exists(binaryPath))
         {
-            status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
-            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
+            status.Write("WINDOWS_NATIVE_VIIPER_MISSING", "VIIPER runtime is missing: " + binaryPath);
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "VIIPER", "FAIL", "VIIPER runtime is missing; reinstall or repair Stadia X");
+            return false;
+        }
+
+        await using (var stream = File.OpenRead(binaryPath))
+        {
+            const string expectedViiperSha256 = "1868D682F4CC6D62349BBCCBF0727B05D3EB6E22027AC34F0F1D9B1DE56F2DDC";
+            var actualHash = Convert.ToHexString(
+                await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false));
+            if (!actualHash.Equals(expectedViiperSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                status.Write("WINDOWS_NATIVE_VIIPER_INVALID", "VIIPER runtime failed SHA-256 verification");
+                status.WritePhase("Windows Native", 1, StartPhaseCount, "VIIPER", "FAIL", "VIIPER runtime integrity check failed");
+                return false;
+            }
+        }
+
+        if (IsUsbipDriverReady())
+        {
+            status.Write(
+                "WINDOWS_NATIVE_VIIPER_OK",
+                $"VIIPER 0.7.0 runtime verified; usbip-win2 {UsbipDriverVersion()} is installed");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "VIIPER", "OK", "VIIPER and usbip-win2 are ready");
             return true;
         }
 
-        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL", "ViGEmBus missing; trying bundled signed setup");
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "INSTALL", "Installing bundled ViGEmBus dependency");
+        status.Write("WINDOWS_NATIVE_USBIP_INSTALL", "usbip-win2 is missing or outdated; installing the bundled signed driver");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "usbip-win2", "INSTALL", "Installing the virtual USB controller driver");
         var bundledInstall = await TryInstallBundledDependencyAsync(
-            "ViGEmBus_1.22.0_x64_x86_arm64.exe",
-            "89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A",
+            "USBip-0.9.7.8-x64.exe",
+            "44451FE06F4186125C2A5ECD25B099C5560A61A60B1E56F5A0758E77A60AFA44",
             status,
-            cancellationToken).ConfigureAwait(false);
-        if (bundledInstall is null && await EnsureWingetAsync(status, cancellationToken).ConfigureAwait(false))
-        {
-            bundledInstall = await _runner.RunAsync(
-                "winget",
-                new[] { "install", "-e", "--id", "Nefarius.ViGEmBus", "--accept-package-agreements", "--accept-source-agreements" },
-                _paths.Root,
-                180000,
-                createNoWindow: false,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-        }
-        status.Write("WINDOWS_NATIVE_VIGEM_INSTALL_RESULT", bundledInstall is null
-            ? "No bundled setup or winget fallback was available"
-            : $"exit={bundledInstall.ExitCode} output={Shorten(FirstNonEmpty(bundledInstall.Output, bundledInstall.Error, "none"), 260)}");
+            cancellationToken,
+            new[] { "/S" }).ConfigureAwait(false);
+        status.Write(
+            "WINDOWS_NATIVE_USBIP_INSTALL_RESULT",
+            bundledInstall is null
+                ? "The bundled usbip-win2 setup was not found"
+                : $"exit={bundledInstall.ExitCode} output={Shorten(FirstNonEmpty(bundledInstall.Output, bundledInstall.Error, "none"), 260)}");
 
-        if (await IsVigemBusInstalledAsync(cancellationToken).ConfigureAwait(false))
+        if (bundledInstall is null || bundledInstall.ExitCode is not (0 or 1641 or 3010))
         {
-            status.Write("WINDOWS_NATIVE_VIGEM_OK", "ViGEmBus driver is installed");
-            status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "OK", "ViGEmBus driver is installed");
-            return true;
+            status.Write("WINDOWS_NATIVE_NOT_READY", "usbip-win2 could not be installed automatically");
+            status.WritePhase("Windows Native", 1, StartPhaseCount, "usbip-win2", "FAIL", "usbip-win2 installation failed");
+            return false;
         }
 
-        status.Write("WINDOWS_NATIVE_NOT_READY", "ViGEmBus is required for virtual Xbox 360 controllers");
-        status.WritePhase("Windows Native", 1, StartPhaseCount, "ViGEmBus", "FAIL", "ViGEmBus is still missing after install attempt");
+        status.Write(
+            "RESTART_REQUIRED",
+            "usbip-win2 was installed or updated. Restart Windows once so the virtual USB host controller is fully registered.");
+        status.WritePhase("Windows Native", 1, StartPhaseCount, "usbip-win2", "WAIT", "Restart Windows once, then press Start again");
         return false;
     }
 
-    private async Task<bool> IsVigemBusInstalledAsync(CancellationToken cancellationToken)
+    private static bool IsUsbipDriverReady()
     {
-        var result = await _runner.RunAsync(
-            "powershell.exe",
-            new[] { "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "if (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue) { 'OK' }" },
-            _paths.Root,
-            15000,
-            cancellationToken: cancellationToken).ConfigureAwait(false);
-        return result.Output.Contains("OK", StringComparison.OrdinalIgnoreCase);
+        var version = UsbipDriverVersion();
+        return ViiperRuntime.IsUsbipDriverInstalled &&
+               !string.IsNullOrWhiteSpace(ViiperRuntime.UsbipExecutablePath) &&
+               Version.TryParse(version, out var parsed) &&
+               parsed >= new Version(0, 9, 7, 8);
+    }
+
+    private static string UsbipDriverVersion()
+    {
+        return ViiperRuntime.UsbipInstalledVersion ?? "unknown";
     }
 
     private async Task<bool> EnsureWingetAsync(
@@ -636,7 +657,8 @@ internal sealed class WindowsNativeOrchestrator
         string fileName,
         string expectedSha256,
         StatusWriter status,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? arguments = null)
     {
         var setupPath = new[]
             {
@@ -662,7 +684,7 @@ internal sealed class WindowsNativeOrchestrator
         status.Write("WINDOWS_NATIVE_BUNDLED_DEPENDENCY_VERIFIED", $"{fileName} passed SHA-256 verification");
         return await _runner.RunAsync(
             setupPath,
-            new[] { "/quiet", "/norestart" },
+            arguments ?? new[] { "/quiet", "/norestart" },
             _paths.Root,
             300000,
             createNoWindow: false,

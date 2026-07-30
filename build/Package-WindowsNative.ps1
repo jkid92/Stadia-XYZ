@@ -2,8 +2,6 @@
 param(
     [string]$Version = $env:GITHUB_REF_NAME,
     [string]$OutputDirectory,
-    [ValidateSet("Standard", "HidLab")]
-    [string]$Edition = "Standard",
     [switch]$AllowMissingBinaries
 )
 
@@ -20,7 +18,7 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 $safeVersion = $Version -replace '[^\w\.\-]+', '-'
 $distRoot = New-Item -ItemType Directory -Force -Path $OutputDirectory
-$packagePrefix = if ($Edition -eq "HidLab") { "Stadia-X-Windows-Native-HID-Lab" } else { "Stadia-X-Windows-Native" }
+$packagePrefix = "Stadia-X-Windows-Native"
 $packageName = "$packagePrefix-$safeVersion"
 $packageRoot = Join-Path $distRoot.FullName $packageName
 $zipPath = Join-Path $distRoot.FullName "$packageName.zip"
@@ -43,6 +41,7 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 $requiredFiles = @(
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "Install-Prerequisites.ps1",
     "Test-StadiaX.ps1",
     "stadia_buttons.ini",
     "LICENSE.txt",
@@ -51,13 +50,14 @@ $requiredFiles = @(
     "assets\StadiaControllerCutout.png",
     "assets\ATTRIBUTION.md",
     "dependencies\HidHide_1.5.230_x64.exe",
-    "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",
+    "dependencies\USBip-0.9.7.8-x64.exe",
+    "dependencies\VIIPER\viiper.exe",
+    "dependencies\VIIPER\licenses.txt",
     "dependencies\THIRD-PARTY-NOTICES.txt"
 )
 
 $binaryFiles = @(
-    "StadiaX.exe",
-    "ViGEmClient.dll"
+    "StadiaX.exe"
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -85,11 +85,6 @@ foreach ($relativePath in $binaryFiles) {
     }
 
     Copy-Item -LiteralPath $source -Destination (Join-Path $packageRoot $relativePath) -Force
-}
-
-if ($Edition -eq "HidLab") {
-    Set-Content -LiteralPath (Join-Path $packageRoot "EDITION.txt") -Encoding ASCII -Value "HID Lab"
-    Set-Content -LiteralPath (Join-Path $packageRoot "VERSION.txt") -Encoding ASCII -Value $safeVersion
 }
 
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal

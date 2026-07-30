@@ -25,7 +25,11 @@ internal sealed class RequirementChecker
     {
         var checks = new List<CheckResult>();
 
-        foreach (var runtime in new[] { "StadiaX.exe", "ViGEmClient.dll" })
+        foreach (var runtime in new[]
+                 {
+                     "StadiaX.exe",
+                     ViiperRuntime.BinaryRelativePath
+                 })
         {
             var path = Path.Combine(_paths.Root, runtime);
             checks.Add(new CheckResult(
@@ -37,24 +41,30 @@ internal sealed class RequirementChecker
         var bundledDependencies = new[]
         {
             Path.Combine(_paths.Root, "dependencies", "HidHide_1.5.230_x64.exe"),
-            Path.Combine(_paths.Root, "dependencies", "ViGEmBus_1.22.0_x64_x86_arm64.exe")
+            Path.Combine(_paths.Root, "dependencies", "USBip-0.9.7.8-x64.exe")
         };
         checks.Add(new CheckResult(
             "Bundled driver setup",
             bundledDependencies.All(File.Exists) ? CheckState.Ok : CheckState.Warn,
             bundledDependencies.All(File.Exists)
-                ? "Signed HidHide and ViGEmBus setup files are available locally."
-                : "The installed setup should include signed HidHide and ViGEmBus installers; winget is only a development fallback."));
+                ? "Signed HidHide and usbip-win2 setup files are available locally."
+                : "The installed setup should include signed HidHide and usbip-win2 installers."));
 
-        var vigem = await _runner.RunAsync(
-            "powershell.exe",
-            "-NoProfile -ExecutionPolicy Bypass -Command \"if (Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue) { 'OK' }\"",
-            _paths.Root,
-            15000).ConfigureAwait(false);
+        var usbipVersion = ViiperRuntime.UsbipInstalledVersion;
         checks.Add(new CheckResult(
-            "ViGEmBus driver",
-            vigem.Output.Contains("OK", StringComparison.OrdinalIgnoreCase) ? CheckState.Ok : CheckState.Warn,
-            "Required for virtual Xbox 360 controllers; Start installs the bundled signed setup automatically."));
+            "usbip-win2 driver",
+            ViiperRuntime.IsUsbipDriverInstalled ? CheckState.Ok : CheckState.Warn,
+            ViiperRuntime.IsUsbipDriverInstalled
+                ? $"{ViiperRuntime.UsbipDriverPath} version {usbipVersion}"
+                : "Required by VIIPER; Start installs the bundled signed setup automatically and requests one restart."));
+
+        var viiperVersion = await ViiperRuntime.TryPingAsync().ConfigureAwait(false);
+        checks.Add(new CheckResult(
+            "VIIPER local server",
+            viiperVersion is null ? CheckState.Info : CheckState.Ok,
+            viiperVersion is null
+                ? "Stopped as expected while no virtual controller session is active."
+                : $"VIIPER {viiperVersion} is listening on {ViiperRuntime.Host}:{ViiperRuntime.ApiPort}."));
 
         var hidHidePath = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),

@@ -61,8 +61,10 @@ internal sealed class WindowsStadiaBluetoothPairingService
             return RunDemoAsync(maxControllers, progress, cancellationToken);
         }
 
-        return Task.Run(
-            () => DiscoverAndPair(maxControllers, progress, parentWindow, cancellationToken),
+        return DiscoverAndPairWithFallbackAsync(
+            maxControllers,
+            progress,
+            parentWindow,
             cancellationToken);
     }
 
@@ -106,6 +108,52 @@ internal sealed class WindowsStadiaBluetoothPairingService
         {
             throw new InvalidOperationException("Windows Stadia Bluetooth pairing simulation self-test failed.");
         }
+    }
+
+    private static async Task<StadiaBluetoothPairingResult> DiscoverAndPairWithFallbackAsync(
+        int maxControllers,
+        Action<StadiaBluetoothPairingProgress>? progress,
+        IntPtr parentWindow,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var modern = await WindowsBleStadiaPairing
+                .DiscoverAndPairAsync(maxControllers, progress, cancellationToken)
+                .ConfigureAwait(false);
+            if (!modern.BluetoothAvailable || modern.Devices.Count > 0)
+            {
+                AppDiagnosticsLogger.Record(
+                    "WINDOWS_BLE_PAIRING_ROUTE",
+                    ("route", "DeviceInformation"),
+                    ("devices", modern.Devices.Count.ToString()),
+                    ("usable", modern.HasUsableDevice.ToString()));
+                return modern;
+            }
+
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_BLE_PAIRING_FALLBACK",
+                ("reason", "modern_scan_found_no_stadia_devices"));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_BLE_PAIRING_FALLBACK",
+                ("reason", "modern_api_failed"),
+                ("error", ex.Message));
+        }
+
+        progress?.Invoke(new StadiaBluetoothPairingProgress(
+            "Fallback",
+            32,
+            "Trying the compatible Windows Bluetooth discovery route"));
+        return await Task.Run(
+            () => DiscoverAndPair(maxControllers, progress, parentWindow, cancellationToken),
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static StadiaBluetoothPairingResult DiscoverAndPair(

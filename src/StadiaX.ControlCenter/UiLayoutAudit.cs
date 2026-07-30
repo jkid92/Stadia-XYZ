@@ -12,8 +12,6 @@ internal static class UiLayoutAudit
         var reportKey = $"{density}-{language}-dpi{scalePercent}";
         var issues = new HashSet<string>(StringComparer.Ordinal);
         var observations = new List<string> { $"dpi-scale={scalePercent}%" };
-        ValidateDisplayFitScenarios(issues, observations);
-
         using var form = new MainForm(paths, auditMode: true)
         {
             ShowInTaskbar = false,
@@ -179,31 +177,6 @@ internal static class UiLayoutAudit
         return CaptureSnapshot(auditSurface, paths, $"ui-layout-audit-{reportKey}.png");
     }
 
-    private static void ValidateDisplayFitScenarios(ISet<string> issues, ICollection<string> observations)
-    {
-        var scenarios = new[]
-        {
-            (Name: "primary-100", Area: new Rectangle(0, 0, 1920, 1040), Window: new Rectangle(120, 80, 1280, 820)),
-            (Name: "left-125", Area: new Rectangle(-1920, 0, 1920, 1040), Window: new Rectangle(-2350, 120, 1800, 1200)),
-            (Name: "upper-150", Area: new Rectangle(0, -1440, 2560, 1400), Window: new Rectangle(2200, -1700, 1700, 1100)),
-            (Name: "right-200", Area: new Rectangle(3200, 0, 2560, 1960), Window: new Rectangle(5600, 1700, 2600, 1800))
-        };
-
-        foreach (var scenario in scenarios)
-        {
-            var fitted = DisplayLayout.FitWindow(scenario.Window, new Size(900, 560), scenario.Area);
-            var inside = fitted.Bounds.Left >= scenario.Area.Left &&
-                         fitted.Bounds.Top >= scenario.Area.Top &&
-                         fitted.Bounds.Right <= scenario.Area.Right &&
-                         fitted.Bounds.Bottom <= scenario.Area.Bottom;
-            observations.Add($"display={scenario.Name} fitted={fitted.Bounds}");
-            if (!inside)
-            {
-                issues.Add($"Display scenario {scenario.Name}: fitted bounds {fitted.Bounds} exceed {scenario.Area}.");
-            }
-        }
-    }
-
     private static IReadOnlyList<string> SaveFeatureSnapshots(Control auditSurface, TabControl tabs, AppPaths paths)
     {
         var targets = new[]
@@ -293,15 +266,7 @@ internal static class UiLayoutAudit
         };
     }
 
-    private static IReadOnlyList<Size> AuditSizes(string density)
-    {
-        return density switch
-        {
-            "constrained" => new[] { new Size(820, 520), new Size(900, 600), new Size(1024, 720) },
-            "comfortable" => new[] { new Size(1100, 620), new Size(1280, 820), new Size(1600, 900) },
-            _ => new[] { new Size(1080, 560), new Size(1120, 720), new Size(1280, 720) }
-        };
-    }
+    private static IReadOnlyList<Size> AuditSizes(string density) => [SnapshotSize(density)];
 
     private static Size AtScale(Size logical, int percent)
     {

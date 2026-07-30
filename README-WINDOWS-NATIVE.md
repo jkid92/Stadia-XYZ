@@ -1,20 +1,21 @@
 # Stadia X Windows Native
 
-This package contains the experimental Windows Native edition of Stadia X. It does not use WSL, usbipd, BlueZ, or the Linux bridge.
+This package is the single experimental Windows edition of Stadia X. It does not use WSL, usbipd, BlueZ, or the Linux bridge. The former regular Windows Native and HID Lab packages are consolidated here.
 
-Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through ViGEmBus. Games therefore receive one clean input stream instead of duplicated presses.
+Stadia X reads Stadia controller HID input directly from Windows, hides the physical controller through HidHide, and exposes a virtual Xbox 360 controller through VIIPER and usbip-win2. Games therefore receive one clean input stream instead of duplicated presses.
 
-The current native line separates HID discovery, controller state and mapping from the virtual-gamepad bus. It includes automatic Stadia Bluetooth discovery and pairing, precise analog-stick visualization, persistent per-controller vibration controls, stable P1-P4 ordering profiles, native Assistant/Capture macros, automatic multi-controller slot expansion, and Windows-only repair and diagnostics. ViGEmBus is still used for Xbox 360 output, but the receiver no longer depends directly on its native API. Legacy WSL bridge commands are disabled in this edition.
+The current line separates BLE discovery, HID input, controller state and mapping from the virtual-gamepad bus. It includes modern Windows Bluetooth LE discovery with a Win32 fallback, direct BLE battery fallback, precise analog-stick visualization, persistent per-controller vibration controls, stable P1-P4 ordering profiles, native Assistant/Capture macros, automatic multi-controller slot expansion, and Windows-only repair and diagnostics. VIIPER runs as a private local process and creates the Xbox 360 devices through the signed usbip-win2 driver. Legacy WSL bridge commands are disabled.
 
 ## First Run
 
-1. Install and launch **Stadia X Windows Native**.
-2. Put an unpaired Stadia controller in Bluetooth pairing mode.
-3. Press **Start**. Pairing and receiver startup continue automatically.
-4. Approve the Windows administrator request if a driver needs to be installed or configured.
-5. Open **Mapping + Test** and press controller buttons to verify or customize the virtual pad.
+1. Run the setup and approve its single Windows administrator request.
+2. Restart Windows once if setup has just installed usbip-win2 and asks for it.
+3. Launch **Stadia X Windows Native**.
+4. Put an unpaired Stadia controller in Bluetooth pairing mode.
+5. Press **Start**. Pairing and receiver startup continue automatically.
+6. Open **Mapping + Test** and press controller buttons to verify or customize the virtual pad.
 
-Start checks HidHide and ViGEmBus, installs the bundled official components when needed, protects the physical device, creates up to four virtual Xbox 360 slots, and starts forwarding input. The pinned SHA-256 hashes and Nefarius Authenticode publisher are verified before installation; `winget` is not required. No separate configuration utility is needed.
+Setup installs HidHide and usbip-win2 silently when they are missing. It bundles the self-contained .NET 10 application and VIIPER runtime, so no other runtime or configuration utility is needed. Start verifies every component again and retains an automatic repair fallback, then protects the physical device, creates up to four virtual Xbox 360 slots, and starts forwarding input. Pinned SHA-256 hashes and expected Authenticode publishers are verified while building the package; `winget` is not required.
 
 If the controller is not visible, keep it in Bluetooth pairing mode and press **Start** again. The **Repair** command can restore HidHide, restart known Stadia PnP devices, rescan Windows hardware, and relaunch the receiver automatically.
 
@@ -40,9 +41,10 @@ If the controller is not visible, keep it in Bluetooth pairing mode and press **
 ## Included Files
 
 - `StadiaX.exe`: self-contained Windows Native control center and receiver.
-- `ViGEmClient.dll`: native ViGEm client library.
 - `Test-StadiaX.ps1`: package, dependency-hash, driver, and internal runtime verification.
-- `dependencies/`: official HidHide and ViGEmBus setups plus third-party notices.
+- `dependencies/VIIPER/viiper.exe`: bundled official VIIPER 0.7.0 standalone server.
+- `dependencies/USBip-0.9.7.8-x64.exe`: bundled official usbip-win2 driver setup.
+- `dependencies/`: HidHide setup, VIIPER runtime, usbip-win2 setup, and third-party notices.
 - `VERSION.txt`: package version.
 - `assets/`: Windows Native icons and controller test image.
 - `stadia_buttons.ini`: editable Assistant/Capture shortcut configuration used directly by the Windows Native receiver.
@@ -51,17 +53,8 @@ If the controller is not visible, keep it in Bluetooth pairing mode and press **
 
 Use **Stop and restore** before troubleshooting the physical controller or uninstalling drivers. The startup path also rolls back HidHide automatically when a later phase fails.
 
-Battery reporting uses the level exposed by Windows and feeds the P1-P4 dashboard and compact overlay when available. The native rumble route uses the same Stadia motor report as the Linux bridge, adapted to Windows HID and dispatched away from the ViGEm callback to avoid feedback stalls. Battery and rumble behavior can vary by controller firmware and Bluetooth stack; a real Stadia controller is required to validate those hardware-dependent paths.
+Battery reporting first uses the level exposed by Windows and then tries the standard Stadia BLE Battery Service (`0x180F`, characteristic `0x2A19`). The native rumble route uses output report `5` with two little-endian 16-bit motor values, dispatched away from the VIIPER feedback callback to avoid stalls. Battery and rumble behavior can vary by controller firmware and Bluetooth stack; a real Stadia controller is required to validate those hardware-dependent paths.
 
 `Auto` tries a separate `WriteFile` output handle first, keeps the first working route for subsequent packets, and falls back to the original stream and then `HidD_SetOutputReport`. `HidD_SetFeature` is intentionally manual because many HID devices do not expose the Stadia rumble command as a feature report.
 
-## HID Lab Side-By-Side Edition
-
-The experimental HID output build can be packaged and installed beside the regular Windows Native edition:
-
-```powershell
-.\build\Package-WindowsNative.ps1 -Version v0.9.1-hid-lab -Edition HidLab
-.\build\Build-WindowsNativeInstaller.ps1 -Version v0.9.1-hid-lab -Edition HidLab
-```
-
-HID Lab has its own installer identity, installation folder, shortcuts, settings, and logs. Automatic updates from the regular Windows Native release channel are disabled in HID Lab so one edition cannot replace the other.
+There is no longer a separate HID Lab installer. HID modes, diagnostics, mappings and updates all belong to this package.

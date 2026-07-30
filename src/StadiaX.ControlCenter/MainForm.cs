@@ -170,7 +170,7 @@ internal sealed class MainForm : Form
             warning => AppDiagnosticsLogger.Record("BUTTON_MAPPING_LOAD_WARN", ("error", warning)));
         _buttonMapping = _mappingConfiguration.ActiveMapping;
 
-        Text = paths.IsHidLab ? "Stadia X HID Lab" : "Stadia X";
+        Text = "Stadia X";
         _baseIcon = LoadApplicationIcon(paths);
         Icon = (Icon)_baseIcon.Clone();
         var compactUi = IsCompactUi();
@@ -202,7 +202,7 @@ internal sealed class MainForm : Form
                 await RefreshEverythingAsync();
                 _logTimer.Start();
                 _nativeCapacityMonitorTimer.Start();
-                if (!_paths.IsHidLab && _updateService.CanInstallAutomatically)
+                if (_updateService.CanInstallAutomatically)
                 {
                     _ = CheckForUpdatesAsync(interactive: false);
                 }
@@ -354,7 +354,7 @@ internal sealed class MainForm : Form
         var title = new Label
         {
             Name = "AppTitleLabel",
-            Text = _paths.IsHidLab ? "Stadia X HID Lab" : "Stadia X",
+            Text = "Stadia X",
             Font = new Font("Segoe UI", 21, FontStyle.Bold),
             ForeColor = Color.White,
             AutoSize = true,
@@ -365,7 +365,7 @@ internal sealed class MainForm : Form
         var subtitle = new Label
         {
             Name = "AppSubtitleLabel",
-            Text = _paths.IsHidLab ? "HID output test edition" : "Automatic virtual controller",
+            Text = "Experimental Windows controller",
             Font = new Font("Segoe UI", 9),
             ForeColor = Color.FromArgb(202, 213, 225),
             AutoSize = true,
@@ -4729,25 +4729,6 @@ internal sealed class MainForm : Form
     private async Task CheckForUpdatesAsync(bool interactive)
     {
         LogUserAction("Check updates requested");
-        if (_paths.IsHidLab)
-        {
-            _statusLabel.Text = _localization.IsItalian
-                ? "HID Lab usa release separate"
-                : "HID Lab uses separate releases";
-            _diagnosticsBox.Text = _localization.IsItalian
-                ? "Gli aggiornamenti automatici sono disattivati per HID Lab, così non può sovrascrivere la versione Windows Native normale."
-                : "Automatic updates are disabled for HID Lab so it cannot overwrite the regular Windows Native edition.";
-            AppDiagnosticsLogger.Record(
-                "UPDATE_CHECK_SKIPPED",
-                ("reason", "hid_lab_separate_release"),
-                ("installedVersion", _paths.Version));
-            if (interactive)
-            {
-                _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
-            }
-            return;
-        }
-
         if (Interlocked.CompareExchange(ref _updateCheckInProgress, 1, 0) != 0)
         {
             AppDiagnosticsLogger.Record(

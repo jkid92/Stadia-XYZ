@@ -24,7 +24,6 @@ internal sealed class AppPaths
         SupportBundleDirectory = Path.Combine(root, "support-bundles");
         MacroConfig = Path.Combine(root, "stadia_buttons.ini");
         VersionFile = Path.Combine(root, "VERSION.txt");
-        EditionFile = Path.Combine(root, "EDITION.txt");
         AppExecutable = Path.Combine(root, "StadiaX.exe");
         StartScript = Path.Combine(root, "Start-Stadia.bat");
         StopScript = Path.Combine(root, "Stop-Stadia.bat");
@@ -53,7 +52,6 @@ internal sealed class AppPaths
     public string SupportBundleDirectory { get; }
     public string MacroConfig { get; }
     public string VersionFile { get; }
-    public string EditionFile { get; }
     public string AppExecutable { get; }
     public string StartScript { get; }
     public string StopScript { get; }
@@ -74,22 +72,6 @@ internal sealed class AppPaths
             return string.IsNullOrWhiteSpace(text) ? "local" : text;
         }
     }
-
-    public string Edition
-    {
-        get
-        {
-            if (!File.Exists(EditionFile))
-            {
-                return "Standard";
-            }
-
-            var text = File.ReadAllText(EditionFile).Trim();
-            return string.IsNullOrWhiteSpace(text) ? "Standard" : text;
-        }
-    }
-
-    public bool IsHidLab => string.Equals(Edition, "HID Lab", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<string> ResolveAssetCandidates(string fileName)
     {

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -10,14 +10,15 @@
     <ApplicationIcon>..\..\assets\StadiaX-WindowsNative.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="..\..\ViGEmClient.dll" CopyToOutputDirectory="PreserveNewest" Condition="Exists('..\..\ViGEmClient.dll')" />
     <Content Include="..\..\assets\StadiaControllerCutout.png" Link="assets\StadiaControllerCutout.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\assets\StadiaX-WindowsNative.ico" Link="assets\StadiaX-WindowsNative.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
     <Content Include="..\..\assets\StadiaX-WindowsNative-icon.png" Link="assets\StadiaX-WindowsNative-icon.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="HidSharp" Version="2.6.4" />
+    <PackageReference Include="Viiper.Client" Version="0.7.0" />
   </ItemGroup>
 </Project>

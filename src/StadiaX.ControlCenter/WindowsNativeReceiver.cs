@@ -47,7 +47,7 @@ internal sealed class WindowsNativeReceiver
         _status = status;
         _scanner = scanner;
         _initialDevices = initialDevices;
-        _virtualGamepadFactory = virtualGamepadFactory ?? new VigemVirtualGamepadBusFactory();
+        _virtualGamepadFactory = virtualGamepadFactory ?? new ViiperVirtualGamepadBusFactory(paths);
         _telemetryWriter = new ControllerTelemetryWriter(paths);
         _mappingProvider = new ControllerButtonMappingProvider(
             paths.ControllerMapping,
@@ -262,7 +262,7 @@ internal sealed class WindowsNativeReceiver
                 _status.Write(
                     rumbleWriter.IsSupported ? "WINDOWS_NATIVE_RUMBLE_READY" : "WINDOWS_NATIVE_RUMBLE_UNAVAILABLE",
                     $"P{controllerIndex + 1} rumble={(rumbleWriter.IsSupported ? "ready" : "unavailable")} " +
-                    $"route=ViGEm-to-Stadia-HID requested={WindowsNativeHidOutputModeStore.TechnicalName(_hidOutputMode.GetMode())} " +
+                    $"route=VIIPER-to-Stadia-HID requested={WindowsNativeHidOutputModeStore.TechnicalName(_hidOutputMode.GetMode())} " +
                     $"outputReportLength={rumbleWriter.OutputReportLength} featureReportLength={rumbleWriter.FeatureReportLength}");
                 LogInfo(
                     connectedOnce ? "P{0} Windows Native HID reconnected: {1}" : "P{0} Windows Native HID open: {1}",

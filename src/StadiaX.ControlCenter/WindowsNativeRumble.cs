@@ -328,17 +328,24 @@ internal static class WindowsNativeRumbleProtocol
         }
 
         var outputReport = WindowsNativeRumbleReport.Build(8, 220, 180);
-        byte[] expected = [0x05, 220, 220, 180, 180, 0, 0, 0];
+        byte[] expected = [0x05, 0x00, 220, 0x00, 180, 0, 0, 0];
         if (!outputReport.SequenceEqual(expected))
         {
             throw new InvalidOperationException("Windows Native Stadia HID rumble report self-test failed.");
         }
 
         var fullReport = WindowsNativeRumbleReport.Build(5, byte.MaxValue, 0);
-        byte[] expectedFullReport = [0x05, 0xFF, 0xFF, 0x00, 0x00];
+        byte[] expectedFullReport = [0x05, 0x00, 0xFF, 0x00, 0x00];
         if (!fullReport.SequenceEqual(expectedFullReport))
         {
             throw new InvalidOperationException("Windows Native Stadia HID motor range self-test failed.");
+        }
+
+        var gattPayload = WindowsNativeRumbleReport.BuildGattPayload(byte.MaxValue, 128);
+        byte[] expectedGattPayload = [0x00, 0xFF, 0x00, 0x80];
+        if (!gattPayload.SequenceEqual(expectedGattPayload))
+        {
+            throw new InvalidOperationException("Windows Native Stadia BLE rumble payload self-test failed.");
         }
 
         try
@@ -363,7 +370,7 @@ internal static class WindowsNativeRumbleProtocol
 internal static class WindowsNativeRumbleReport
 {
     public const int MinimumLength = 5;
-    private const byte StadiaRumbleReportId = 0x05;
+    public const byte ReportId = 0x05;
 
     public static byte[] Build(int reportLength, byte largeMotor, byte smallMotor)
     {
@@ -375,12 +382,14 @@ internal static class WindowsNativeRumbleReport
         }
 
         var buffer = new byte[reportLength];
-        buffer[0] = StadiaRumbleReportId;
-        buffer[1] = largeMotor;
-        buffer[2] = largeMotor;
-        buffer[3] = smallMotor;
-        buffer[4] = smallMotor;
+        buffer[0] = ReportId;
+        BuildGattPayload(largeMotor, smallMotor).CopyTo(buffer, 1);
         return buffer;
+    }
+
+    public static byte[] BuildGattPayload(byte largeMotor, byte smallMotor)
+    {
+        return [0x00, largeMotor, 0x00, smallMotor];
     }
 }
 

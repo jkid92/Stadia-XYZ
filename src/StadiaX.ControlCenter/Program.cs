@@ -70,6 +70,11 @@ internal static class Program
             Environment.Exit(RunWindowsNativeCapacityReport(paths));
             return;
         }
+        if (args.Contains("--viiper-smoke-test", StringComparer.OrdinalIgnoreCase))
+        {
+            Environment.Exit(RunViiperSmokeTest(paths));
+            return;
+        }
         if (args.Contains("--smoke-test", StringComparer.OrdinalIgnoreCase))
         {
             ApplicationConfiguration.Initialize();
@@ -81,6 +86,7 @@ internal static class Program
         {
             UpdateService.RunSelfTest();
             WindowsNativeBatteryReader.RunSelfTest();
+            WindowsBleBatteryReader.RunSelfTest();
             MainForm.RunBatteryOverlaySelfTest();
             ControllerButtonMappingStore.RunSelfTest();
             ControllerVisualizer.RunSelfTest();
@@ -91,10 +97,11 @@ internal static class Program
             WindowsNativeRumbleProtocol.RunSelfTest();
             WindowsNativeMacroEngine.RunSelfTest();
             WindowsBluetoothIdentity.RunSelfTest();
+            WindowsBleStadiaPairing.RunSelfTest();
             NativeControlServices.RunWindowsNativeProfileOrderingSelfTest();
             NativeControlServices.RunWindowsNativeCapacitySelfTest();
             WindowsStadiaBluetoothPairingService.RunSelfTest();
-            VigemNative.RunSelfTest();
+            ViiperVirtualGamepadBus.RunSelfTest();
             Environment.Exit(0);
             return;
         }
@@ -175,6 +182,44 @@ internal static class Program
         {
             AppDiagnosticsLogger.Record(
                 "WINDOWS_NATIVE_CAPACITY_REPORT_FAILED",
+                ("error", ex.ToString()));
+            return 1;
+        }
+    }
+
+    private static int RunViiperSmokeTest(AppPaths paths)
+    {
+        try
+        {
+            using var bus = new ViiperVirtualGamepadBus(paths, 1);
+            if (!bus.TryUpdate(
+                    0,
+                    new VirtualGamepadReport
+                    {
+                        Buttons = XboxButtonBits.A,
+                        LeftTrigger = 64,
+                        ThumbLX = 12000,
+                        ThumbLY = -8000
+                    },
+                    out var error))
+            {
+                throw new InvalidOperationException("VIIPER smoke input failed: " + error);
+            }
+
+            Thread.Sleep(TimeSpan.FromSeconds(3));
+            if (!bus.TryNeutralize(0, out error))
+            {
+                throw new InvalidOperationException("VIIPER smoke neutral reset failed: " + error);
+            }
+
+            Thread.Sleep(250);
+            AppDiagnosticsLogger.Record("VIIPER_SMOKE_TEST_OK");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "VIIPER_SMOKE_TEST_FAILED",
                 ("error", ex.ToString()));
             return 1;
         }

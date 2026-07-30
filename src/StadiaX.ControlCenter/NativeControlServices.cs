@@ -1411,7 +1411,7 @@ bluetoothctl devices 2>&1 || true
         var commandReport = new StringBuilder();
         foreach (var command in new[]
         {
-            ("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", "Get-Service -Name ViGEmBus -ErrorAction SilentlyContinue | Format-List Name,Status,StartType" }),
+            ("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", "$svc=Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\usbip2_ude' -ErrorAction SilentlyContinue; if($svc){$svc | Select-Object DisplayName,ImagePath,Start | Format-List}; $client=Join-Path $env:ProgramFiles 'USBip\\usbip.exe'; if(Test-Path $client){Get-Item $client | Select-Object FullName,@{n='Version';e={$_.VersionInfo.FileVersion}} | Format-List}; Get-Process viiper -ErrorAction SilentlyContinue | Select-Object Id,Path,StartTime | Format-List; Get-NetTCPConnection -LocalPort 32431,32432 -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,State,OwningProcess | Format-Table -AutoSize" }),
             ("powershell.exe", new[] { "-NoProfile", "-NonInteractive", "-Command", "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like 'HID\\VID_18D1&PID_9400*' } | Select-Object Status,FriendlyName,InstanceId | Format-List" })
         })
         {

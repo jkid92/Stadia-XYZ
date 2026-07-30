@@ -29,20 +29,10 @@ function Add-Result {
     })
 }
 
-function Test-ViGEmBusInstalled {
-    try {
-        $service = Get-Service -Name "ViGEmBus" -ErrorAction SilentlyContinue
-        if ($service) { return $true }
-    } catch {}
-
-    try {
-        $device = Get-CimInstance Win32_PnPEntity -ErrorAction Stop |
-            Where-Object { $_.Name -match "ViGEm|Virtual Gamepad Emulation" } |
-            Select-Object -First 1
-        return [bool]$device
-    } catch {
-        return $false
-    }
+function Test-UsbipDriverInstalled {
+    $servicePath = "HKLM:\SYSTEM\CurrentControlSet\Services\usbip2_ude"
+    $clientPath = Join-Path ${env:ProgramFiles} "USBip\usbip.exe"
+    return (Test-Path -LiteralPath $servicePath) -and (Test-Path -LiteralPath $clientPath)
 }
 
 function Test-HidHideInstalled {
@@ -67,6 +57,7 @@ $requiredFiles = @(
     "Test-StadiaX.ps1",
     "VERSION.txt",
     "README-WINDOWS-NATIVE.md",
+    "Install-Prerequisites.ps1",
     "stadia_buttons.ini",
     "LICENSE.txt",
     "assets\StadiaX-WindowsNative.ico",
@@ -81,7 +72,7 @@ foreach ($relativePath in $requiredFiles) {
     Add-Result "File: $relativePath" ($(if (Test-Path $path) { "OK" } else { "MISSING" })) ($(if (Test-Path $path) { $path } else { "Required file is missing" }))
 }
 
-foreach ($relativePath in @("StadiaX.exe", "ViGEmClient.dll")) {
+foreach ($relativePath in @("StadiaX.exe")) {
     $path = Join-Path $root $relativePath
     if (Test-Path $path) {
         Add-Result "Runtime: $relativePath" "OK" $path
@@ -98,14 +89,18 @@ $dependencies = @(
         Sha256 = "F4BBBCB82E6258641B887C74BC81C4C5F66E4AA811808DFC304347687B7605F6"
     },
     @{
-        Path = "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe"
-        Sha256 = "89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A"
+        Path = "dependencies\USBip-0.9.7.8-x64.exe"
+        Sha256 = "44451FE06F4186125C2A5ECD25B099C5560A61A60B1E56F5A0758E77A60AFA44"
+    },
+    @{
+        Path = "dependencies\VIIPER\viiper.exe"
+        Sha256 = "1868D682F4CC6D62349BBCCBF0727B05D3EB6E22027AC34F0F1D9B1DE56F2DDC"
     }
 )
 foreach ($dependency in $dependencies) {
     $path = Join-Path $root $dependency.Path
     if (-not (Test-Path -LiteralPath $path)) {
-        Add-Result "Dependency: $($dependency.Path)" "MISSING" "Bundled signed installer is missing"
+        Add-Result "Dependency: $($dependency.Path)" "MISSING" "Bundled pinned dependency is missing"
         continue
     }
 
@@ -113,8 +108,8 @@ foreach ($dependency in $dependencies) {
     Add-Result "Dependency: $($dependency.Path)" ($(if ($actualHash -eq $dependency.Sha256) { "OK" } else { "MISSING" })) ($(if ($actualHash -eq $dependency.Sha256) { "Pinned SHA-256 verified" } else { "SHA-256 mismatch" }))
 }
 
-Add-Result "ViGEmBus driver" ($(if (Test-ViGEmBusInstalled) { "OK" } else { "WARN" })) "Start installs the bundled driver automatically when needed"
-Add-Result "HidHide driver" ($(if (Test-HidHideInstalled) { "OK" } else { "WARN" })) "Start installs the bundled driver automatically when needed"
+Add-Result "usbip-win2 driver" ($(if (Test-UsbipDriverInstalled) { "OK" } else { "WARN" })) "Setup installs the bundled driver and requests one restart when needed; Start retains a repair fallback"
+Add-Result "HidHide driver" ($(if (Test-HidHideInstalled) { "OK" } else { "WARN" })) "Setup installs the bundled driver; Start retains a repair fallback"
 
 $runtimePath = Join-Path $root "StadiaX.exe"
 if (Test-Path -LiteralPath $runtimePath) {

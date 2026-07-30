@@ -20,5 +20,7 @@
 ## Bundled Windows Native dependencies
 
 - HidHide 1.5.230: official signed installer, MIT license, https://github.com/nefarius/HidHide/releases/tag/v1.5.230.0
-- ViGEmBus 1.22.0: official signed installer, BSD-3-Clause license, https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0
-- The setup files are included unchanged and verified by pinned SHA-256 hashes during packaging.
+- VIIPER 0.7.0 standalone server: official release binary, GPL-3.0 license, https://github.com/Alia5/VIIPER/releases/tag/v0.7.0
+- VIIPER C# Client 0.7.0: official NuGet package, MIT license, https://www.nuget.org/packages/Viiper.Client/0.7.0
+- usbip-win2 0.9.7.8: official signed setup, BSD-2-Clause license, https://github.com/vadimgrn/usbip-win2/releases/tag/v.0.9.7.8
+- The upstream files are included unchanged and verified by pinned SHA-256 hashes during packaging.

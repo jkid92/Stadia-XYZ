@@ -263,7 +263,7 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
         var hidHideInventory = BuildHidHideInventory(await _hidHide.GetDevicesAsync().ConfigureAwait(false));
         if (hidHideInventory.Count > 0)
         {
-            return hidHideInventory;
+            return await EnrichWindowsDevicesAsync(hidHideInventory).ConfigureAwait(false);
         }
 
         return (await ScanStadiaControllersAsync().ConfigureAwait(false)).InventoryDevices;
@@ -287,7 +287,6 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
-            .Select(WithWindowsBattery)
             .ToArray();
         var inventoryDevices = rawCandidates
             .Concat(BuildHidHideInventory(hiddenDevices))
@@ -296,8 +295,9 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
-            .Select(WithWindowsBattery)
             .ToArray();
+        devices = await EnrichWindowsDevicesAsync(devices).ConfigureAwait(false);
+        inventoryDevices = await EnrichWindowsDevicesAsync(inventoryDevices).ConfigureAwait(false);
         return new WindowsNativeHidScanResult(
             devices,
             rawCandidates.Length,
@@ -316,7 +316,6 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
             .OrderBy(device => device.FriendlyName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.FileSystemName, StringComparer.OrdinalIgnoreCase)
             .Take(4)
-            .Select(WithWindowsBattery)
             .ToArray();
     }
 
@@ -469,13 +468,25 @@ internal sealed class WindowsNativeHidScanner : IWindowsNativeControllerScanner
             .First();
     }
 
-    private static WindowsNativeHidDevice WithWindowsBattery(WindowsNativeHidDevice device)
+    private static async Task<WindowsNativeHidDevice[]> EnrichWindowsDevicesAsync(
+        IReadOnlyList<WindowsNativeHidDevice> devices)
     {
+        return await Task.WhenAll(devices.Select(EnrichWindowsDeviceAsync)).ConfigureAwait(false);
+    }
+
+    private static async Task<WindowsNativeHidDevice> EnrichWindowsDeviceAsync(
+        WindowsNativeHidDevice device)
+    {
+        var address = WindowsBluetoothIdentity.ResolveAddress(device.DeviceInstancePath);
         var reading = WindowsNativeBatteryReader.Read(device.DeviceInstancePath);
+        if (reading is null && !string.IsNullOrWhiteSpace(address))
+        {
+            reading = await WindowsBleBatteryReader.ReadAsync(address).ConfigureAwait(false);
+        }
+
         var withBattery = reading is null
             ? device
             : device with { BatteryPercent = reading.Percent, BatterySource = reading.Source };
-        var address = WindowsBluetoothIdentity.ResolveAddress(device.DeviceInstancePath);
         return string.IsNullOrWhiteSpace(address)
             ? withBattery
             : withBattery with { BluetoothAddress = address };

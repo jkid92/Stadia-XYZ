@@ -1,10 +1,10 @@
-name: Build Windows Native setup
+name: Build unified Windows experimental setup
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Optional Windows Native package version"
+        description: "Optional unified Windows package version"
         required: false
         type: string
   push:
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   package-windows-native:
-    name: Package Windows Native ZIP and installer
+    name: Package unified Windows ZIP and installer
     runs-on: windows-latest
 
     steps:
@@ -28,7 +28,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Build C# control center
         shell: pwsh
@@ -37,10 +37,6 @@ jobs:
       - name: Test UI layouts
         shell: pwsh
         run: ./build/Test-UiLayouts.ps1
-
-      - name: Download ViGEm client
-        shell: pwsh
-        run: ./build/Download-ViGEmClient.ps1 -OutputDirectory .
 
       - name: Download and verify Windows Native dependencies
         shell: pwsh
