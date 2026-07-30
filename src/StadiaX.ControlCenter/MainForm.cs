@@ -103,6 +103,7 @@ internal sealed class MainForm : Form
     private readonly Label[] _dashboardPadMacLabels = new Label[4];
     private readonly ModernProgressBar[] _dashboardPadBatteryBars = new ModernProgressBar[4];
     private readonly ModernButton[] _dashboardPadRumbleButtons = new ModernButton[4];
+    private readonly ModernButton _hidOutputModeButton = new();
     private readonly Label _wizardStatusLabel = new();
     private readonly Label _wizardSelectionLabel = new();
     private readonly ModernProgressBar _wizardProgress = new();
@@ -169,7 +170,7 @@ internal sealed class MainForm : Form
             warning => AppDiagnosticsLogger.Record("BUTTON_MAPPING_LOAD_WARN", ("error", warning)));
         _buttonMapping = _mappingConfiguration.ActiveMapping;
 
-        Text = "Stadia X";
+        Text = paths.IsHidLab ? "Stadia X HID Lab" : "Stadia X";
         _baseIcon = LoadApplicationIcon(paths);
         Icon = (Icon)_baseIcon.Clone();
         var compactUi = IsCompactUi();
@@ -201,7 +202,7 @@ internal sealed class MainForm : Form
                 await RefreshEverythingAsync();
                 _logTimer.Start();
                 _nativeCapacityMonitorTimer.Start();
-                if (_updateService.CanInstallAutomatically)
+                if (!_paths.IsHidLab && _updateService.CanInstallAutomatically)
                 {
                     _ = CheckForUpdatesAsync(interactive: false);
                 }
@@ -353,7 +354,7 @@ internal sealed class MainForm : Form
         var title = new Label
         {
             Name = "AppTitleLabel",
-            Text = "Stadia X",
+            Text = _paths.IsHidLab ? "Stadia X HID Lab" : "Stadia X",
             Font = new Font("Segoe UI", 21, FontStyle.Bold),
             ForeColor = Color.White,
             AutoSize = true,
@@ -364,7 +365,7 @@ internal sealed class MainForm : Form
         var subtitle = new Label
         {
             Name = "AppSubtitleLabel",
-            Text = "Automatic virtual controller",
+            Text = _paths.IsHidLab ? "HID output test edition" : "Automatic virtual controller",
             Font = new Font("Segoe UI", 9),
             ForeColor = Color.FromArgb(202, 213, 225),
             AutoSize = true,
@@ -584,7 +585,7 @@ internal sealed class MainForm : Form
     {
         var page = CreatePage("Home", "Dashboard");
         var constrained = IsConstrainedUi();
-        var minimumLayoutHeight = constrained ? 682 : IsCompactUi() ? 498 : 550;
+        var minimumLayoutHeight = constrained ? 730 : IsCompactUi() ? 546 : 598;
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
@@ -594,7 +595,7 @@ internal sealed class MainForm : Form
             Height = minimumLayoutHeight,
             MinimumSize = new Size(0, minimumLayoutHeight)
         };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 194 : IsCompactUi() ? 168 : 184));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 242 : IsCompactUi() ? 216 : 232));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, constrained ? 340 : IsCompactUi() ? 182 : 198));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         page.Controls.Add(layout);
@@ -644,6 +645,8 @@ internal sealed class MainForm : Form
         AddFlowButton(actionFlow, "Stop and restore", StopWindowsNative, Color.FromArgb(178, 62, 62), Color.White);
         AddFlowButton(actionFlow, "Check controllers", async () => await ProbeWindowsNativeAsync());
         AddFlowButton(actionFlow, "Test input", () => SelectTabIfExists("Controller Mapping"));
+        ConfigureHidOutputModeButton();
+        actionFlow.Controls.Add(_hidOutputModeButton);
         AddFlowButton(actionFlow, "Logs", () => SelectTabIfExists("Logs"));
         _batteryOverlayCheck.Checked = true;
         ConfigureBatteryOverlayToggle();
@@ -764,8 +767,8 @@ internal sealed class MainForm : Form
             ? compact ? 340 : 380
             : compact ? 182 : 220;
         var minimumHeight = stacked
-            ? compact ? 682 : 722
-            : compact ? 498 : 572;
+            ? compact ? 730 : 770
+            : compact ? 546 : 620;
         var auditScale = hasAuditScale
             ? Math.Clamp(auditPercent, 100, 200) / 100F
             : 1F;
@@ -869,6 +872,70 @@ internal sealed class MainForm : Form
                 showDialog: true);
         };
         return button;
+    }
+
+    private void ConfigureHidOutputModeButton()
+    {
+        _hidOutputModeButton.Name = "HidOutputModeButton";
+        _hidOutputModeButton.AutoSize = true;
+        _hidOutputModeButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _hidOutputModeButton.MinimumSize = new Size(IsCompactUi() ? 92 : 112, IsCompactUi() ? 30 : 36);
+        _hidOutputModeButton.Padding = IsCompactUi() ? new Padding(7, 0, 7, 0) : new Padding(10, 0, 10, 0);
+        _hidOutputModeButton.Margin = new Padding(4, 2, 4, 2);
+        _hidOutputModeButton.FlatStyle = FlatStyle.Flat;
+        _hidOutputModeButton.UseVisualStyleBackColor = false;
+        _hidOutputModeButton.AccessibleRole = AccessibleRole.PushButton;
+        _hidOutputModeButton.Click += (_, _) => CycleHidOutputMode();
+        UpdateHidOutputModeButton();
+    }
+
+    private void CycleHidOutputMode()
+    {
+        var previous = _native.GetWindowsNativeHidOutputMode();
+        var next = WindowsNativeHidOutputModeStore.Next(previous);
+        _native.SetWindowsNativeHidOutputMode(next);
+        UpdateHidOutputModeButton();
+
+        var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+        LogUserAction(
+            "Windows HID output mode changed",
+            ("previous", WindowsNativeHidOutputModeStore.TechnicalName(previous)),
+            ("mode", WindowsNativeHidOutputModeStore.TechnicalName(next)),
+            ("receiverActive", receiverActive.ToString()));
+        AppDiagnosticsLogger.Record(
+            "WINDOWS_NATIVE_HID_OUTPUT_MODE_CHANGED",
+            ("previous", WindowsNativeHidOutputModeStore.TechnicalName(previous)),
+            ("mode", WindowsNativeHidOutputModeStore.TechnicalName(next)),
+            ("receiverActive", receiverActive.ToString()));
+
+        _statusLabel.Text =
+            $"HID: {WindowsNativeHidOutputModeStore.TechnicalName(next)}. " +
+            _localization.Translate(receiverActive
+                ? "The receiver will use it on the next vibration."
+                : "It will be used the next time Windows Native starts.");
+        _dashboardDetailLabel.Text = _localization.Translate("Press Vibrate after changing HID mode to compare the result.");
+    }
+
+    private void UpdateHidOutputModeButton()
+    {
+        var mode = _native.GetWindowsNativeHidOutputMode();
+        var shortName = WindowsNativeHidOutputModeStore.ShortName(mode);
+        _hidOutputModeButton.Text = $"HID: {shortName}";
+        _hidOutputModeButton.AccessibleName =
+            $"{_localization.Translate("HID output mode")}: {WindowsNativeHidOutputModeStore.TechnicalName(mode)}";
+        _controllerToolTip.SetToolTip(
+            _hidOutputModeButton,
+            _localization.Translate("Changes the vibration output method. Press Vibrate after each change."));
+        _hidOutputModeButton.BackColor = mode == WindowsNativeHidOutputMode.Auto
+            ? UiTheme.AccentSoft
+            : Color.FromArgb(255, 241, 207);
+        _hidOutputModeButton.ForeColor = mode == WindowsNativeHidOutputMode.Auto
+            ? UiTheme.AccentDark
+            : Color.FromArgb(111, 72, 0);
+        _hidOutputModeButton.FlatAppearance.BorderSize = 1;
+        _hidOutputModeButton.FlatAppearance.BorderColor = mode == WindowsNativeHidOutputMode.Auto
+            ? UiTheme.Accent
+            : Color.FromArgb(224, 166, 42);
     }
 
     private static Label CreateDashboardValueLabel(string text, float size, FontStyle style = FontStyle.Regular, Color? foreColor = null)
@@ -2640,6 +2707,7 @@ internal sealed class MainForm : Form
     {
         _localization.Apply(this);
         _localization.Apply(_trayIcon.ContextMenuStrip);
+        UpdateHidOutputModeButton();
         if (_controllerPadCombo.Items.Count > 0)
         {
             _controllerPadCombo.Items[0] = _localization.Translate("Automatic");
@@ -4661,6 +4729,25 @@ internal sealed class MainForm : Form
     private async Task CheckForUpdatesAsync(bool interactive)
     {
         LogUserAction("Check updates requested");
+        if (_paths.IsHidLab)
+        {
+            _statusLabel.Text = _localization.IsItalian
+                ? "HID Lab usa release separate"
+                : "HID Lab uses separate releases";
+            _diagnosticsBox.Text = _localization.IsItalian
+                ? "Gli aggiornamenti automatici sono disattivati per HID Lab, così non può sovrascrivere la versione Windows Native normale."
+                : "Automatic updates are disabled for HID Lab so it cannot overwrite the regular Windows Native edition.";
+            AppDiagnosticsLogger.Record(
+                "UPDATE_CHECK_SKIPPED",
+                ("reason", "hid_lab_separate_release"),
+                ("installedVersion", _paths.Version));
+            if (interactive)
+            {
+                _tabs.SelectedTab = _tabs.TabPages["Diagnostics"];
+            }
+            return;
+        }
+
         if (Interlocked.CompareExchange(ref _updateCheckInProgress, 1, 0) != 0)
         {
             AppDiagnosticsLogger.Record(

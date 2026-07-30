@@ -2,6 +2,8 @@
 param(
     [string]$Version = $env:GITHUB_REF_NAME,
     [string]$OutputDirectory,
+    [ValidateSet("Standard", "HidLab")]
+    [string]$Edition = "Standard",
     [switch]$AllowMissingBinaries
 )
 
@@ -18,7 +20,8 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 $safeVersion = $Version -replace '[^\w\.\-]+', '-'
 $distRoot = New-Item -ItemType Directory -Force -Path $OutputDirectory
-$packageName = "Stadia-X-Windows-Native-$safeVersion"
+$packagePrefix = if ($Edition -eq "HidLab") { "Stadia-X-Windows-Native-HID-Lab" } else { "Stadia-X-Windows-Native" }
+$packageName = "$packagePrefix-$safeVersion"
 $packageRoot = Join-Path $distRoot.FullName $packageName
 $zipPath = Join-Path $distRoot.FullName "$packageName.zip"
 $shaPath = "$zipPath.sha256"
@@ -82,6 +85,11 @@ foreach ($relativePath in $binaryFiles) {
     }
 
     Copy-Item -LiteralPath $source -Destination (Join-Path $packageRoot $relativePath) -Force
+}
+
+if ($Edition -eq "HidLab") {
+    Set-Content -LiteralPath (Join-Path $packageRoot "EDITION.txt") -Encoding ASCII -Value "HID Lab"
+    Set-Content -LiteralPath (Join-Path $packageRoot "VERSION.txt") -Encoding ASCII -Value $safeVersion
 }
 
 Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -CompressionLevel Optimal

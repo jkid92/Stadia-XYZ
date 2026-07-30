@@ -50,6 +50,19 @@ function Test-HidHideInstalled {
     return Test-Path -LiteralPath $path
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace("-", "")
+    } finally {
+        $algorithm.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $requiredFiles = @(
     "Test-StadiaX.ps1",
     "VERSION.txt",
@@ -96,7 +109,7 @@ foreach ($dependency in $dependencies) {
         continue
     }
 
-    $actualHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    $actualHash = Get-Sha256 -Path $path
     Add-Result "Dependency: $($dependency.Path)" ($(if ($actualHash -eq $dependency.Sha256) { "OK" } else { "MISSING" })) ($(if ($actualHash -eq $dependency.Sha256) { "Pinned SHA-256 verified" } else { "SHA-256 mismatch" }))
 }
 

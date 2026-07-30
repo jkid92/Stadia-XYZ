@@ -340,6 +340,16 @@ internal sealed class NativeControlServices
         return ControllerRumbleSettingsStore.IsEnabled(_paths.RumbleSettings, controllerIndex);
     }
 
+    public WindowsNativeHidOutputMode GetWindowsNativeHidOutputMode()
+    {
+        return WindowsNativeHidOutputModeStore.Load(_paths.HidOutputMode);
+    }
+
+    public void SetWindowsNativeHidOutputMode(WindowsNativeHidOutputMode mode)
+    {
+        WindowsNativeHidOutputModeStore.Save(_paths.HidOutputMode, mode);
+    }
+
     public async Task SetControllerRumbleEnabledAsync(int controllerIndex, bool enabled)
     {
         _ = ControllerRumbleSettingsStore.SetEnabled(_paths.RumbleSettings, controllerIndex, enabled);
@@ -1282,6 +1292,7 @@ bluetoothctl devices 2>&1 || true
             $"- HidHide matches: {hidDevices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath))}",
             $"- Battery values exposed: {hidDevices.Count(device => device.BatteryPercent.HasValue)}",
             $"- Rumble-capable HID outputs: {hidDevices.Count(device => device.MaxOutputReportLength >= WindowsNativeRumbleReport.MinimumLength)}",
+            $"- Requested HID output mode: {WindowsNativeHidOutputModeStore.TechnicalName(GetWindowsNativeHidOutputMode())}",
             $"- Preferred controller profiles: {profiles.Length}",
             $"- Configured native macros: {macroMappings.Length}",
             $"- HID scan error: {EmptyAsNone(hidScanError ?? "")}",
@@ -1384,6 +1395,7 @@ bluetoothctl devices 2>&1 || true
             _paths.ControllerMapping,
             _paths.ControllerProfiles,
             _paths.RumbleSettings,
+            _paths.HidOutputMode,
             _paths.MacroConfig,
             WindowsNativeRuntime.ReadyPath(_paths),
             _paths.VersionFile

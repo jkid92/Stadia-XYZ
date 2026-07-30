@@ -28,6 +28,7 @@ If the controller is not visible, keep it in Bluetooth pairing mode and press **
 - **Mapping profiles**: duplicate, rename, activate, or delete independent layouts. Existing schema-1 mapping files are migrated automatically and invalid files never replace the last valid runtime profile.
 - **Mapping safety**: assigning an input replaces conflicting assignments, incomplete profiles are highlighted before saving, and unsaved changes are offered for saving when the app closes.
 - **Mapping + Test**: combines profiles, button assignments, the live controller image, sticks, triggers, packet rate, and rumble testing. Game rumble from each virtual Xbox pad is routed back to the matching P1-P4 Stadia controller through the native Windows HID output report.
+- **HID output modes**: the Home button cycles between `Auto`, the original HidSharp stream, a dedicated Win32 `WriteFile` handle, `HidD_SetOutputReport`, and the experimental `HidD_SetFeature` path. Changes are picked up by the running receiver; press **Vibrate** after each change and use the Windows Native log to compare the requested and effective route.
 - **Controller profiles**: save the Bluetooth address and preferred P1-P4 position. Profiles are applied before receiver startup so reconnect order stays predictable.
 - **Macros**: Assistant and Capture provide the same 36 configurable shortcut slots as the Linux edition. Macro dispatch runs outside the HID input loop and configuration changes are reloaded while the receiver is active.
 - **Controller Doctor**: checks Windows Bluetooth, Stadia HID visibility, HidHide isolation, virtual pads, battery, vibration, profiles, macros, and live input.
@@ -51,3 +52,16 @@ If the controller is not visible, keep it in Bluetooth pairing mode and press **
 Use **Stop and restore** before troubleshooting the physical controller or uninstalling drivers. The startup path also rolls back HidHide automatically when a later phase fails.
 
 Battery reporting uses the level exposed by Windows and feeds the P1-P4 dashboard and compact overlay when available. The native rumble route uses the same Stadia motor report as the Linux bridge, adapted to Windows HID and dispatched away from the ViGEm callback to avoid feedback stalls. Battery and rumble behavior can vary by controller firmware and Bluetooth stack; a real Stadia controller is required to validate those hardware-dependent paths.
+
+`Auto` tries a separate `WriteFile` output handle first, keeps the first working route for subsequent packets, and falls back to the original stream and then `HidD_SetOutputReport`. `HidD_SetFeature` is intentionally manual because many HID devices do not expose the Stadia rumble command as a feature report.
+
+## HID Lab Side-By-Side Edition
+
+The experimental HID output build can be packaged and installed beside the regular Windows Native edition:
+
+```powershell
+.\build\Package-WindowsNative.ps1 -Version v0.9.1-hid-lab -Edition HidLab
+.\build\Build-WindowsNativeInstaller.ps1 -Version v0.9.1-hid-lab -Edition HidLab
+```
+
+HID Lab has its own installer identity, installation folder, shortcuts, settings, and logs. Automatic updates from the regular Windows Native release channel are disabled in HID Lab so one edition cannot replace the other.

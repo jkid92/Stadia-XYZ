@@ -19,6 +19,7 @@ internal sealed class WindowsNativeReceiver
     private readonly ControllerTelemetryWriter _telemetryWriter;
     private readonly ControllerButtonMappingProvider _mappingProvider;
     private readonly ControllerRumbleSettingsProvider _rumbleSettings;
+    private readonly WindowsNativeHidOutputModeProvider _hidOutputMode;
     private readonly WindowsNativeMacroEngine _macroEngine;
     private readonly object _logLock = new();
     private readonly object _telemetryErrorLock = new();
@@ -53,6 +54,7 @@ internal sealed class WindowsNativeReceiver
             message => LogInfo("{0}", message),
             message => LogError("{0}", message));
         _rumbleSettings = new ControllerRumbleSettingsProvider(paths.RumbleSettings);
+        _hidOutputMode = new WindowsNativeHidOutputModeProvider(paths.HidOutputMode);
         _macroEngine = new WindowsNativeMacroEngine(paths.MacroConfig, LogInfo, LogError);
     }
 
@@ -79,6 +81,13 @@ internal sealed class WindowsNativeReceiver
             }
 
             _expectedControllerCount = devices.Length;
+            var hidOutputMode = _hidOutputMode.GetMode();
+            _status.Write(
+                "WINDOWS_NATIVE_HID_OUTPUT_MODE",
+                $"requested={WindowsNativeHidOutputModeStore.TechnicalName(hidOutputMode)}");
+            LogInfo(
+                "Windows Native HID output mode requested: {0}",
+                WindowsNativeHidOutputModeStore.TechnicalName(hidOutputMode));
             for (var i = 0; i < devices.Length; i++)
             {
                 var rumble = devices[i].MaxOutputReportLength >= WindowsNativeRumbleReport.MinimumLength
@@ -235,6 +244,7 @@ internal sealed class WindowsNativeReceiver
                     stream,
                     _status,
                     () => _rumbleSettings.IsEnabled(controllerIndex),
+                    _hidOutputMode.GetMode,
                     LogInfo,
                     LogError);
                 var buffer = new byte[Math.Max(1, hidDevice.GetMaxInputReportLength())];
@@ -252,7 +262,8 @@ internal sealed class WindowsNativeReceiver
                 _status.Write(
                     rumbleWriter.IsSupported ? "WINDOWS_NATIVE_RUMBLE_READY" : "WINDOWS_NATIVE_RUMBLE_UNAVAILABLE",
                     $"P{controllerIndex + 1} rumble={(rumbleWriter.IsSupported ? "ready" : "unavailable")} " +
-                    $"route=ViGEm-to-Stadia-HID outputReportLength={rumbleWriter.OutputReportLength}");
+                    $"route=ViGEm-to-Stadia-HID requested={WindowsNativeHidOutputModeStore.TechnicalName(_hidOutputMode.GetMode())} " +
+                    $"outputReportLength={rumbleWriter.OutputReportLength} featureReportLength={rumbleWriter.FeatureReportLength}");
                 LogInfo(
                     connectedOnce ? "P{0} Windows Native HID reconnected: {1}" : "P{0} Windows Native HID open: {1}",
                     controllerIndex + 1,

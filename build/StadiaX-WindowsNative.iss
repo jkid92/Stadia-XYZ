@@ -1,4 +1,18 @@
+#ifndef MyAppName
 #define MyAppName "Stadia X Windows Native"
+#endif
+#ifndef MyAppId
+#define MyAppId "{{BB64BA63-E156-47D9-B4FC-F79E384419C3}"
+#endif
+#ifndef MyInstallDirName
+#define MyInstallDirName MyAppName
+#endif
+#ifndef MyShortcutName
+#define MyShortcutName MyAppName
+#endif
+#ifndef MyOutputPrefix
+#define MyOutputPrefix "Stadia-X-Windows-Native"
+#endif
 #ifndef MyAppVersion
 #define MyAppVersion "local"
 #endif
@@ -10,26 +24,26 @@
 #endif
 
 [Setup]
-AppId={{BB64BA63-E156-47D9-B4FC-F79E384419C3}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=Stadia X
 AppPublisherURL=https://github.com/jkid92/Stadia-XYZ
 AppSupportURL=https://github.com/jkid92/Stadia-XYZ/issues
 AppUpdatesURL=https://github.com/jkid92/Stadia-XYZ/releases
-DefaultDirName={localappdata}\Programs\Stadia X Windows Native
-DefaultGroupName=Stadia X Windows Native
+DefaultDirName={localappdata}\Programs\{#MyInstallDirName}
+DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile={#SourceDir}\LICENSE.txt
 OutputDir={#OutputDir}
-OutputBaseFilename=Stadia-X-Windows-Native-{#MyAppVersion}-Setup
+OutputBaseFilename={#MyOutputPrefix}-{#MyAppVersion}-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayName=Stadia X Windows Native
+UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\assets\StadiaX-WindowsNative.ico
 SetupIconFile={#SourceDir}\assets\StadiaX-WindowsNative.ico
 CloseApplications=no
@@ -44,8 +58,8 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "logs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"
-Name: "{autodesktop}\Stadia X Windows Native"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"; Tasks: desktopicon
+Name: "{group}\{#MyShortcutName}"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"
+Name: "{autodesktop}\{#MyShortcutName}"; Filename: "{app}\StadiaX.exe"; WorkingDir: "{app}"; IconFilename: "{app}\assets\StadiaX-WindowsNative.ico"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\StadiaX.exe"; Description: "Launch Stadia X Windows Native"; Flags: postinstall shellexec nowait skipifsilent unchecked
+Filename: "{app}\StadiaX.exe"; Description: "Launch {#MyAppName}"; Flags: postinstall shellexec nowait skipifsilent unchecked

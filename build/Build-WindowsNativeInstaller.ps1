@@ -3,7 +3,9 @@ param(
     [string]$Version = $env:GITHUB_REF_NAME,
     [string]$PackageDirectory,
     [string]$OutputDirectory,
-    [string]$InnoSetupCompiler
+    [string]$InnoSetupCompiler,
+    [ValidateSet("Standard", "HidLab")]
+    [string]$Edition = "Standard"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,10 +20,14 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $safeVersion = $Version -replace '[^\w\.\-]+', '-'
+$isHidLab = $Edition -eq "HidLab"
+$outputPrefix = if ($isHidLab) { "Stadia-X-Windows-Native-HID-Lab" } else { "Stadia-X-Windows-Native" }
+$appName = if ($isHidLab) { "Stadia X Windows Native HID Lab" } else { "Stadia X Windows Native" }
+$appId = if ($isHidLab) { "{{1F8D0B86-4228-490B-9F35-D971E74CDFC0}" } else { "{{BB64BA63-E156-47D9-B4FC-F79E384419C3}" }
 $distRoot = New-Item -ItemType Directory -Force -Path $OutputDirectory
 
 if ([string]::IsNullOrWhiteSpace($PackageDirectory)) {
-    $PackageDirectory = Join-Path $distRoot.FullName "Stadia-X-Windows-Native-$safeVersion"
+    $PackageDirectory = Join-Path $distRoot.FullName "$outputPrefix-$safeVersion"
 }
 
 if (-not (Test-Path $PackageDirectory)) {
@@ -78,6 +84,9 @@ $requiredFiles = @(
     "dependencies\ViGEmBus_1.22.0_x64_x86_arm64.exe",
     "dependencies\THIRD-PARTY-NOTICES.txt"
 )
+if ($isHidLab) {
+    $requiredFiles += "EDITION.txt"
+}
 
 foreach ($relativePath in $requiredFiles) {
     $path = Join-Path $sourceDir $relativePath
@@ -86,7 +95,7 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-$setupPath = Join-Path $outputDir "Stadia-X-Windows-Native-$safeVersion-Setup.exe"
+$setupPath = Join-Path $outputDir "$outputPrefix-$safeVersion-Setup.exe"
 $setupHashPath = "$setupPath.sha256"
 if (Test-Path $setupPath) { Remove-Item -LiteralPath $setupPath -Force }
 if (Test-Path $setupHashPath) { Remove-Item -LiteralPath $setupHashPath -Force }
@@ -94,6 +103,11 @@ if (Test-Path $setupHashPath) { Remove-Item -LiteralPath $setupHashPath -Force }
 Write-Host "Building Windows Native installer from $sourceDir"
 & $iscc `
     "/DMyAppVersion=$safeVersion" `
+    "/DMyAppName=$appName" `
+    "/DMyAppId=$appId" `
+    "/DMyInstallDirName=$appName" `
+    "/DMyShortcutName=$appName" `
+    "/DMyOutputPrefix=$outputPrefix" `
     "/DSourceDir=$sourceDir" `
     "/DOutputDir=$outputDir" `
     $issPath

@@ -20,9 +20,11 @@ internal sealed class AppPaths
         ControllerProfiles = Path.Combine(root, "controller_profiles.json");
         ControllerMapping = Path.Combine(root, "controller_mapping.json");
         RumbleSettings = Path.Combine(root, "rumble_settings.json");
+        HidOutputMode = Path.Combine(root, "windows_hid_output_mode.json");
         SupportBundleDirectory = Path.Combine(root, "support-bundles");
         MacroConfig = Path.Combine(root, "stadia_buttons.ini");
         VersionFile = Path.Combine(root, "VERSION.txt");
+        EditionFile = Path.Combine(root, "EDITION.txt");
         AppExecutable = Path.Combine(root, "StadiaX.exe");
         StartScript = Path.Combine(root, "Start-Stadia.bat");
         StopScript = Path.Combine(root, "Stop-Stadia.bat");
@@ -47,9 +49,11 @@ internal sealed class AppPaths
     public string ControllerProfiles { get; }
     public string ControllerMapping { get; }
     public string RumbleSettings { get; }
+    public string HidOutputMode { get; }
     public string SupportBundleDirectory { get; }
     public string MacroConfig { get; }
     public string VersionFile { get; }
+    public string EditionFile { get; }
     public string AppExecutable { get; }
     public string StartScript { get; }
     public string StopScript { get; }
@@ -70,6 +74,22 @@ internal sealed class AppPaths
             return string.IsNullOrWhiteSpace(text) ? "local" : text;
         }
     }
+
+    public string Edition
+    {
+        get
+        {
+            if (!File.Exists(EditionFile))
+            {
+                return "Standard";
+            }
+
+            var text = File.ReadAllText(EditionFile).Trim();
+            return string.IsNullOrWhiteSpace(text) ? "Standard" : text;
+        }
+    }
+
+    public bool IsHidLab => string.Equals(Edition, "HID Lab", StringComparison.OrdinalIgnoreCase);
 
     public IReadOnlyList<string> ResolveAssetCandidates(string fileName)
     {

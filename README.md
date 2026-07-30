@@ -25,6 +25,8 @@ The current development line continues the consolidated native backend. Windows 
 - Shows live connection phases, progress, detected devices, input rate, logs, and user actions.
 - Reads the controller battery level from Windows when the Bluetooth driver exposes it, including the P1-P4 dashboard and the same compact pill overlay used by the Linux edition: white text normally and red below 10%.
 - Includes a visual controller test, button highlights, stick and trigger telemetry, and native low-latency rumble tests.
+- Lets hardware testers switch the live rumble transport from the Home page between Auto, the original HID stream, dedicated Win32 `WriteFile`, `HidD_SetOutputReport`, and experimental `HidD_SetFeature`; logs record the requested and effective route.
+- Provides a separate `HID Lab` package with an independent installer identity, installation folder, settings, logs, and update behavior, so rumble experiments cannot replace the regular Windows Native installation.
 - Provides an Xbox-first visual mapping editor: click a target on the controller image and press the physical button to associate it. Manual recording, guided **Map all**, named profiles, conflict prevention, and live runtime reload remain available.
 - Supports preferred physical-controller profiles based on the Bluetooth address, keeping P1-P4 ordering predictable across reconnects.
 - Runs the Linux edition's 36 Assistant/Capture shortcuts directly in the Windows receiver, with live configuration reload and game-input suppression while a macro chord is held.
