@@ -40,6 +40,7 @@ internal sealed class MainForm : Form
     private int _updateCheckInProgress;
     private int _windowsBluetoothPairingInProgress;
     private int _windowsNativeCapacityMonitorInProgress;
+    private int _automaticConnectionInProgress;
 
     private readonly Label _statusLabel = new();
     private readonly Label _batteryStatusLabel = new();
@@ -127,7 +128,7 @@ internal sealed class MainForm : Form
     private readonly ImageList _linuxBluetoothRowSizer = new() { ImageSize = new Size(1, 26), ColorDepth = ColorDepth.Depth32Bit };
     private readonly Icon _baseIcon;
 
-    private Form? _batteryOverlay;
+    private DesktopBatteryOverlayForm? _batteryOverlay;
     private Label? _batteryOverlayLabel;
     private Icon? _batteryIndicatorIcon;
     private bool _linuxRefreshInProgress;
@@ -137,6 +138,9 @@ internal sealed class MainForm : Form
     private DateTime _lastLinuxBluetoothRefreshUtc = DateTime.MinValue;
     private DateTime _nextWindowsNativeBatteryUnavailableLogUtc = DateTime.MinValue;
     private DateTime _nextWindowsNativeCapacityRestartUtc = DateTime.MinValue;
+    private DateTime _nextAutomaticBluetoothSearchUtc = DateTime.MinValue;
+    private string? _lastWindowsNativeRumbleMethod;
+    private bool _automaticConnectionSuspended;
     private IReadOnlyList<WindowsNativeHidDevice> _lastWindowsNativeDevices = Array.Empty<WindowsNativeHidDevice>();
     private IReadOnlyList<ControllerProfile> _lastProfiles = Array.Empty<ControllerProfile>();
     private ControllerTelemetrySnapshot? _lastTelemetrySnapshot;
@@ -201,7 +205,9 @@ internal sealed class MainForm : Form
                 Directory.CreateDirectory(_paths.LogDirectory);
                 await RefreshEverythingAsync();
                 _logTimer.Start();
+                _batteryTimer.Start();
                 _nativeCapacityMonitorTimer.Start();
+                _ = EnsureAutomaticStadiaConnectionAsync("app startup");
                 if (_updateService.CanInstallAutomatically)
                 {
                     _ = CheckForUpdatesAsync(interactive: false);
@@ -221,6 +227,10 @@ internal sealed class MainForm : Form
             {
                 Hide();
                 _trayIcon.Visible = true;
+                _ = RunActionWithDialogAsync(
+                    "Battery overlay refresh",
+                    () => UpdateBatteryAsync(),
+                    showDialog: false);
             }
         };
         Shown += (_, _) => EnsureWindowFitsDisplay();
@@ -250,6 +260,7 @@ internal sealed class MainForm : Form
                 }
             }
 
+            _automaticConnectionSuspended = true;
             LogUserAction("App closing");
             _logTimer.Stop();
             _batteryTimer.Stop();
@@ -262,6 +273,7 @@ internal sealed class MainForm : Form
             _baseIcon.Dispose();
             _linuxBluetoothRowSizer.Dispose();
             HideBatteryOverlay();
+            _batteryOverlay?.Dispose();
         };
     }
 
@@ -629,7 +641,7 @@ internal sealed class MainForm : Form
         _dashboardStatusLabel.ForeColor = Color.FromArgb(24, 33, 48);
         _dashboardDetailLabel.Text = "Connect a Stadia controller, then press Start. Virtual controller setup is automatic.";
         _dashboardDetailLabel.Dock = DockStyle.Fill;
-        _dashboardDetailLabel.AutoEllipsis = true;
+        _dashboardDetailLabel.AutoEllipsis = false;
         _dashboardDetailLabel.TextAlign = ContentAlignment.TopLeft;
         _dashboardDetailLabel.Font = new Font("Segoe UI", IsCompactUi() ? 8.25F : 9);
         _dashboardDetailLabel.ForeColor = Color.FromArgb(92, 106, 126);
@@ -879,7 +891,7 @@ internal sealed class MainForm : Form
         _hidOutputModeButton.Name = "HidOutputModeButton";
         _hidOutputModeButton.AutoSize = true;
         _hidOutputModeButton.AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        _hidOutputModeButton.MinimumSize = new Size(IsCompactUi() ? 92 : 112, IsCompactUi() ? 30 : 36);
+        _hidOutputModeButton.MinimumSize = new Size(IsCompactUi() ? 108 : 128, IsCompactUi() ? 30 : 36);
         _hidOutputModeButton.Padding = IsCompactUi() ? new Padding(7, 0, 7, 0) : new Padding(10, 0, 10, 0);
         _hidOutputModeButton.Margin = new Padding(4, 2, 4, 2);
         _hidOutputModeButton.FlatStyle = FlatStyle.Flat;
@@ -894,6 +906,7 @@ internal sealed class MainForm : Form
         var previous = _native.GetWindowsNativeHidOutputMode();
         var next = WindowsNativeHidOutputModeStore.Next(previous);
         _native.SetWindowsNativeHidOutputMode(next);
+        _lastWindowsNativeRumbleMethod = null;
         UpdateHidOutputModeButton();
 
         var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
@@ -920,7 +933,7 @@ internal sealed class MainForm : Form
     {
         var mode = _native.GetWindowsNativeHidOutputMode();
         var shortName = WindowsNativeHidOutputModeStore.ShortName(mode);
-        _hidOutputModeButton.Text = $"HID: {shortName}";
+        _hidOutputModeButton.Text = $"Rumble: {shortName}";
         _hidOutputModeButton.AccessibleName =
             $"{_localization.Translate("HID output mode")}: {WindowsNativeHidOutputModeStore.TechnicalName(mode)}";
         _controllerToolTip.SetToolTip(
@@ -1314,7 +1327,7 @@ internal sealed class MainForm : Form
         layout.Controls.Add(statusGroup, 0, 0);
 
         var deviceGroup = CreateGroup("Detected Stadia controllers");
-        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 210), ("Bluetooth", 132), ("Input", 62), ("Protected", 92), ("Battery", 72));
+        ConfigureList(_windowsNativeDeviceList, ("Pad", 50), ("Controller", 210), ("Connection", 132), ("Input", 72), ("Protected", 92), ("Battery", 72));
         _windowsNativeDeviceList.ShowItemToolTips = true;
         _windowsNativeDeviceList.Resize += (_, _) => ResizeWindowsNativeColumns();
         _windowsNativeDeviceList.SelectedIndexChanged += (_, _) =>
@@ -2944,22 +2957,82 @@ internal sealed class MainForm : Form
         SetWindowsNativeStatus($"{devices.Count} Stadia controller(s) detected", 100, warn: false);
     }
 
-    private async Task PairStadiaBluetoothAsync()
+    private async Task EnsureAutomaticStadiaConnectionAsync(string reason)
     {
-        if (Interlocked.CompareExchange(ref _windowsBluetoothPairingInProgress, 1, 0) != 0)
+        if (_auditMode ||
+            _automaticConnectionSuspended ||
+            IsDisposed ||
+            DateTime.UtcNow < _nextAutomaticBluetoothSearchUtc ||
+            WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _))
         {
-            WarnOperationProgress(
-                "Stadia Bluetooth pairing",
-                "A Stadia Bluetooth search is already running",
-                _operationProgress.Value);
             return;
         }
 
-        LogUserAction("Automatic Stadia Bluetooth pairing requested");
+        if (Interlocked.CompareExchange(ref _automaticConnectionInProgress, 1, 0) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _nextAutomaticBluetoothSearchUtc = DateTime.UtcNow.AddSeconds(45);
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_AUTOMATIC_CONNECTION_START",
+                ("reason", reason),
+                ("visibleControllers", _lastWindowsNativeDevices.Count.ToString()));
+
+            if (_lastWindowsNativeDevices.Count > 0)
+            {
+                _nextAutomaticBluetoothSearchUtc = DateTime.UtcNow.AddMinutes(2);
+                new StatusWriter(_paths, "windows-native.log").Write(
+                    "WINDOWS_NATIVE_AUTOMATIC_START",
+                    $"reason={reason} detected={_lastWindowsNativeDevices.Count} route={WindowsNativeConnectionRoute.TransportName(_lastWindowsNativeDevices[0])}");
+                StartWindowsNative(automatic: true);
+                return;
+            }
+
+            await PairStadiaBluetoothAsync(automatic: true).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnosticsLogger.Record(
+                "WINDOWS_NATIVE_AUTOMATIC_CONNECTION_FAILED",
+                ("reason", reason),
+                ("error", ex.ToString()));
+        }
+        finally
+        {
+            Volatile.Write(ref _automaticConnectionInProgress, 0);
+        }
+    }
+
+    private async Task PairStadiaBluetoothAsync(bool automatic = false)
+    {
+        if (Interlocked.CompareExchange(ref _windowsBluetoothPairingInProgress, 1, 0) != 0)
+        {
+            if (!automatic)
+            {
+                WarnOperationProgress(
+                    "Stadia Bluetooth pairing",
+                    "A Stadia Bluetooth search is already running",
+                    _operationProgress.Value);
+            }
+            return;
+        }
+
+        if (!automatic)
+        {
+            _automaticConnectionSuspended = false;
+            LogUserAction("Automatic Stadia Bluetooth pairing requested");
+        }
         BeginOperationProgress("Stadia Bluetooth pairing", "Checking the Windows Bluetooth radio", 8);
         SetWindowsNativeStatus("Searching for Stadia Bluetooth controllers", 10, warn: false);
         var status = new StatusWriter(_paths, "windows-native.log");
-        status.Write("WINDOWS_NATIVE_BLUETOOTH_MANUAL_START", "Automatic Stadia Bluetooth discovery requested from the app");
+        var trigger = automatic ? "background automation" : "user action";
+        var usableDeviceFound = false;
+        status.Write(
+            "WINDOWS_NATIVE_BLUETOOTH_SEARCH_START",
+            $"Automatic Stadia Bluetooth LE discovery started by {trigger}");
 
         try
         {
@@ -2968,8 +3041,8 @@ internal sealed class MainForm : Form
                 progress =>
                 {
                     status.Write(
-                        "WINDOWS_NATIVE_BLUETOOTH_MANUAL_PROGRESS",
-                        $"stage={progress.Stage} percent={progress.Percent} detail={progress.Detail}");
+                        "WINDOWS_NATIVE_BLUETOOTH_SEARCH_PROGRESS",
+                        $"trigger={trigger} stage={progress.Stage} percent={progress.Percent} detail={progress.Detail}");
                     if (!IsDisposed && IsHandleCreated)
                     {
                         try
@@ -2992,8 +3065,8 @@ internal sealed class MainForm : Form
             {
                 status.Write(
                     attempt.Outcome is StadiaBluetoothPairingOutcome.Paired or StadiaBluetoothPairingOutcome.AlreadyPaired
-                        ? "WINDOWS_NATIVE_BLUETOOTH_MANUAL_OK"
-                        : "WINDOWS_NATIVE_BLUETOOTH_MANUAL_FAILED",
+                        ? "WINDOWS_NATIVE_BLUETOOTH_PAIRING_OK"
+                        : "WINDOWS_NATIVE_BLUETOOTH_PAIRING_FAILED",
                     $"{attempt.Device.Name} {attempt.Device.Address}: {attempt.Outcome} - {attempt.Detail}");
             }
 
@@ -3009,12 +3082,28 @@ internal sealed class MainForm : Form
             {
                 FailOperationProgress(
                     "Stadia Bluetooth pairing",
-                    "No Stadia controller found - put it in Bluetooth pairing mode and try again");
-                SetWindowsNativeStatus("No Stadia controller found in pairing mode", 100, warn: true);
+                    automatic
+                        ? "No Stadia controller visible - automatic search will retry"
+                        : "No Stadia controller found - put it in Bluetooth pairing mode and try again");
+                SetWindowsNativeStatus(
+                    automatic
+                        ? "Waiting for a Stadia controller - automatic search remains active"
+                        : "No Stadia controller found in pairing mode",
+                    100,
+                    warn: true);
                 RefreshLogs();
                 return;
             }
 
+            if (!pairing.HasUsableDevice)
+            {
+                FailOperationProgress("Stadia Bluetooth pairing", "Windows found Stadia but could not complete pairing");
+                SetWindowsNativeStatus("Stadia found - Bluetooth pairing failed; see connection log", 100, warn: true);
+                RefreshLogs();
+                return;
+            }
+
+            usableDeviceFound = true;
             SetOperationProgress("Stadia Bluetooth pairing", "Waiting for Windows to expose the controller input", 94);
             IReadOnlyList<WindowsNativeHidDevice> hidDevices = Array.Empty<WindowsNativeHidDevice>();
             for (var attempt = 0; attempt < 6 && hidDevices.Count == 0; attempt++)
@@ -3026,6 +3115,22 @@ internal sealed class MainForm : Form
                 hidDevices = await RefreshWindowsNativeDevicesAsync(updateOperationProgress: false).ConfigureAwait(true);
             }
 
+            if (automatic && (_automaticConnectionSuspended || IsDisposed || !IsHandleCreated))
+            {
+                status.Write(
+                    "WINDOWS_NATIVE_BLUETOOTH_AUTOMATIC_START_CANCELLED",
+                    "Pairing completed, but automatic receiver start was cancelled because the app is stopping");
+                return;
+            }
+
+            if (WindowsNativeRuntime.TryGetActiveReceiver(_paths, out var activeReceiverPid, out _))
+            {
+                status.Write(
+                    "WINDOWS_NATIVE_BLUETOOTH_RECEIVER_ALREADY_RUNNING",
+                    $"Bluetooth pairing is ready; receiver pid={activeReceiverPid} is already active");
+                return;
+            }
+
             if (hidDevices.Count == 0)
             {
                 WarnOperationProgress(
@@ -3033,7 +3138,7 @@ internal sealed class MainForm : Form
                     "Pairing completed; starting Windows Native while waiting for controller input",
                     100);
                 SetWindowsNativeStatus("Paired - starting controller input", 100, warn: false);
-                StartWindowsNative();
+                StartWindowsNative(automatic);
             }
             else
             {
@@ -3041,7 +3146,7 @@ internal sealed class MainForm : Form
                     "Stadia Bluetooth pairing",
                     $"{hidDevices.Count} Stadia controller(s) ready - starting automatically");
                 SetWindowsNativeStatus($"{hidDevices.Count} Stadia controller(s) ready - starting", 100, warn: false);
-                StartWindowsNative();
+                StartWindowsNative(automatic);
             }
             RefreshLogs();
         }
@@ -3053,12 +3158,18 @@ internal sealed class MainForm : Form
         catch (Exception ex)
         {
             var reason = RecordUiFailure("Automatic Stadia Bluetooth pairing", ex);
-            status.Write("WINDOWS_NATIVE_BLUETOOTH_MANUAL_FAILED", reason);
+            status.Write("WINDOWS_NATIVE_BLUETOOTH_PAIRING_FAILED", $"trigger={trigger} {reason}");
             FailOperationProgress("Stadia Bluetooth pairing", "Bluetooth pairing failed - check the log");
             SetWindowsNativeStatus("Bluetooth pairing failed", 100, warn: true);
         }
         finally
         {
+            if (automatic)
+            {
+                _nextAutomaticBluetoothSearchUtc = usableDeviceFound
+                    ? DateTime.UtcNow.AddMinutes(2)
+                    : DateTime.UtcNow.AddSeconds(45);
+            }
             Volatile.Write(ref _windowsBluetoothPairingInProgress, 0);
         }
     }
@@ -3144,6 +3255,7 @@ internal sealed class MainForm : Form
                     out var receiverPid,
                     out var activeSlots))
             {
+                await EnsureAutomaticStadiaConnectionAsync("background connection monitor").ConfigureAwait(true);
                 return;
             }
 
@@ -3201,16 +3313,18 @@ internal sealed class MainForm : Form
                     Environment.NewLine,
                     new[]
                     {
+                        "Connection: " + WindowsNativeConnectionRoute.TransportName(device),
                         string.IsNullOrWhiteSpace(device.BluetoothAddress) ? null : "Bluetooth: " + device.BluetoothAddress,
+                        "Input: " + WindowsNativeConnectionRoute.PhysicalInputMethod,
+                        "Virtual output: " + WindowsNativeConnectionRoute.VirtualOutputMethod,
+                        $"Input report length: {device.MaxInputReportLength}",
                         $"VID/PID: {device.VendorId:X4}:{device.ProductId:X4}",
                         device.FileSystemName
                     }.Where(value => !string.IsNullOrWhiteSpace(value)))
             };
             item.SubItems.Add(string.IsNullOrWhiteSpace(device.FriendlyName) ? device.ProductName : device.FriendlyName);
-            item.SubItems.Add(string.IsNullOrWhiteSpace(device.BluetoothAddress)
-                ? $"{device.VendorId:X4}:{device.ProductId:X4}"
-                : device.BluetoothAddress);
-            item.SubItems.Add(device.MaxInputReportLength > 0 ? device.MaxInputReportLength.ToString() : "hidden");
+            item.SubItems.Add(WindowsNativeConnectionRoute.TransportName(device));
+            item.SubItems.Add(device.MaxInputReportLength > 0 ? "HidSharp" : "waiting");
             item.SubItems.Add(hidHideState);
             item.SubItems.Add(device.BatteryPercent.HasValue ? device.BatteryPercent + "%" : "-");
             _windowsNativeDeviceList.Items.Add(item);
@@ -3528,7 +3642,7 @@ internal sealed class MainForm : Form
         var available = Math.Max(420, _windowsNativeDeviceList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 10);
         var padWidth = 42;
         var addressWidth = Math.Clamp((int)Math.Round(available * 0.22), 104, 140);
-        var inputWidth = 52;
+        var inputWidth = 68;
         var hideWidth = 74;
         var batteryWidth = 64;
         var nameWidth = Math.Max(130, available - padWidth - addressWidth - inputWidth - hideWidth - batteryWidth);
@@ -3732,7 +3846,25 @@ internal sealed class MainForm : Form
             if (nativeReceiverActive)
             {
                 _batteryLabel.Text = $"Battery: Windows has not exposed a level for {nativeControllerCount} controller(s) yet.";
-                HideBatteryOverlay();
+                if (_batteryOverlayCheck.Checked)
+                {
+                    var placeholders = Enumerable.Range(1, Math.Clamp(nativeControllerCount, 1, 4))
+                        .Select(index => new LinuxBluetoothDevice(
+                            $"P{index}",
+                            $"Stadia P{index}",
+                            "yes",
+                            "yes",
+                            "yes",
+                            null,
+                            true,
+                            "Windows receiver"))
+                        .ToArray();
+                    ShowBatteryOverlay(placeholders, warning: false);
+                }
+                else
+                {
+                    HideBatteryOverlay();
+                }
                 if (DateTime.UtcNow >= _nextWindowsNativeBatteryUnavailableLogUtc)
                 {
                     _nextWindowsNativeBatteryUnavailableLogUtc = DateTime.UtcNow.AddMinutes(1);
@@ -3765,7 +3897,7 @@ internal sealed class MainForm : Form
         }));
         var batteryKnown = stadia.Where(d => d.BatteryPercent.HasValue).ToArray();
         var low = batteryKnown.Where(d => d.BatteryPercent is <= 30).ToArray();
-        if (_batteryOverlayCheck.Checked && batteryKnown.Length > 0)
+        if (_batteryOverlayCheck.Checked)
         {
             ShowBatteryOverlay(stadia, warning: low.Length > 0);
         }
@@ -3923,6 +4055,22 @@ internal sealed class MainForm : Form
 
         var activeCount = controllers.Count(controller => controller.Active || controller.PacketsPerSecond > 0);
         var hiddenCount = stadiaDevices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath));
+        var receiverActive = WindowsNativeRuntime.TryGetActiveReceiver(_paths, out _, out _);
+        var transports = stadiaDevices.Length == 0
+            ? WindowsNativeConnectionRoute.TransportName(null)
+            : string.Join(
+                " + ",
+                stadiaDevices
+                    .Select(WindowsNativeConnectionRoute.TransportName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+        var inputMethod = activeCount > 0
+            ? WindowsNativeConnectionRoute.PhysicalInputMethod
+            : stadiaDevices.Length > 0
+                ? "HidSharp HID ready; waiting for reports"
+                : "HidSharp HID waiting for a controller";
+        var rumbleMethod = WindowsNativeConnectionRoute.RumbleMethod(
+            _native.GetWindowsNativeHidOutputMode(),
+            _lastWindowsNativeRumbleMethod);
 
         _dashboardStatusLabel.Text = activeCount > 0
             ? $"{activeCount} controller(s) sending input"
@@ -3930,7 +4078,10 @@ internal sealed class MainForm : Form
                 ? $"{stadiaDevices.Length} Stadia controller(s) detected"
                 : "No Stadia controller detected";
         _dashboardDetailLabel.Text =
-            $"Detected {stadiaDevices.Length} - protected {hiddenCount} - last input {(_lastTelemetrySnapshot is null ? "not received" : _lastTelemetrySnapshot.ReadAt.ToLocalTime().ToString("HH:mm:ss"))}";
+            $"Connection: {transports}{(receiverActive ? "" : " (receiver stopped)")}{Environment.NewLine}" +
+            $"Input commands: {inputMethod}{Environment.NewLine}" +
+            $"Virtual output: {WindowsNativeConnectionRoute.VirtualOutputMethod} | Rumble commands: {rumbleMethod}{Environment.NewLine}" +
+            $"Detected {stadiaDevices.Length} | protected {hiddenCount} | last input {(_lastTelemetrySnapshot is null ? "not received" : _lastTelemetrySnapshot.ReadAt.ToLocalTime().ToString("HH:mm:ss"))}";
 
         for (var slot = 1; slot <= 4; slot++)
         {
@@ -3977,12 +4128,12 @@ internal sealed class MainForm : Form
             };
             _dashboardPadPacketsLabels[slot - 1].Text = "Input " + (controller?.PacketsPerSecond ?? 0).ToString("0.0") + "/s";
             _dashboardPadMacLabels[slot - 1].Text = device is null
-                ? "Automatic mapping"
+                ? "Bluetooth LE automatic search"
                 : string.IsNullOrWhiteSpace(device.BluetoothAddress)
-                    ? "Bluetooth identity pending"
+                    ? WindowsNativeConnectionRoute.TransportName(device)
                     : profile is null
-                        ? device.BluetoothAddress
-                        : $"P{profile.Slot} - {device.BluetoothAddress}";
+                        ? $"{WindowsNativeConnectionRoute.TransportName(device)} | {device.BluetoothAddress}"
+                        : $"P{profile.Slot} | {WindowsNativeConnectionRoute.TransportName(device)} | {device.BluetoothAddress}";
             UpdateDashboardRumbleButton(slot);
         }
     }
@@ -4377,6 +4528,8 @@ internal sealed class MainForm : Form
         var windowsNativeText = LogReader.Tail(Path.Combine(_paths.LogDirectory, "windows-native.log"), 220);
         var actionText = LogReader.Tail(_paths.UserActionLog, 160);
         var appDiagnosticsText = LogReader.Tail(_paths.AppDiagnosticsLog, 180);
+        _lastWindowsNativeRumbleMethod =
+            WindowsNativeConnectionRoute.ExtractLastUsedRumbleMethod(windowsNativeText);
         _controlStatusLogBox.Text = statusText;
         _dashboardActionLogBox.Text = actionText;
         _statusLogBox.Text = statusText;
@@ -4444,7 +4597,15 @@ internal sealed class MainForm : Form
     private void RefreshSelectionLabels()
     {
         var hidden = _lastWindowsNativeDevices.Count(device => !string.IsNullOrWhiteSpace(device.DeviceInstancePath));
-        _selectionLabel.Text = $"Windows Native HID: {_lastWindowsNativeDevices.Count} visible   HidHide: {hidden} matched   Virtual pads: automatic";
+        var transport = _lastWindowsNativeDevices.Count == 0
+            ? WindowsNativeConnectionRoute.TransportName(null)
+            : string.Join(
+                " + ",
+                _lastWindowsNativeDevices
+                    .Select(WindowsNativeConnectionRoute.TransportName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+        _selectionLabel.Text =
+            $"Connection: {transport}   Input: HidSharp HID   Protected: {hidden}/{_lastWindowsNativeDevices.Count}   Output: VIIPER Xbox 360";
     }
 
     private void LogUserAction(string action, params (string Key, string? Value)[] details)
@@ -4919,12 +5080,25 @@ internal sealed class MainForm : Form
 
     private void StartWindowsNative()
     {
-        LogUserAction("Start Windows Native requested");
+        StartWindowsNative(automatic: false);
+    }
+
+    private void StartWindowsNative(bool automatic)
+    {
+        if (!automatic)
+        {
+            _automaticConnectionSuspended = false;
+        }
+        _lastWindowsNativeRumbleMethod = null;
+        LogUserAction(automatic ? "Automatic Windows Native start requested" : "Start Windows Native requested");
         BeginOperationProgress("Starting Windows Native", "Launching native receiver", 18);
         SetWindowsNativeStatus("Starting Windows Native", 20, warn: false);
         LaunchSelfCommand("--start-windows-native", elevateWhenNeeded: true, "Windows Native start requested. Watch logs for readiness.");
         _ = RefreshWindowsNativeAfterStartAsync();
-        _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
+        if (!automatic)
+        {
+            _tabs.SelectedTab = _tabs.TabPages["Windows Native"];
+        }
     }
 
     private async Task RefreshWindowsNativeAfterStartAsync()
@@ -5008,6 +5182,7 @@ internal sealed class MainForm : Form
 
     private void StopWindowsNative()
     {
+        _automaticConnectionSuspended = true;
         LogUserAction("Stop Windows Native requested");
         BeginOperationProgress("Stopping Windows Native", "Sending receiver stop signal", 35);
         LaunchSelfCommand("--stop-windows-native", elevateWhenNeeded: true, "Windows Native stop requested. Physical input will be restored.");
@@ -5019,6 +5194,7 @@ internal sealed class MainForm : Form
 
     private void RepairWindowsNative()
     {
+        _automaticConnectionSuspended = false;
         LogUserAction("Repair Windows Native requested");
         BeginOperationProgress("Repairing Windows Native", "Stopping receiver and restoring physical input", 10);
         SetWindowsNativeStatus("Repairing controller connection", 12, warn: false);
@@ -5730,12 +5906,8 @@ internal sealed class MainForm : Form
     {
         if (_batteryOverlay is null || _batteryOverlay.IsDisposed)
         {
-            _batteryOverlay = new Form
+            _batteryOverlay = new DesktopBatteryOverlayForm
             {
-                FormBorderStyle = FormBorderStyle.None,
-                StartPosition = FormStartPosition.Manual,
-                ShowInTaskbar = false,
-                TopMost = true,
                 Opacity = 0.44,
                 Size = new Size(64, 24)
             };
@@ -5755,22 +5927,18 @@ internal sealed class MainForm : Form
         _batteryOverlay.BackColor = Color.FromArgb(8, 18, 30);
         _batteryOverlayLabel!.Text = BatteryOverlayText(devices);
         _batteryOverlayLabel.ForeColor = critical ? Color.FromArgb(255, 78, 78) : Color.White;
-        _batteryOverlay.Size = MeasureBatteryOverlaySize(_batteryOverlayLabel);
+        var overlaySize = MeasureBatteryOverlaySize(_batteryOverlayLabel);
+        _batteryOverlay.Size = overlaySize;
         ApplyPillRegion(_batteryOverlay);
-        var area = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromControl(this).WorkingArea;
-        _batteryOverlay.Location = new Point(area.Right - _batteryOverlay.Width - 10, area.Top + 10);
-        if (!_batteryOverlay.Visible)
-        {
-            _batteryOverlay.Show();
-        }
-        _batteryOverlay.TopMost = false;
-        _batteryOverlay.TopMost = true;
-        _batteryOverlay.BringToFront();
+        _batteryOverlay.ShowAtDesktopTopRight(overlaySize);
+        var targetScreen = Screen.PrimaryScreen ?? Screen.AllScreens.First();
         AppDiagnosticsLogger.Record(
             "BATTERY_OVERLAY_SHOWN",
             ("warning", warning.ToString()),
             ("critical", critical.ToString()),
             ("size", $"{_batteryOverlay.Width}x{_batteryOverlay.Height}"),
+            ("display", targetScreen.DeviceName),
+            ("location", $"{_batteryOverlay.Left},{_batteryOverlay.Top}"),
             ("text", _batteryOverlayLabel.Text));
     }
 

@@ -46,7 +46,16 @@ internal static class WindowsBleStadiaPairing
 
         try
         {
-            await Task.Delay(DiscoveryWindow, cancellationToken).ConfigureAwait(false);
+            const int progressPasses = 4;
+            var passDelay = TimeSpan.FromMilliseconds(DiscoveryWindow.TotalMilliseconds / progressPasses);
+            for (var pass = 1; pass <= progressPasses; pass++)
+            {
+                await Task.Delay(passDelay, cancellationToken).ConfigureAwait(false);
+                progress?.Invoke(new StadiaBluetoothPairingProgress(
+                    "Discovery",
+                    18 + (pass * 6),
+                    $"Scanning Bluetooth LE for Stadia controllers ({found.Count} candidate(s) visible)"));
+            }
         }
         finally
         {
@@ -56,6 +65,11 @@ internal static class WindowsBleStadiaPairing
 
         var candidates = found.Values
             .Where(device => WindowsStadiaBluetoothPairingService.IsStadiaName(device.Name))
+            .GroupBy(DeviceIdentity, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(device => device.Pairing.IsPaired)
+                .ThenByDescending(IsConnected)
+                .First())
             .OrderByDescending(device => device.Pairing.IsPaired)
             .ThenByDescending(IsConnected)
             .ThenBy(device => device.Name, StringComparer.OrdinalIgnoreCase)
@@ -201,6 +215,12 @@ internal static class WindowsBleStadiaPairing
         return device.Properties.TryGetValue(property, out var value)
             ? Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? ""
             : "";
+    }
+
+    private static string DeviceIdentity(DeviceInformation device)
+    {
+        var address = PropertyString(device, "System.Devices.Aep.DeviceAddress");
+        return string.IsNullOrWhiteSpace(address) ? device.Id : address;
     }
 
     private static StadiaBluetoothPairingOutcome MapOutcome(DevicePairingResultStatus status)

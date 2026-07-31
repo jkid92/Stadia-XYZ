@@ -12,9 +12,9 @@ internal static class ControllerStateMapper
             LeftTrigger = state.TriggerLeft,
             RightTrigger = state.TriggerRight,
             ThumbLX = state.StickLeftX,
-            ThumbLY = state.StickLeftY == short.MinValue + 1 ? short.MaxValue : (short)-state.StickLeftY,
+            ThumbLY = state.StickLeftY,
             ThumbRX = state.StickRightX,
-            ThumbRY = state.StickRightY == short.MinValue + 1 ? short.MaxValue : (short)-state.StickRightY
+            ThumbRY = state.StickRightY
         };
     }
 
@@ -33,9 +33,9 @@ internal static class ControllerStateMapper
             report.LeftTrigger != 17 ||
             report.RightTrigger != 231 ||
             report.ThumbLX != -12000 ||
-            report.ThumbLY != 21000 ||
+            report.ThumbLY != -21000 ||
             report.ThumbRX != 13000 ||
-            report.ThumbRY != short.MaxValue)
+            report.ThumbRY != short.MinValue + 1)
         {
             throw new InvalidOperationException("Controller-to-virtual-pad mapping self-test failed.");
         }

@@ -85,6 +85,11 @@ internal sealed class WindowsNativeReceiver
             _status.Write(
                 "WINDOWS_NATIVE_HID_OUTPUT_MODE",
                 $"requested={WindowsNativeHidOutputModeStore.TechnicalName(hidOutputMode)}");
+            _status.Write(
+                "WINDOWS_NATIVE_COMMAND_PIPELINE",
+                $"physicalInput={WindowsNativeConnectionRoute.PhysicalInputMethod} " +
+                $"virtualOutput={WindowsNativeConnectionRoute.VirtualOutputMethod} " +
+                $"rumbleRequested={WindowsNativeHidOutputModeStore.TechnicalName(hidOutputMode)}");
             LogInfo(
                 "Windows Native HID output mode requested: {0}",
                 WindowsNativeHidOutputModeStore.TechnicalName(hidOutputMode));
@@ -95,7 +100,9 @@ internal sealed class WindowsNativeReceiver
                     : $"unavailable outputReportLength={devices[i].MaxOutputReportLength}";
                 _status.Write(
                     "WINDOWS_NATIVE_CONTROLLER_CAPABILITIES",
-                    $"P{i + 1} battery=windows rumble={rumble} device={devices[i].FriendlyName}");
+                    $"P{i + 1} connection={WindowsNativeConnectionRoute.TransportName(devices[i])} " +
+                    $"input={WindowsNativeConnectionRoute.PhysicalInputMethod} battery=windows " +
+                    $"rumble={rumble} device={devices[i].FriendlyName}");
             }
             InitializeVirtualGamepads(devices.Length);
             _status.WritePhase(
@@ -259,6 +266,12 @@ internal sealed class WindowsNativeReceiver
                 _status.Write(
                     connectedOnce ? "WINDOWS_NATIVE_CONTROLLER_RECONNECTED" : "WINDOWS_NATIVE_CONTROLLER_OPEN",
                     $"P{controllerIndex + 1}: {currentDevice.FriendlyName}");
+                _status.Write(
+                    "WINDOWS_NATIVE_CONTROLLER_ROUTE",
+                    $"P{controllerIndex + 1} connection={WindowsNativeConnectionRoute.TransportName(currentDevice)} " +
+                    $"input={WindowsNativeConnectionRoute.PhysicalInputMethod} " +
+                    $"virtualOutput={WindowsNativeConnectionRoute.VirtualOutputMethod} " +
+                    $"rumbleRequested={WindowsNativeHidOutputModeStore.TechnicalName(_hidOutputMode.GetMode())}");
                 _status.Write(
                     rumbleWriter.IsSupported ? "WINDOWS_NATIVE_RUMBLE_READY" : "WINDOWS_NATIVE_RUMBLE_UNAVAILABLE",
                     $"P{controllerIndex + 1} rumble={(rumbleWriter.IsSupported ? "ready" : "unavailable")} " +

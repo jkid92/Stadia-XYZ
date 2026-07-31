@@ -94,6 +94,7 @@ internal static class Program
             ControllerStateMapper.RunSelfTest();
             ControllerRumbleSettingsStore.RunSelfTest();
             WindowsNativeHidOutputModeStore.RunSelfTest();
+            WindowsNativeConnectionRoute.RunSelfTest();
             WindowsNativeRumbleProtocol.RunSelfTest();
             WindowsNativeMacroEngine.RunSelfTest();
             WindowsBluetoothIdentity.RunSelfTest();
